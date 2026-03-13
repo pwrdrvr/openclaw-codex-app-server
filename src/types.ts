@@ -1,6 +1,6 @@
 import type { ConversationRef, PluginInteractiveButtons } from "openclaw/plugin-sdk";
 
-export const PLUGIN_ID = "openclaw-app-server";
+export const PLUGIN_ID = "openclaw-codex-app-server";
 export const INTERACTIVE_NAMESPACE = "codexapp";
 export const STORE_VERSION = 1;
 export const CALLBACK_TOKEN_BYTES = 9;

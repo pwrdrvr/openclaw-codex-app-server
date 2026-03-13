@@ -1,4 +1,4 @@
-# @pwrdrvr/openclaw-app-server
+# @pwrdrvr/openclaw-codex-app-server
 
 Codex App Server as an OpenClaw plugin.
 
@@ -13,5 +13,5 @@ This package is cut against the current OpenClaw plugin seam with:
 For local development against an OpenClaw source tree:
 
 ```bash
-pnpm openclaw plugins install --link /Users/huntharo/gihub/openclaw-app-server
+pnpm openclaw plugins install --link /path/to/openclaw-codex-app-server
 ```

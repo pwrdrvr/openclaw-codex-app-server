@@ -1,6 +1,6 @@
 {
-  "id": "openclaw-app-server",
-  "name": "OpenClaw App Server",
+  "id": "openclaw-codex-app-server",
+  "name": "OpenClaw Codex App Server",
   "description": "Codex App Server as an OpenClaw plugin with bound Telegram and Discord conversations.",
   "configSchema": {
     "type": "object",

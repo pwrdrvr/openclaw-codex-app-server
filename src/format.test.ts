@@ -57,7 +57,7 @@ describe("formatBoundThreadSummary", () => {
             accountId: "default",
             conversationId: "chat-1",
           },
-          sessionKey: "openclaw-app-server:thread:abc",
+          sessionKey: "openclaw-codex-app-server:thread:abc",
           threadId: "019cc00d-6cf4-7c11-afcd-2673db349a21",
           workspaceDir: "/Users/huntharo/.codex/worktrees/41fb/openclaw",
           threadTitle: "Fix Telegram approval flow",

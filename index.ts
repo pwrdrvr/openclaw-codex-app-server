@@ -23,7 +23,7 @@ const COMMANDS = [
 ] as const;
 
 const plugin = {
-  id: "openclaw-app-server",
+  id: "openclaw-codex-app-server",
   name: "OpenClaw App Server",
   description: "Codex App Server as an OpenClaw plugin.",
   register(api: OpenClawPluginApi) {

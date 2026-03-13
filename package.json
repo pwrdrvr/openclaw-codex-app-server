@@ -1,5 +1,5 @@
 {
-  "name": "@pwrdrvr/openclaw-app-server",
+  "name": "@pwrdrvr/openclaw-codex-app-server",
   "version": "0.0.0-development",
   "description": "OpenClaw plugin for Codex App Server conversations",
   "license": "MIT",
