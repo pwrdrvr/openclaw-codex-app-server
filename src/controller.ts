@@ -1108,6 +1108,15 @@ export class CodexPluginController {
       );
     }
     const typing = await this.startTypingLease(params.conversation);
+    const threadState =
+      params.binding?.threadId
+        ? await this.client
+            .readThreadState({
+              sessionKey: params.binding.sessionKey,
+              threadId: params.binding.threadId,
+            })
+            .catch(() => null)
+        : null;
     let keepaliveSent = false;
     const progressTimer = setTimeout(() => {
       void (async () => {
@@ -1124,15 +1133,19 @@ export class CodexPluginController {
       prompt: params.prompt,
       runId: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
       existingThreadId: params.binding?.threadId,
-      model: this.settings.defaultModel,
+      model: threadState?.model || this.settings.defaultModel,
       collaborationMode: {
         mode: "plan",
         settings: {
-          model: this.settings.defaultModel,
+          model: threadState?.model || this.settings.defaultModel,
+          reasoningEffort: threadState?.reasoningEffort,
           developerInstructions: null,
         },
       },
       onPendingInput: async (state) => {
+        this.api.logger.debug(
+          `codex plan pending input ${state ? `received (questionnaire=${state.questionnaire ? "yes" : "no"})` : "cleared"}`,
+        );
         await this.handlePendingInputState(params.conversation, params.workspaceDir, state, run);
       },
       onInterrupted: async () => {

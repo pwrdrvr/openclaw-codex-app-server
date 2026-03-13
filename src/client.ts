@@ -828,6 +828,10 @@ function buildTurnInput(
 function buildCollaborationModeVariants(
   collaborationMode: CollaborationMode,
 ): Array<{ camel?: Record<string, unknown>; snake?: Record<string, unknown> }> {
+  const hasDeveloperInstructions = Object.hasOwn(
+    collaborationMode.settings ?? {},
+    "developerInstructions",
+  );
   const normalizedSettings: Record<string, unknown> = {
     ...(collaborationMode.settings?.model
       ? { model: collaborationMode.settings.model }
@@ -835,9 +839,15 @@ function buildCollaborationModeVariants(
     ...(collaborationMode.settings?.reasoningEffort
       ? { reasoningEffort: collaborationMode.settings.reasoningEffort }
       : {}),
-    ...(typeof collaborationMode.settings?.developerInstructions === "string" &&
-    collaborationMode.settings.developerInstructions.trim()
-      ? { developerInstructions: collaborationMode.settings.developerInstructions.trim() }
+    ...(typeof collaborationMode.settings?.developerInstructions === "string"
+      ? collaborationMode.settings.developerInstructions.trim()
+        ? { developerInstructions: collaborationMode.settings.developerInstructions.trim() }
+        : {}
+      : {}),
+    ...(hasDeveloperInstructions &&
+    (collaborationMode.settings?.developerInstructions == null ||
+      collaborationMode.settings?.developerInstructions === "")
+      ? { developerInstructions: null }
       : {}),
   };
   const variants: Array<{ camel?: Record<string, unknown>; snake?: Record<string, unknown> }> =
@@ -857,7 +867,8 @@ function buildCollaborationModeVariants(
           ...(typeof normalizedSettings.reasoningEffort === "string"
             ? { reasoning_effort: normalizedSettings.reasoningEffort }
             : {}),
-          ...(typeof normalizedSettings.developerInstructions === "string"
+          ...(typeof normalizedSettings.developerInstructions === "string" ||
+          normalizedSettings.developerInstructions == null
             ? { developer_instructions: normalizedSettings.developerInstructions }
             : {}),
         },
@@ -2228,6 +2239,9 @@ export class CodexAppServerClient {
         options,
         expiresAt,
       });
+      this.logger.debug(
+        `codex review interactive request ${method} (questionnaire=${state.questionnaire ? "yes" : "no"})`,
+      );
       awaitingInput = true;
       await params.onPendingInput?.(state);
       let timedOut = false;
@@ -2483,6 +2497,9 @@ export class CodexAppServerClient {
         options,
         expiresAt,
       });
+      this.logger.debug(
+        `codex turn interactive request ${method} (questionnaire=${state.questionnaire ? "yes" : "no"})`,
+      );
       awaitingInput = true;
       assistantText = "";
       assistantItemId = "";

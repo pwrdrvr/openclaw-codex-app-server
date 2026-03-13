@@ -45,7 +45,7 @@ describe("buildTurnStartPayloads", () => {
     ]);
   });
 
-  it("prefers text-only collaboration payloads and omits null developer instructions", () => {
+  it("prefers text-only collaboration payloads and preserves explicit null developer instructions", () => {
     expect(
       __testing.buildTurnStartPayloads({
         threadId: "thread-123",
@@ -68,6 +68,7 @@ describe("buildTurnStartPayloads", () => {
           mode: "plan",
           settings: {
             model: "gpt-5.4",
+            developerInstructions: null,
           },
         },
       },
@@ -79,6 +80,7 @@ describe("buildTurnStartPayloads", () => {
           mode: "plan",
           settings: {
             model: "gpt-5.4",
+            developer_instructions: null,
           },
         },
       },
