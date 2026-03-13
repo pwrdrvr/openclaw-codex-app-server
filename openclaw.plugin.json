@@ -1,0 +1,105 @@
+{
+  "id": "openclaw-app-server",
+  "name": "OpenClaw App Server",
+  "description": "Codex App Server as an OpenClaw plugin with bound Telegram and Discord conversations.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": {
+        "type": "boolean"
+      },
+      "transport": {
+        "type": "string",
+        "enum": [
+          "stdio",
+          "websocket"
+        ]
+      },
+      "command": {
+        "type": "string"
+      },
+      "args": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "url": {
+        "type": "string"
+      },
+      "authToken": {
+        "type": "string"
+      },
+      "headers": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "string"
+        }
+      },
+      "requestTimeoutMs": {
+        "type": "number",
+        "minimum": 100
+      },
+      "inputTimeoutMs": {
+        "type": "number",
+        "minimum": 1000
+      },
+      "defaultWorkspaceDir": {
+        "type": "string"
+      },
+      "defaultModel": {
+        "type": "string"
+      },
+      "defaultServiceTier": {
+        "type": "string"
+      }
+    }
+  },
+  "uiHints": {
+    "enabled": {
+      "label": "Enabled"
+    },
+    "transport": {
+      "label": "Transport"
+    },
+    "command": {
+      "label": "Codex Command",
+      "help": "Used for stdio mode. Defaults to codex."
+    },
+    "args": {
+      "label": "Codex Args",
+      "advanced": true
+    },
+    "url": {
+      "label": "WebSocket URL"
+    },
+    "authToken": {
+      "label": "WebSocket Bearer Token",
+      "sensitive": true
+    },
+    "headers": {
+      "label": "Extra Headers",
+      "advanced": true
+    },
+    "requestTimeoutMs": {
+      "label": "Request Timeout (ms)",
+      "advanced": true
+    },
+    "inputTimeoutMs": {
+      "label": "Input Timeout (ms)",
+      "advanced": true
+    },
+    "defaultWorkspaceDir": {
+      "label": "Default Workspace Dir"
+    },
+    "defaultModel": {
+      "label": "Default Model",
+      "advanced": true
+    },
+    "defaultServiceTier": {
+      "label": "Default Service Tier",
+      "advanced": true
+    }
+  }
+}

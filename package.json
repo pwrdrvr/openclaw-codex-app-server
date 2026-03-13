@@ -1,0 +1,28 @@
+{
+  "name": "@pwrdrvr/openclaw-app-server",
+  "version": "0.0.0-development",
+  "description": "OpenClaw plugin for Codex App Server conversations",
+  "license": "MIT",
+  "type": "module",
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "openclaw": "*"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "openclaw": "file:/Users/huntharo/.codex/worktrees/cb00/openclaw",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}
