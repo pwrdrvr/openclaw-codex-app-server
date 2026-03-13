@@ -98,6 +98,11 @@ type PlanDelivery = {
   attachmentFallbackText?: string;
 };
 
+type RuntimeSessionBindingRecord = {
+  targetSessionKey?: string;
+  metadata?: Record<string, unknown>;
+};
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -501,13 +506,17 @@ export class CodexPluginController {
       return { handled };
     }
     const binding = this.store.getBinding(conversation);
-    if (!binding) {
+    const resolvedBinding = binding ?? (await this.resolveRuntimeBackedBinding(conversation));
+    this.api.logger.debug?.(
+      `codex inbound claim channel=${conversation.channel} account=${conversation.accountId} conversation=${conversation.conversationId} parent=${conversation.parentConversationId ?? "<none>"} local=${binding ? "yes" : "no"} runtime=${resolvedBinding && !binding ? "yes" : "no"}`,
+    );
+    if (!resolvedBinding) {
       return { handled: false };
     }
     await this.startTurn({
       conversation,
-      binding,
-      workspaceDir: binding.workspaceDir,
+      binding: resolvedBinding,
+      workspaceDir: resolvedBinding.workspaceDir,
       prompt: event.content,
       reason: "inbound",
     });
@@ -2351,6 +2360,9 @@ export class CodexPluginController {
     };
     const runtimeConversation = toRuntimeBindingConversationRef(record.conversation);
     const existing = this.api.runtime.channel.bindings.resolveByConversation(runtimeConversation);
+    this.api.logger.debug?.(
+      `codex bind conversation=${record.conversation.conversationId} runtimeConversation=${runtimeConversation.conversationId} existing=${existing ? "yes" : "no"}`,
+    );
     if (!existing) {
       try {
         await this.api.runtime.channel.bindings.bind({
@@ -2368,6 +2380,43 @@ export class CodexPluginController {
         this.api.logger.warn(`codex binding bridge bind failed: ${String(error)}`);
       }
     }
+    await this.store.upsertBinding(record);
+    return record;
+  }
+
+  private async resolveRuntimeBackedBinding(
+    conversation: ConversationTarget,
+  ): Promise<StoredBinding | null> {
+    const runtimeConversation = toRuntimeBindingConversationRef(conversation);
+    const runtimeBinding = this.api.runtime.channel.bindings.resolveByConversation(
+      runtimeConversation,
+    ) as RuntimeSessionBindingRecord | null;
+    const metadata = runtimeBinding?.metadata;
+    if (!runtimeBinding?.targetSessionKey || !metadata) {
+      return null;
+    }
+    if (metadata.pluginId !== PLUGIN_ID) {
+      return null;
+    }
+    const threadId = typeof metadata.threadId === "string" ? metadata.threadId.trim() : "";
+    const workspaceDir =
+      typeof metadata.workspaceDir === "string" ? metadata.workspaceDir.trim() : "";
+    if (!threadId || !workspaceDir) {
+      return null;
+    }
+    const record: StoredBinding = {
+      conversation: {
+        channel: conversation.channel,
+        accountId: conversation.accountId,
+        conversationId: conversation.conversationId,
+        parentConversationId: conversation.parentConversationId,
+      },
+      sessionKey: runtimeBinding.targetSessionKey,
+      threadId,
+      workspaceDir,
+      contextUsage: this.store.getBinding(conversation)?.contextUsage,
+      updatedAt: Date.now(),
+    };
     await this.store.upsertBinding(record);
     return record;
   }

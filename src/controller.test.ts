@@ -14,7 +14,7 @@ function createApiMock() {
   const sendComponentMessage = vi.fn(async () => ({}));
   const sendMessageDiscord = vi.fn(async () => ({}));
   const bindingBind = vi.fn(async () => ({}));
-  const bindingResolveByConversation = vi.fn(() => null);
+  const bindingResolveByConversation = vi.fn<(...args: any[]) => any>(() => null);
   const api = {
     id: "test-plugin",
     pluginConfig: {
@@ -458,6 +458,46 @@ describe("Discord controller flows", () => {
     });
 
     expect(result).toEqual({ handled: true });
+    expect(startTurn).toHaveBeenCalled();
+  });
+
+  it("claims inbound Discord messages from the runtime binding bridge when local state misses", async () => {
+    const { controller, bindingResolveByConversation } = await createControllerHarness();
+    bindingResolveByConversation.mockReturnValue({
+      targetSessionKey: "session-1",
+      metadata: {
+        pluginId: "openclaw-codex-app-server",
+        threadId: "thread-1",
+        workspaceDir: "/repo/openclaw",
+      },
+    });
+    const startTurn = vi.fn(() => ({
+      result: Promise.resolve({
+        threadId: "thread-1",
+        text: "hello",
+      }),
+      getThreadId: () => "thread-1",
+      queueMessage: vi.fn(async () => true),
+    }));
+    (controller as any).client.startTurn = startTurn;
+
+    const result = await controller.handleInboundClaim({
+      content: "who are you?",
+      channel: "discord",
+      accountId: "default",
+      conversationId: "1481858418548412579",
+      isGroup: true,
+      metadata: { guildId: "guild-1" },
+    });
+
+    expect(result).toEqual({ handled: true });
+    expect(bindingResolveByConversation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "discord",
+        accountId: "default",
+        conversationId: "1481858418548412579",
+      }),
+    );
     expect(startTurn).toHaveBeenCalled();
   });
 });
