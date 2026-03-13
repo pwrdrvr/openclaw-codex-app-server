@@ -13,6 +13,7 @@ function createApiMock() {
   const stateDir = makeStateDir();
   const sendComponentMessage = vi.fn(async () => ({}));
   const sendMessageDiscord = vi.fn(async () => ({}));
+  const discordTypingStart = vi.fn(async () => ({ refresh: vi.fn(async () => {}), stop: vi.fn() }));
   const bindingBind = vi.fn(async () => ({}));
   const bindingResolveByConversation = vi.fn<(...args: any[]) => any>(() => null);
   const api = {
@@ -55,7 +56,7 @@ function createApiMock() {
           sendMessageDiscord,
           sendComponentMessage,
           typing: {
-            start: vi.fn(async () => ({ refresh: vi.fn(async () => {}), stop: vi.fn() })),
+            start: discordTypingStart,
           },
           conversationActions: {
             editChannel: vi.fn(async () => ({})),
@@ -68,11 +69,27 @@ function createApiMock() {
     registerCommand: vi.fn(),
     on: vi.fn(),
   } satisfies OpenClawPluginApi;
-  return { api, sendComponentMessage, sendMessageDiscord, bindingBind, bindingResolveByConversation, stateDir };
+  return {
+    api,
+    sendComponentMessage,
+    sendMessageDiscord,
+    discordTypingStart,
+    bindingBind,
+    bindingResolveByConversation,
+    stateDir,
+  };
 }
 
 async function createControllerHarness() {
-  const { api, sendComponentMessage, sendMessageDiscord, bindingBind, bindingResolveByConversation, stateDir } = createApiMock();
+  const {
+    api,
+    sendComponentMessage,
+    sendMessageDiscord,
+    discordTypingStart,
+    bindingBind,
+    bindingResolveByConversation,
+    stateDir,
+  } = createApiMock();
   const controller = new CodexPluginController(api);
   await controller.start();
   const clientMock = {
@@ -113,6 +130,7 @@ async function createControllerHarness() {
     clientMock,
     sendComponentMessage,
     sendMessageDiscord,
+    discordTypingStart,
     bindingBind,
     bindingResolveByConversation,
     stateDir,
@@ -499,5 +517,45 @@ describe("Discord controller flows", () => {
       }),
     );
     expect(startTurn).toHaveBeenCalled();
+  });
+
+  it("uses a raw Discord channel id for the typing lease on inbound claims", async () => {
+    const { controller, discordTypingStart } = await createControllerHarness();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:1481858418548412579",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+    (controller as any).client.startTurn = vi.fn(() => ({
+      result: Promise.resolve({
+        threadId: "thread-1",
+        text: "hello",
+      }),
+      getThreadId: () => "thread-1",
+      queueMessage: vi.fn(async () => true),
+    }));
+
+    const result = await controller.handleInboundClaim({
+      content: "hello",
+      channel: "discord",
+      accountId: "default",
+      conversationId: "1481858418548412579",
+      isGroup: true,
+      metadata: { guildId: "guild-1" },
+    });
+
+    expect(result).toEqual({ handled: true });
+    expect(discordTypingStart).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channelId: "1481858418548412579",
+        accountId: "default",
+      }),
+    );
   });
 });

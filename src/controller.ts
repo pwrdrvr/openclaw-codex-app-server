@@ -479,48 +479,55 @@ export class CodexPluginController {
     isGroup?: boolean;
     metadata?: Record<string, unknown>;
   }): Promise<{ handled: boolean }> {
-    if (!this.settings.enabled) {
-      return { handled: false };
-    }
-    await this.start();
-    const conversation = toConversationTargetFromInbound(event);
-    if (!conversation) {
-      return { handled: false };
-    }
-    const activeKey = buildConversationKey(conversation);
-    const active = this.activeRuns.get(activeKey);
-    if (active) {
-      const pending = this.store.getPendingRequestByConversation(conversation);
-      if (pending?.state.questionnaire && !event.content.trim().startsWith("/")) {
-        const handled = await this.handlePendingQuestionnaireFreeformAnswer(
-          conversation,
-          pending,
-          active.handle,
-          event.content,
-        );
-        if (handled) {
-          return { handled: true };
-        }
+    try {
+      if (!this.settings.enabled) {
+        return { handled: false };
       }
-      const handled = await active.handle.queueMessage(event.content);
-      return { handled };
+      await this.start();
+      const conversation = toConversationTargetFromInbound(event);
+      if (!conversation) {
+        return { handled: false };
+      }
+      const activeKey = buildConversationKey(conversation);
+      const active = this.activeRuns.get(activeKey);
+      if (active) {
+        const pending = this.store.getPendingRequestByConversation(conversation);
+        if (pending?.state.questionnaire && !event.content.trim().startsWith("/")) {
+          const handled = await this.handlePendingQuestionnaireFreeformAnswer(
+            conversation,
+            pending,
+            active.handle,
+            event.content,
+          );
+          if (handled) {
+            return { handled: true };
+          }
+        }
+        const handled = await active.handle.queueMessage(event.content);
+        return { handled };
+      }
+      const binding = this.store.getBinding(conversation);
+      const resolvedBinding = binding ?? (await this.resolveRuntimeBackedBinding(conversation));
+      this.api.logger.debug?.(
+        `codex inbound claim channel=${conversation.channel} account=${conversation.accountId} conversation=${conversation.conversationId} parent=${conversation.parentConversationId ?? "<none>"} local=${binding ? "yes" : "no"} runtime=${resolvedBinding && !binding ? "yes" : "no"}`,
+      );
+      if (!resolvedBinding) {
+        return { handled: false };
+      }
+      await this.startTurn({
+        conversation,
+        binding: resolvedBinding,
+        workspaceDir: resolvedBinding.workspaceDir,
+        prompt: event.content,
+        reason: "inbound",
+      });
+      return { handled: true };
+    } catch (error) {
+      const detail =
+        error instanceof Error ? `${error.message}\n${error.stack ?? ""}`.trim() : String(error);
+      this.api.logger.error(`codex inbound claim failed: ${detail}`);
+      throw error;
     }
-    const binding = this.store.getBinding(conversation);
-    const resolvedBinding = binding ?? (await this.resolveRuntimeBackedBinding(conversation));
-    this.api.logger.debug?.(
-      `codex inbound claim channel=${conversation.channel} account=${conversation.accountId} conversation=${conversation.conversationId} parent=${conversation.parentConversationId ?? "<none>"} local=${binding ? "yes" : "no"} runtime=${resolvedBinding && !binding ? "yes" : "no"}`,
-    );
-    if (!resolvedBinding) {
-      return { handled: false };
-    }
-    await this.startTurn({
-      conversation,
-      binding: resolvedBinding,
-      workspaceDir: resolvedBinding.workspaceDir,
-      prompt: event.content,
-      reason: "inbound",
-    });
-    return { handled: true };
   }
 
   async handleTelegramInteractive(ctx: PluginInteractiveTelegramHandlerContext): Promise<void> {
@@ -2827,8 +2834,10 @@ export class CodexPluginController {
       });
     }
     if (isDiscordChannel(conversation.channel)) {
+      const channelId =
+        denormalizeDiscordConversationId(conversation.conversationId) ?? conversation.conversationId;
       return await this.api.runtime.channel.discord.typing.start({
-        channelId: conversation.conversationId,
+        channelId,
         accountId: conversation.accountId,
       });
     }
