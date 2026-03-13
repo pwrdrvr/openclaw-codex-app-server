@@ -1,12 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   formatBoundThreadSummary,
+  formatCodexPlanInlineText,
+  formatCodexPlanSteps,
+  formatCodexReviewFindingMessage,
   formatCodexStatusText,
   formatMcpServers,
   formatModels,
   formatSkills,
   formatThreadPickerIntro,
   formatThreadButtonLabel,
+  parseCodexReviewOutput,
 } from "./format.js";
 
 describe("formatThreadButtonLabel", () => {
@@ -376,5 +380,42 @@ describe("formatModels", () => {
     expect(text).toContain("Current model: gpt-5.3-codex");
     expect(text).toContain("Available models:");
     expect(text).toContain("- gpt-5.2-codex");
+  });
+});
+
+describe("parseCodexReviewOutput", () => {
+  it("parses summary text and structured findings from the old review format", () => {
+    const parsed = parseCodexReviewOutput([
+      "Looks solid overall.",
+      "",
+      "[P1] Prefer Stylize helpers Location: /tmp/file.rs:10-20",
+      "Use .dim()/.bold() chaining instead of manual Style.",
+      "",
+      "[P2] Keep helper names consistent Location: /tmp/file.rs:30-35",
+      "Rename the helper to match the surrounding naming pattern.",
+    ].join("\n"));
+
+    expect(parsed.summary).toBe("Looks solid overall.");
+    expect(parsed.findings).toHaveLength(2);
+    expect(formatCodexReviewFindingMessage({ finding: parsed.findings[0]!, index: 0 })).toContain(
+      "P1\nPrefer Stylize helpers\nLocation: /tmp/file.rs:10-20",
+    );
+  });
+});
+
+describe("formatCodexPlanInlineText", () => {
+  it("renders explanation, steps, and markdown for plan output", () => {
+    const plan = {
+      explanation: "Break the work into safe increments.",
+      steps: [
+        { step: "Capture the current behavior", status: "completed" as const },
+        { step: "Patch Telegram delivery", status: "inProgress" as const },
+      ],
+      markdown: "# Plan\n\n- Patch the command",
+    };
+
+    expect(formatCodexPlanSteps(plan.steps)).toContain("- [x] Capture the current behavior");
+    expect(formatCodexPlanInlineText(plan)).toContain("Break the work into safe increments.");
+    expect(formatCodexPlanInlineText(plan)).toContain("# Plan");
   });
 });

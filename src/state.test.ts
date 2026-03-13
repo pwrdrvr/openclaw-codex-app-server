@@ -64,6 +64,15 @@ describe("state store", () => {
       },
       model: "gpt-5.2-codex",
     });
+    const replyCallback = await store.putCallback({
+      kind: "reply-text",
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      text: "Okay. Staying in plan mode.",
+    });
     const reloaded = await makeStore(dir);
 
     expect(reloaded.listBindings()).toHaveLength(1);
@@ -71,6 +80,7 @@ describe("state store", () => {
     expect(reloaded.getCallback(callback.token)?.kind).toBe("resume-thread");
     expect(reloaded.getCallback(promptCallback.token)?.kind).toBe("run-prompt");
     expect(reloaded.getCallback(modelCallback.token)?.kind).toBe("set-model");
+    expect(reloaded.getCallback(replyCallback.token)?.kind).toBe("reply-text");
   });
 
   it("removes pending requests and related callbacks", async () => {

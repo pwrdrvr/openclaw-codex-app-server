@@ -5,6 +5,7 @@ import type { PluginLogger } from "openclaw/plugin-sdk";
 import { createPendingInputState, parseCodexUserInput } from "./pending-input.js";
 import type {
   AccountSummary,
+  CollaborationMode,
   CompactProgress,
   CompactResult,
   ContextUsageSnapshot,
@@ -823,6 +824,7 @@ function buildTurnStartPayloads(params: {
   threadId: string;
   prompt: string;
   model?: string;
+  collaborationMode?: CollaborationMode;
 }): unknown[] {
   return buildTurnInput(params.prompt).flatMap((input) => {
     const camel: Record<string, unknown> = {
@@ -836,6 +838,42 @@ function buildTurnStartPayloads(params: {
     if (params.model?.trim()) {
       camel.model = params.model.trim();
       snake.model = params.model.trim();
+    }
+    if (params.collaborationMode) {
+      const collaborationMode = {
+        mode: params.collaborationMode.mode,
+        settings: {
+          ...(params.collaborationMode.settings?.model
+            ? { model: params.collaborationMode.settings.model }
+            : {}),
+          ...(params.collaborationMode.settings?.reasoningEffort
+            ? { reasoningEffort: params.collaborationMode.settings.reasoningEffort }
+            : {}),
+          ...(Object.hasOwn(params.collaborationMode.settings ?? {}, "developerInstructions")
+            ? {
+                developerInstructions:
+                  params.collaborationMode.settings?.developerInstructions ?? null,
+              }
+            : {}),
+        },
+      };
+      camel.collaborationMode = collaborationMode;
+      snake.collaboration_mode = {
+        mode: collaborationMode.mode,
+        settings: {
+          ...(typeof collaborationMode.settings.model === "string"
+            ? { model: collaborationMode.settings.model }
+            : {}),
+          ...(typeof collaborationMode.settings.reasoningEffort === "string"
+            ? { reasoning_effort: collaborationMode.settings.reasoningEffort }
+            : {}),
+          ...(Object.hasOwn(collaborationMode.settings, "developerInstructions")
+            ? {
+                developer_instructions: collaborationMode.settings.developerInstructions ?? null,
+              }
+            : {}),
+        },
+      };
     }
     return [camel, snake];
   });
@@ -2266,6 +2304,7 @@ export class CodexAppServerClient {
     runId: string;
     existingThreadId?: string;
     model?: string;
+    collaborationMode?: CollaborationMode;
     onPendingInput?: (state: PendingInputState | null) => Promise<void> | void;
     onInterrupted?: () => Promise<void> | void;
   }): ActiveCodexRun {
@@ -2484,6 +2523,7 @@ export class CodexAppServerClient {
             threadId,
             prompt: params.prompt,
             model: params.model,
+            collaborationMode: params.collaborationMode,
           }),
           timeoutMs: this.settings.requestTimeoutMs,
         });

@@ -699,3 +699,106 @@ export function formatTurnCompletion(result: TurnResult): string {
 export function formatReviewCompletion(result: ReviewResult): string {
   return result.reviewText.trim() || (result.aborted ? "Codex review stopped." : "Codex review completed.");
 }
+
+export type ParsedReviewFinding = {
+  priorityLabel?: string;
+  title: string;
+  location?: string;
+  body?: string;
+};
+
+export function parseCodexReviewOutput(text: string): {
+  summary?: string;
+  findings: ParsedReviewFinding[];
+} {
+  const lines = text.trim().split(/\r?\n/);
+  const findings: ParsedReviewFinding[] = [];
+  const summaryLines: string[] = [];
+  const findingRe =
+    /^-?\s*(?:\[(?<priority>P\d)\]\s*)?(?<title>.+?)(?:\s+Location:\s*(?<location>.+))?$/i;
+  let current: ParsedReviewFinding | null = null;
+  let inFindings = false;
+  for (const line of lines) {
+    const trimmed = line.trimEnd();
+    if (!trimmed) {
+      if (!inFindings && summaryLines.at(-1) !== "") {
+        summaryLines.push("");
+      }
+      continue;
+    }
+    const match = trimmed.match(findingRe);
+    const looksLikeFinding =
+      (trimmed.startsWith("[P") || trimmed.startsWith("- [P")) &&
+      Boolean(match?.groups?.title?.trim());
+    if (looksLikeFinding) {
+      inFindings = true;
+      if (current) {
+        findings.push(current);
+      }
+      current = {
+        priorityLabel: match?.groups?.priority?.toUpperCase(),
+        title: match?.groups?.title?.trim() ?? trimmed,
+        location: match?.groups?.location?.trim() || undefined,
+      };
+      continue;
+    }
+    if (!inFindings) {
+      summaryLines.push(trimmed);
+      continue;
+    }
+    if (!current) {
+      continue;
+    }
+    current.body = current.body ? `${current.body}\n${trimmed}` : trimmed;
+  }
+  if (current) {
+    findings.push(current);
+  }
+  const summary = summaryLines.join("\n").trim() || undefined;
+  return { summary, findings };
+}
+
+export function formatCodexReviewFindingMessage(params: {
+  finding: ParsedReviewFinding;
+  index: number;
+}): string {
+  const heading = params.finding.priorityLabel ?? `Finding ${params.index + 1}`;
+  const lines = [heading, params.finding.title];
+  if (params.finding.location) {
+    lines.push(`Location: ${params.finding.location}`);
+  }
+  if (params.finding.body?.trim()) {
+    lines.push("", params.finding.body.trim());
+  }
+  return lines.join("\n");
+}
+
+export function formatCodexPlanSteps(
+  steps: TurnResult["planArtifact"] extends infer T ? (T extends { steps: infer S } ? S : never) : never,
+): string | undefined {
+  if (!Array.isArray(steps) || steps.length === 0) {
+    return undefined;
+  }
+  const lines = ["Plan steps:"];
+  for (const step of steps) {
+    const marker =
+      step.status === "completed" ? "[x]" : step.status === "inProgress" ? "[>]" : "[ ]";
+    lines.push(`- ${marker} ${step.step}`);
+  }
+  return lines.join("\n");
+}
+
+export function formatCodexPlanInlineText(plan: NonNullable<TurnResult["planArtifact"]>): string {
+  const lines: string[] = ["Plan"];
+  if (plan.explanation?.trim()) {
+    lines.push("", plan.explanation.trim());
+  }
+  const stepsText = formatCodexPlanSteps(plan.steps);
+  if (stepsText) {
+    lines.push("", stepsText);
+  }
+  if (plan.markdown.trim()) {
+    lines.push("", plan.markdown.trim());
+  }
+  return lines.join("\n").trim();
+}

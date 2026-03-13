@@ -17,10 +17,14 @@ import {
   formatAccountSummary,
   formatBinding,
   formatBoundThreadSummary,
+  formatCodexPlanInlineText,
+  formatCodexPlanSteps,
+  formatCodexReviewFindingMessage,
   formatCodexStatusText,
   formatExperimentalFeatures,
   formatMcpServers,
   formatModels,
+  parseCodexReviewOutput,
   formatProjectPickerIntro,
   formatReviewCompletion,
   formatSkills,
@@ -214,6 +218,55 @@ function formatFastModeValue(value: string | undefined): string {
   return normalized;
 }
 
+const PLAN_PROGRESS_DELAY_MS = 12_000;
+const REVIEW_PROGRESS_DELAY_MS = 12_000;
+const COMPACT_PROGRESS_DELAY_MS = 12_000;
+const COMPACT_PROGRESS_INTERVAL_MS = 15_000;
+const PLAN_INLINE_TEXT_LIMIT = 2600;
+
+function isTransportClosedMessage(error: unknown): boolean {
+  const text = error instanceof Error ? error.message : String(error);
+  const normalized = text.trim().toLowerCase();
+  return (
+    normalized.includes("stdio not connected") ||
+    normalized.includes("websocket not connected") ||
+    normalized.includes("stdio closed") ||
+    normalized.includes("websocket closed") ||
+    normalized.includes("socket closed") ||
+    normalized.includes("broken pipe")
+  );
+}
+
+function formatFailureText(kind: "plan" | "review", error: unknown): string {
+  if (isTransportClosedMessage(error)) {
+    return `Codex ${kind} failed because the App Server connection closed. Please retry the command or rejoin the thread.`;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return `Codex ${kind} failed: ${message}`;
+}
+
+function formatInterruptedText(kind: "plan" | "review"): string {
+  return `Codex ${kind} was interrupted before it finished.`;
+}
+
+function formatContextUsageText(usage: { totalTokens?: number; contextWindow?: number }): string | undefined {
+  if (typeof usage.totalTokens !== "number") {
+    return undefined;
+  }
+  const total = usage.totalTokens >= 1000 ? `${(usage.totalTokens / 1000).toFixed(usage.totalTokens >= 10000 ? 0 : 1)}k` : String(usage.totalTokens);
+  const context =
+    typeof usage.contextWindow === "number"
+      ? usage.contextWindow >= 1000
+        ? `${(usage.contextWindow / 1000).toFixed(usage.contextWindow >= 10000 ? 0 : 1)}k`
+        : String(usage.contextWindow)
+      : "?";
+  const percent =
+    typeof usage.contextWindow === "number" && usage.contextWindow > 0
+      ? Math.round((usage.totalTokens / usage.contextWindow) * 100)
+      : undefined;
+  return `${total} / ${context} tokens used${typeof percent === "number" ? ` (${percent}% full)` : ""}`;
+}
+
 export class CodexPluginController {
   private readonly settings;
   private readonly client;
@@ -362,6 +415,8 @@ export class CodexPluginController {
         return await this.handleStatusCommand(binding);
       case "codex_stop":
         return await this.handleStopCommand(conversation);
+      case "codex_steer":
+        return await this.handleSteerCommand(conversation, args);
       case "codex_plan":
         return await this.handlePlanCommand(conversation, binding, args);
       case "codex_review":
@@ -478,10 +533,29 @@ export class CodexPluginController {
     }
     const active = this.activeRuns.get(buildConversationKey(conversation));
     if (!active) {
-      return { text: "No active Codex run for this conversation." };
+      return { text: "No active Codex run to stop." };
     }
     await active.handle.interrupt();
-    return { text: "Stopping Codex." };
+    return { text: "Stopping Codex now." };
+  }
+
+  private async handleSteerCommand(
+    conversation: ConversationTarget | null,
+    args: string,
+  ): Promise<ReplyPayload> {
+    if (!conversation) {
+      return { text: "This command needs a Telegram or Discord conversation." };
+    }
+    const prompt = args.trim();
+    if (!prompt) {
+      return { text: "Usage: /codex_steer <message>" };
+    }
+    const active = this.activeRuns.get(buildConversationKey(conversation));
+    if (!active) {
+      return { text: "No active Codex run to steer." };
+    }
+    const handled = await active.handle.queueMessage(prompt);
+    return { text: handled ? "Sent steer message to Codex." : "Codex is not accepting steer input right now." };
   }
 
   private async handlePlanCommand(
@@ -501,14 +575,13 @@ export class CodexPluginController {
       configuredWorkspaceDir: this.settings.defaultWorkspaceDir,
       serviceWorkspaceDir: this.serviceWorkspaceDir,
     });
-    await this.startTurn({
+    await this.startPlan({
       conversation,
       binding,
       workspaceDir,
-      prompt: `Create an action plan for this request and do not execute changes yet:\n\n${prompt}`,
-      reason: "plan",
+      prompt,
     });
-    return { text: "Codex is drafting a plan." };
+    return { text: "" };
   }
 
   private async handleReviewCommand(
@@ -528,7 +601,7 @@ export class CodexPluginController {
         ? { type: "custom", instructions: args.trim() }
         : { type: "uncommittedChanges" },
     });
-    return { text: "Codex review started." };
+    return { text: "" };
   }
 
   private async handleCompactCommand(
@@ -539,17 +612,65 @@ export class CodexPluginController {
       return { text: "Bind this conversation to a Codex thread before compacting it." };
     }
     const typing = await this.startTypingLease(conversation);
+    let startingUsage = binding.contextUsage;
+    let latestUsage = startingUsage;
+    let lastEmittedUsageText = binding.contextUsage ? formatContextUsageText(binding.contextUsage) : undefined;
     try {
-      await this.sendText(conversation, "Compacting the Codex thread...");
+      const startLines = ["Starting Codex thread compaction."];
+      const initialUsageText = startingUsage ? formatContextUsageText(startingUsage) : undefined;
+      if (initialUsageText) {
+        startLines.push(`Starting context usage: ${initialUsageText}`);
+      }
+      startLines.push("I’ll report progress here as compaction events arrive.");
+      await this.sendText(conversation, startLines.join("\n"));
+      let keepaliveInterval: NodeJS.Timeout | undefined;
+      const progressTimer = setTimeout(() => {
+        void (async () => {
+          const usageText =
+            latestUsage ? formatContextUsageText(latestUsage) : undefined;
+          if (usageText && usageText !== lastEmittedUsageText) {
+            lastEmittedUsageText = usageText;
+          }
+          await this.sendText(
+            conversation,
+            usageText
+              ? `Codex is still compacting.\nLatest context usage: ${usageText}`
+              : "Codex is still compacting.",
+          );
+        })();
+        keepaliveInterval = setInterval(() => {
+          void this.sendText(conversation, "Codex is still compacting.");
+        }, COMPACT_PROGRESS_INTERVAL_MS);
+      }, COMPACT_PROGRESS_DELAY_MS);
       const result = await this.client.compactThread({
         sessionKey: binding.sessionKey,
         threadId: binding.threadId,
+        onProgress: async (progress) => {
+          if (progress.usage) {
+            latestUsage = progress.usage;
+            startingUsage ??= progress.usage;
+          }
+          if (progress.phase === "started") {
+            await this.sendText(conversation, "Codex compaction started.");
+          }
+        },
       });
+      clearTimeout(progressTimer);
+      if (keepaliveInterval) {
+        clearInterval(keepaliveInterval);
+      }
       await this.sendText(
         conversation,
-        result.usage?.remainingPercent != null
-          ? `Codex compacted the thread. Context remaining: ${result.usage.remainingPercent}%.`
-          : "Codex compacted the thread.",
+        [
+          "Codex compaction completed.",
+          startingUsage ? `Starting context usage: ${formatContextUsageText(startingUsage)}` : "",
+          result.usage ? `Final context usage: ${formatContextUsageText(result.usage)}` : "",
+          result.usage?.remainingPercent != null
+            ? `Context remaining: ${result.usage.remainingPercent}%.`
+            : "",
+        ]
+          .filter(Boolean)
+          .join("\n"),
       );
       if (result.usage) {
         await this.store.upsertBinding({
@@ -558,7 +679,7 @@ export class CodexPluginController {
           updatedAt: Date.now(),
         });
       }
-      return { text: "Codex compaction started and the follow-up message was sent." };
+      return { text: "" };
     } finally {
       typing?.stop();
     }
@@ -855,6 +976,147 @@ export class CodexPluginController {
       });
   }
 
+  private async startPlan(params: {
+    conversation: ConversationTarget;
+    binding: StoredBinding | null;
+    workspaceDir: string;
+    prompt: string;
+  }): Promise<void> {
+    const key = buildConversationKey(params.conversation);
+    const existing = this.activeRuns.get(key);
+    if (existing) {
+      await existing.handle.interrupt();
+    }
+    await this.sendText(
+      params.conversation,
+      "Starting Codex plan mode. I’ll relay the questions and final plan as they arrive.",
+    );
+    const typing = await this.startTypingLease(params.conversation);
+    let keepaliveSent = false;
+    const progressTimer = setTimeout(() => {
+      void (async () => {
+        if (keepaliveSent) {
+          return;
+        }
+        keepaliveSent = true;
+        await this.sendText(params.conversation, "Codex is still planning...");
+      })();
+    }, PLAN_PROGRESS_DELAY_MS);
+    const run = this.client.startTurn({
+      sessionKey: params.binding?.sessionKey,
+      workspaceDir: params.workspaceDir,
+      prompt: params.prompt,
+      runId: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      existingThreadId: params.binding?.threadId,
+      model: this.settings.defaultModel,
+      collaborationMode: {
+        mode: "plan",
+        settings: {
+          model: this.settings.defaultModel,
+          developerInstructions: null,
+        },
+      },
+      onPendingInput: async (state) => {
+        await this.handlePendingInputState(params.conversation, params.workspaceDir, state, run);
+      },
+      onInterrupted: async () => {
+        await this.sendText(params.conversation, formatInterruptedText("plan"));
+      },
+    });
+    this.activeRuns.set(key, {
+      conversation: params.conversation,
+      workspaceDir: params.workspaceDir,
+      handle: run,
+    });
+    void (run.result as Promise<import("./types.js").TurnResult>)
+      .then(async (result) => {
+        const threadId = result.threadId || run.getThreadId();
+        if (threadId) {
+          const state = await this.client
+            .readThreadState({
+              sessionKey: params.binding?.sessionKey,
+              threadId,
+            })
+            .catch(() => null);
+          const nextBinding = await this.bindConversation(params.conversation, {
+            threadId,
+            workspaceDir: state?.cwd || params.workspaceDir,
+            threadTitle: state?.threadName,
+          });
+          await this.store.upsertBinding({
+            ...nextBinding,
+            contextUsage: result.usage ?? nextBinding.contextUsage,
+            updatedAt: Date.now(),
+          });
+        }
+        if (result.aborted) {
+          await this.sendText(params.conversation, formatInterruptedText("plan"));
+          return;
+        }
+        if (result.planArtifact) {
+          const planText = formatCodexPlanInlineText(result.planArtifact);
+          const implement = await this.store.putCallback({
+            kind: "run-prompt",
+            conversation: params.conversation,
+            workspaceDir: params.workspaceDir,
+            prompt: `Please implement this plan:\n\n${result.planArtifact.markdown.trim()}`,
+          });
+          const stay = await this.store.putCallback({
+            kind: "reply-text",
+            conversation: params.conversation,
+            text: "Okay. Staying in plan mode.",
+          });
+          const planReply =
+            planText.length <= PLAN_INLINE_TEXT_LIMIT
+              ? planText
+              : [
+                  "Plan ready.",
+                  result.planArtifact.explanation?.trim() ?? "",
+                  formatCodexPlanSteps(result.planArtifact.steps) ?? "",
+                  "",
+                  "Plan preview:",
+                  "",
+                  `${result.planArtifact.markdown.trim().slice(0, 1400).trimEnd()}\n\n[Preview truncated]`,
+                ]
+                  .filter(Boolean)
+                  .join("\n");
+          await this.sendText(params.conversation, planReply);
+          await this.sendText(params.conversation, "Implement this plan?", {
+            buttons: [
+              [
+                {
+                  text: "Yes, implement this plan",
+                  callback_data: `${INTERACTIVE_NAMESPACE}:${implement.token}`,
+                },
+              ],
+              [
+                {
+                  text: "No, stay in Plan mode",
+                  callback_data: `${INTERACTIVE_NAMESPACE}:${stay.token}`,
+                },
+              ],
+            ],
+          });
+          return;
+        }
+        if (result.text?.trim()) {
+          await this.sendText(params.conversation, result.text.trim());
+        }
+      })
+      .catch(async (error) => {
+        await this.sendText(params.conversation, formatFailureText("plan", error));
+      })
+      .finally(async () => {
+        clearTimeout(progressTimer);
+        typing?.stop();
+        this.activeRuns.delete(key);
+        const pending = this.store.getPendingRequestByConversation(params.conversation);
+        if (pending) {
+          await this.store.removePendingRequest(pending.requestId);
+        }
+      });
+  }
+
   private async startReview(params: {
     conversation: ConversationTarget;
     binding: StoredBinding;
@@ -866,7 +1128,23 @@ export class CodexPluginController {
     if (existing) {
       await existing.handle.interrupt();
     }
+    await this.sendText(
+      params.conversation,
+      params.target.type === "custom"
+        ? "Starting Codex review with your custom focus. I’ll send the findings when the review finishes."
+        : "Starting Codex review of the current changes. I’ll send the findings when the review finishes.",
+    );
     const typing = await this.startTypingLease(params.conversation);
+    let keepaliveSent = false;
+    const progressTimer = setTimeout(() => {
+      void (async () => {
+        if (keepaliveSent) {
+          return;
+        }
+        keepaliveSent = true;
+        await this.sendText(params.conversation, "Codex is still reviewing...");
+      })();
+    }, REVIEW_PROGRESS_DELAY_MS);
     const run = this.client.startReview({
       sessionKey: params.binding.sessionKey,
       workspaceDir: params.workspaceDir,
@@ -887,13 +1165,77 @@ export class CodexPluginController {
     });
     void (run.result as Promise<import("./types.js").ReviewResult>)
       .then(async (result) => {
-        await this.sendText(params.conversation, formatReviewCompletion(result));
+        if (result.aborted) {
+          await this.sendText(params.conversation, formatInterruptedText("review"));
+          return;
+        }
+        const parsed = parseCodexReviewOutput(result.reviewText);
+        if (parsed.summary) {
+          await this.sendText(params.conversation, parsed.summary);
+        }
+        if (parsed.findings.length === 0) {
+          await this.sendText(params.conversation, "No review findings.");
+          return;
+        }
+        for (const [index, finding] of parsed.findings.entries()) {
+          await this.sendText(
+            params.conversation,
+            formatCodexReviewFindingMessage({
+              finding,
+              index,
+            }),
+          );
+        }
+        const buttons: PluginInteractiveButtons = [];
+        for (const [index, finding] of parsed.findings.slice(0, 6).entries()) {
+          const callback = await this.store.putCallback({
+            kind: "run-prompt",
+            conversation: params.conversation,
+            workspaceDir: params.workspaceDir,
+            prompt: [
+              "Please implement this Codex review finding:",
+              "",
+              formatCodexReviewFindingMessage({ finding, index }),
+            ].join("\n"),
+          });
+          buttons.push([
+            {
+              text: finding.priorityLabel ? `Implement ${finding.priorityLabel}` : `Implement #${index + 1}`,
+              callback_data: `${INTERACTIVE_NAMESPACE}:${callback.token}`,
+            },
+          ]);
+        }
+        const allFixes = await this.store.putCallback({
+          kind: "run-prompt",
+          conversation: params.conversation,
+          workspaceDir: params.workspaceDir,
+          prompt: [
+            "Please implement fixes for all of these Codex review findings:",
+            "",
+            ...parsed.findings.map((finding, index) =>
+              `${index + 1}. ${finding.priorityLabel ? `[${finding.priorityLabel}] ` : ""}${finding.title}${
+                finding.location ? `\n   ${finding.location}` : ""
+              }${finding.body?.trim() ? `\n   ${finding.body.trim().replace(/\n/g, "\n   ")}` : ""}`,
+            ),
+          ].join("\n"),
+        });
+        buttons.push([
+          {
+            text: "Implement All Fixes",
+            callback_data: `${INTERACTIVE_NAMESPACE}:${allFixes.token}`,
+          },
+        ]);
+        await this.sendText(
+          params.conversation,
+          "Choose a review finding to implement, or implement them all.",
+          { buttons },
+        );
       })
       .catch(async (error) => {
-        const message = error instanceof Error ? error.message : String(error);
-        await this.sendText(params.conversation, `Codex review failed: ${message}`);
+        await this.sendText(params.conversation, formatFailureText("review", error));
       })
       .finally(async () => {
+        clearTimeout(progressTimer);
         typing?.stop();
         this.activeRuns.delete(key);
         const pending = this.store.getPendingRequestByConversation(params.conversation);
@@ -1366,6 +1708,12 @@ export class CodexPluginController {
         workspaceDir: binding.workspaceDir,
       });
       await responders.reply(`Codex model set to ${state.model || callback.model}.`);
+      return;
+    }
+    if (callback.kind === "reply-text") {
+      await responders.clear().catch(() => undefined);
+      await this.store.removeCallback(callback.token);
+      await responders.reply(callback.text);
       return;
     }
     const binding = this.store.getBinding(callback.conversation);

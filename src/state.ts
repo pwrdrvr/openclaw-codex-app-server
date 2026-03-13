@@ -48,6 +48,13 @@ type PutCallbackInput =
       model: string;
       token?: string;
       ttlMs?: number;
+    }
+  | {
+      kind: "reply-text";
+      conversation: ConversationTarget;
+      text: string;
+      token?: string;
+      ttlMs?: number;
     };
 
 function toConversationKey(target: ConversationTarget): string {
@@ -221,13 +228,22 @@ export class PluginStateStore {
                   createdAt: now,
                   expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
                 }
-              : {
+              : callback.kind === "set-model"
+                ? {
                   kind: "set-model",
                   conversation: callback.conversation,
                   model: callback.model,
                   token: callback.token ?? this.createCallbackToken(),
                   createdAt: now,
                   expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
+                  }
+                : {
+                    kind: "reply-text",
+                    conversation: callback.conversation,
+                    text: callback.text,
+                    token: callback.token ?? this.createCallbackToken(),
+                    createdAt: now,
+                    expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
                 };
     this.snapshot.callbacks = this.snapshot.callbacks.filter(
       (current) => current.token !== entry.token,

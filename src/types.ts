@@ -177,6 +177,15 @@ export type ReviewTarget =
   | { type: "uncommittedChanges" }
   | { type: "custom"; instructions: string };
 
+export type CollaborationMode = {
+  mode: string;
+  settings?: {
+    model?: string;
+    reasoningEffort?: string;
+    developerInstructions?: string | null;
+  };
+};
+
 export type ReviewResult = {
   reviewText: string;
   reviewThreadId?: string;
@@ -267,6 +276,14 @@ export type CallbackAction =
       kind: "set-model";
       conversation: ConversationRef;
       model: string;
+      createdAt: number;
+      expiresAt: number;
+    }
+  | {
+      token: string;
+      kind: "reply-text";
+      conversation: ConversationRef;
+      text: string;
       createdAt: number;
       expiresAt: number;
     };
