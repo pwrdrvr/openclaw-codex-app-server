@@ -85,6 +85,25 @@ type PickerResponders = {
   clear: () => Promise<void>;
   reply: (text: string) => Promise<void>;
   editPicker: (picker: PickerRender) => Promise<void>;
+  requestConversationBinding?: (
+    params?: { summary?: string },
+  ) => Promise<
+    | { status: "bound" }
+    | { status: "pending"; reply: ReplyPayload }
+    | { status: "error"; message: string }
+  >;
+};
+
+type ScopedBindingApi = {
+  requestConversationBinding?: (
+    params?: { summary?: string },
+  ) => Promise<
+    | { status: "bound" }
+    | { status: "pending"; reply: ReplyPayload }
+    | { status: "error"; message: string }
+  >;
+  detachConversationBinding?: () => Promise<{ removed: boolean }>;
+  getCurrentConversationBinding?: () => Promise<unknown>;
 };
 
 type FollowUpSummary = {
@@ -98,15 +117,14 @@ type PlanDelivery = {
   attachmentFallbackText?: string;
 };
 
-type RuntimeSessionBindingRecord = {
-  targetSessionKey?: string;
-  metadata?: Record<string, unknown>;
-};
-
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
+}
+
+function asScopedBindingApi(value: object): ScopedBindingApi {
+  return value as ScopedBindingApi;
 }
 
 function isTelegramChannel(channel: string): boolean {
@@ -185,27 +203,6 @@ function denormalizeDiscordConversationId(raw: string | undefined): string | und
     return trimmed.slice("discord:".length);
   }
   return trimmed;
-}
-
-function toRuntimeBindingConversationRef(
-  conversation: ConversationTarget | ConversationRef,
-): ConversationRef {
-  if (conversation.channel !== "discord") {
-    return {
-      channel: conversation.channel,
-      accountId: conversation.accountId,
-      conversationId: conversation.conversationId,
-      parentConversationId: conversation.parentConversationId,
-    };
-  }
-  return {
-    channel: conversation.channel,
-    accountId: conversation.accountId,
-    conversationId: denormalizeDiscordConversationId(conversation.conversationId) ?? conversation.conversationId,
-    parentConversationId:
-      denormalizeDiscordConversationId(conversation.parentConversationId) ??
-      conversation.parentConversationId,
-  };
 }
 
 function normalizeDiscordInteractiveConversationId(params: {
@@ -465,7 +462,6 @@ export class CodexPluginController {
       return;
     }
     await this.store.load();
-    await this.reconcileBindings();
     this.started = true;
   }
 
@@ -519,10 +515,9 @@ export class CodexPluginController {
         this.activeRuns.delete(activeKey);
         await active.handle.interrupt().catch(() => undefined);
       }
-      const binding = this.store.getBinding(conversation);
-      const resolvedBinding = binding ?? (await this.resolveRuntimeBackedBinding(conversation));
+      const resolvedBinding = this.store.getBinding(conversation);
       this.api.logger.debug?.(
-        `codex inbound claim channel=${conversation.channel} account=${conversation.accountId} conversation=${conversation.conversationId} parent=${conversation.parentConversationId ?? "<none>"} local=${binding ? "yes" : "no"} runtime=${resolvedBinding && !binding ? "yes" : "no"}`,
+        `codex inbound claim channel=${conversation.channel} account=${conversation.accountId} conversation=${conversation.conversationId} parent=${conversation.parentConversationId ?? "<none>"} local=${resolvedBinding ? "yes" : "no"}`,
       );
       if (!resolvedBinding) {
         return { handled: false };
@@ -545,6 +540,7 @@ export class CodexPluginController {
 
   async handleTelegramInteractive(ctx: PluginInteractiveTelegramHandlerContext): Promise<void> {
     await this.start();
+    const bindingApi = asScopedBindingApi(ctx);
     const callback = this.store.getCallback(ctx.callback.payload);
     if (!callback) {
       await ctx.respond.reply({ text: "That Codex action expired. Please retry the command." });
@@ -570,11 +566,30 @@ export class CodexPluginController {
           buttons: picker.buttons,
         });
       },
+      requestConversationBinding: async (params) => {
+        const requestConversationBinding = bindingApi.requestConversationBinding;
+        if (!requestConversationBinding) {
+          return { status: "error", message: "Conversation binding is unavailable." } as const;
+        }
+        const result = await requestConversationBinding(params);
+        if (result.status === "pending") {
+          const buttons = asRecord(result.reply.channelData?.telegram)?.buttons as
+            | PluginInteractiveButtons
+            | undefined;
+          await ctx.respond.reply({
+            text: result.reply.text ?? "Bind approval requested.",
+            buttons,
+          });
+          return { status: "pending", reply: result.reply } as const;
+        }
+        return result;
+      },
     });
   }
 
   async handleDiscordInteractive(ctx: PluginInteractiveDiscordHandlerContext): Promise<void> {
     await this.start();
+    const bindingApi = asScopedBindingApi(ctx);
     const callback = this.store.getCallback(ctx.interaction.payload);
     if (!callback) {
       await ctx.respond.reply({ text: "That Codex action expired. Please retry the command.", ephemeral: true });
@@ -634,13 +649,45 @@ export class CodexPluginController {
           picker,
         );
       },
+      requestConversationBinding: async (params) => {
+        const requestConversationBinding = bindingApi.requestConversationBinding;
+        if (!requestConversationBinding) {
+          return { status: "error", message: "Conversation binding is unavailable." } as const;
+        }
+        const result = await requestConversationBinding(params);
+        if (result.status === "pending") {
+          const telegramData = asRecord(result.reply.channelData?.telegram);
+          const buttons = Array.isArray(telegramData?.buttons)
+            ? (telegramData.buttons as PluginInteractiveButtons)
+            : undefined;
+          await this.sendDiscordPicker(
+            {
+              channel: "discord",
+              accountId: ctx.accountId,
+              conversationId,
+              parentConversationId: ctx.parentConversationId,
+            },
+            {
+              text: result.reply.text ?? "Bind approval requested.",
+              buttons,
+            },
+          );
+          return { status: "pending", reply: result.reply } as const;
+        }
+        return result;
+      },
     });
   }
 
   async handleCommand(commandName: string, ctx: PluginCommandContext): Promise<ReplyPayload> {
     await this.start();
+    const bindingApi = asScopedBindingApi(ctx);
     const conversation = toConversationTargetFromCommand(ctx);
-    const binding = conversation ? this.store.getBinding(conversation) : null;
+    const currentBinding =
+      conversation && bindingApi.getCurrentConversationBinding
+        ? await bindingApi.getCurrentConversationBinding()
+        : null;
+    const binding = conversation && currentBinding ? this.store.getBinding(conversation) : null;
     const args = ctx.args?.trim() ?? "";
     if (isDiscordChannel(ctx.channel)) {
       this.api.logger.debug(
@@ -650,15 +697,16 @@ export class CodexPluginController {
 
     switch (commandName) {
       case "codex_resume":
-        return await this.handleJoinCommand(conversation, binding, args, ctx.channel);
+        return await this.handleJoinCommand(conversation, binding, args, ctx.channel, ctx);
       case "codex_detach":
         if (!conversation) {
           return { text: "This command needs a Telegram or Discord conversation." };
         }
+        await bindingApi.detachConversationBinding?.();
         await this.unbindConversation(conversation);
         return { text: "Detached this conversation from Codex." };
       case "codex_status":
-        return await this.handleStatusCommand(binding);
+        return await this.handleStatusCommand(binding, Boolean(currentBinding));
       case "codex_stop":
         return await this.handleStopCommand(conversation);
       case "codex_steer":
@@ -722,7 +770,9 @@ export class CodexPluginController {
     binding: StoredBinding | null,
     args: string,
     channel: string,
+    ctx: PluginCommandContext,
   ): Promise<ReplyPayload> {
+    const bindingApi = asScopedBindingApi(ctx);
     if (!conversation) {
       return { text: "This command needs a Telegram or Discord conversation." };
     }
@@ -762,7 +812,7 @@ export class CodexPluginController {
       }
       return buildReplyWithButtons(picker.text, picker.buttons);
     }
-    await this.bindConversation(conversation, {
+    const bindResult = await this.requestConversationBinding(conversation, {
       threadId: selection.thread.threadId,
       workspaceDir:
         selection.thread.projectKey ||
@@ -773,7 +823,13 @@ export class CodexPluginController {
           serviceWorkspaceDir: this.serviceWorkspaceDir,
       }),
       threadTitle: selection.thread.title,
-    });
+    }, bindingApi.requestConversationBinding);
+    if (bindResult.status === "pending") {
+      return bindResult.reply;
+    }
+    if (bindResult.status === "error") {
+      return { text: bindResult.message };
+    }
     if (parsed.syncTopic) {
       const syncedName = buildResumeTopicName({
         title: selection.thread.title,
@@ -789,9 +845,12 @@ export class CodexPluginController {
     return summary.initialReply;
   }
 
-  private async handleStatusCommand(binding: StoredBinding | null): Promise<ReplyPayload> {
+  private async handleStatusCommand(
+    binding: StoredBinding | null,
+    bindingActive: boolean,
+  ): Promise<ReplyPayload> {
     return {
-      text: await this.buildStatusText(binding),
+      text: await this.buildStatusText(binding, bindingActive),
     };
   }
 
@@ -2119,11 +2178,23 @@ export class CodexPluginController {
           threadId: callback.threadId,
         })
         .catch(() => undefined);
-      await this.bindConversation(callback.conversation, {
-        threadId: callback.threadId,
-        workspaceDir: threadState?.cwd?.trim() || callback.workspaceDir,
-        threadTitle: threadState?.threadName,
-      });
+      const bindResult = await this.requestConversationBinding(
+        callback.conversation,
+        {
+          threadId: callback.threadId,
+          workspaceDir: threadState?.cwd?.trim() || callback.workspaceDir,
+          threadTitle: threadState?.threadName,
+        },
+        responders.requestConversationBinding,
+      );
+      if (bindResult.status === "pending") {
+        await responders.reply(bindResult.reply.text ?? "Bind approval requested.");
+        return;
+      }
+      if (bindResult.status === "error") {
+        await responders.reply(bindResult.message);
+        return;
+      }
       await this.store.removeCallback(callback.token);
       if (callback.syncTopic) {
         const syncedName = buildResumeTopicName({
@@ -2378,67 +2449,43 @@ export class CodexPluginController {
       contextUsage: this.store.getBinding(conversation)?.contextUsage,
       updatedAt: Date.now(),
     };
-    const runtimeConversation = toRuntimeBindingConversationRef(record.conversation);
-    const existing = this.api.runtime.channel.bindings.resolveByConversation(runtimeConversation);
-    this.api.logger.debug?.(
-      `codex bind conversation=${record.conversation.conversationId} runtimeConversation=${runtimeConversation.conversationId} existing=${existing ? "yes" : "no"}`,
-    );
-    if (!existing) {
-      try {
-        await this.api.runtime.channel.bindings.bind({
-          targetSessionKey: sessionKey,
-          targetKind: "session",
-          conversation: runtimeConversation,
-          placement: "current",
-          metadata: {
-            pluginId: PLUGIN_ID,
-            threadId: params.threadId,
-            workspaceDir: params.workspaceDir,
-          },
-        });
-      } catch (error) {
-        this.api.logger.warn(`codex binding bridge bind failed: ${String(error)}`);
-      }
-    }
     await this.store.upsertBinding(record);
     return record;
   }
 
-  private async resolveRuntimeBackedBinding(
+  private async requestConversationBinding(
     conversation: ConversationTarget,
-  ): Promise<StoredBinding | null> {
-    const runtimeConversation = toRuntimeBindingConversationRef(conversation);
-    const runtimeBinding = this.api.runtime.channel.bindings.resolveByConversation(
-      runtimeConversation,
-    ) as RuntimeSessionBindingRecord | null;
-    const metadata = runtimeBinding?.metadata;
-    if (!runtimeBinding?.targetSessionKey || !metadata) {
-      return null;
+    params: {
+      threadId: string;
+      workspaceDir: string;
+      threadTitle?: string;
+    },
+    requestBinding?: (
+      params?: { summary?: string },
+    ) => Promise<
+      | { status: "bound" }
+      | { status: "pending"; reply: ReplyPayload }
+      | { status: "error"; message: string }
+    >,
+  ): Promise<
+    | { status: "bound"; binding: StoredBinding }
+    | { status: "pending"; reply: ReplyPayload }
+    | { status: "error"; message: string }
+  > {
+    if (!requestBinding) {
+      return {
+        status: "error",
+        message: "This action can only bind from a live command or interactive context.",
+      };
     }
-    if (metadata.pluginId !== PLUGIN_ID) {
-      return null;
+    const approval = await requestBinding({
+      summary: `Bind this conversation to Codex thread ${params.threadTitle?.trim() || params.threadId}.`,
+    });
+    if (approval.status !== "bound") {
+      return approval;
     }
-    const threadId = typeof metadata.threadId === "string" ? metadata.threadId.trim() : "";
-    const workspaceDir =
-      typeof metadata.workspaceDir === "string" ? metadata.workspaceDir.trim() : "";
-    if (!threadId || !workspaceDir) {
-      return null;
-    }
-    const record: StoredBinding = {
-      conversation: {
-        channel: conversation.channel,
-        accountId: conversation.accountId,
-        conversationId: conversation.conversationId,
-        parentConversationId: conversation.parentConversationId,
-      },
-      sessionKey: runtimeBinding.targetSessionKey,
-      threadId,
-      workspaceDir,
-      contextUsage: this.store.getBinding(conversation)?.contextUsage,
-      updatedAt: Date.now(),
-    };
-    await this.store.upsertBinding(record);
-    return record;
+    const binding = await this.bindConversation(conversation, params);
+    return { status: "bound", binding };
   }
 
   private trimReplayText(value?: string, maxLength = 1200): string | undefined {
@@ -2578,7 +2625,10 @@ export class CodexPluginController {
     }, 0);
   }
 
-  private async buildStatusText(binding: StoredBinding | null): Promise<string> {
+  private async buildStatusText(
+    binding: StoredBinding | null,
+    bindingActive: boolean,
+  ): Promise<string> {
     const workspaceDir = resolveWorkspaceDir({
       bindingWorkspaceDir: binding?.workspaceDir,
       configuredWorkspaceDir: this.settings.defaultWorkspaceDir,
@@ -2604,7 +2654,7 @@ export class CodexPluginController {
       threadState,
       account,
       rateLimits: limits,
-      bindingActive: Boolean(binding),
+      bindingActive,
       projectFolder,
       worktreeFolder: threadState?.cwd?.trim() || binding?.workspaceDir || workspaceDir,
       contextUsage: binding?.contextUsage,
@@ -2788,52 +2838,11 @@ export class CodexPluginController {
   }
 
   private async unbindConversation(conversation: ConversationTarget): Promise<void> {
-    const binding = this.store.getBinding(conversation);
-    if (binding) {
-      await this.api.runtime.channel.bindings
-        .unbind({
-          targetSessionKey: binding.sessionKey,
-          reason: "plugin-detach",
-        })
-        .catch(() => undefined);
-    }
     await this.store.removeBinding(conversation);
   }
 
   private async reconcileBindings(): Promise<void> {
-    for (const binding of this.store.listBindings()) {
-      try {
-        await this.client.readThreadState({
-          sessionKey: binding.sessionKey,
-          threadId: binding.threadId,
-        });
-      } catch (error) {
-        if (isMissingThreadError(error)) {
-          await this.store.removeBinding(binding.conversation);
-          continue;
-        }
-      }
-      const runtimeConversation = toRuntimeBindingConversationRef(binding.conversation);
-      const existing = this.api.runtime.channel.bindings.resolveByConversation(runtimeConversation);
-      if (existing?.targetSessionKey === binding.sessionKey) {
-        continue;
-      }
-      try {
-        await this.api.runtime.channel.bindings.bind({
-          targetSessionKey: binding.sessionKey,
-          targetKind: "session",
-          conversation: runtimeConversation,
-          placement: "current",
-          metadata: {
-            pluginId: PLUGIN_ID,
-            threadId: binding.threadId,
-            workspaceDir: binding.workspaceDir,
-          },
-        });
-      } catch (error) {
-        this.api.logger.warn(`codex binding reconcile failed: ${String(error)}`);
-      }
-    }
+    return;
   }
 
   private async startTypingLease(conversation: ConversationTarget): Promise<{

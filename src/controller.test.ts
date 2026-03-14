@@ -14,8 +14,6 @@ function createApiMock() {
   const sendComponentMessage = vi.fn(async () => ({}));
   const sendMessageDiscord = vi.fn(async () => ({}));
   const discordTypingStart = vi.fn(async () => ({ refresh: vi.fn(async () => {}), stop: vi.fn() }));
-  const bindingBind = vi.fn(async () => ({}));
-  const bindingResolveByConversation = vi.fn<(...args: any[]) => any>(() => null);
   const api = {
     id: "test-plugin",
     pluginConfig: {
@@ -34,9 +32,9 @@ function createApiMock() {
       },
       channel: {
         bindings: {
-          bind: bindingBind,
-          unbind: vi.fn(async () => ({})),
-          resolveByConversation: bindingResolveByConversation,
+          bind: vi.fn(async () => ({})),
+          unbind: vi.fn(async () => []),
+          resolveByConversation: vi.fn(() => null),
         },
         text: {
           chunkText: (text: string) => [text],
@@ -68,14 +66,12 @@ function createApiMock() {
     registerInteractiveHandler: vi.fn(),
     registerCommand: vi.fn(),
     on: vi.fn(),
-  } satisfies OpenClawPluginApi;
+  } as unknown as OpenClawPluginApi;
   return {
     api,
     sendComponentMessage,
     sendMessageDiscord,
     discordTypingStart,
-    bindingBind,
-    bindingResolveByConversation,
     stateDir,
   };
 }
@@ -86,8 +82,6 @@ async function createControllerHarness() {
     sendComponentMessage,
     sendMessageDiscord,
     discordTypingStart,
-    bindingBind,
-    bindingResolveByConversation,
     stateDir,
   } = createApiMock();
   const controller = new CodexPluginController(api);
@@ -131,14 +125,23 @@ async function createControllerHarness() {
     sendComponentMessage,
     sendMessageDiscord,
     discordTypingStart,
-    bindingBind,
-    bindingResolveByConversation,
     stateDir,
   };
 }
 
+async function createControllerHarnessWithoutLegacyBindings() {
+  const harness = createApiMock();
+  delete (harness.api as any).runtime.channel.bindings;
+  const controller = new CodexPluginController(harness.api);
+  await controller.start();
+  return {
+    controller,
+    api: harness.api,
+  };
+}
+
 function buildDiscordCommandContext(
-  overrides: Partial<PluginCommandContext> = {},
+  overrides: Partial<PluginCommandContext> & Record<string, unknown> = {},
 ): PluginCommandContext {
   return {
     senderId: "user-1",
@@ -151,8 +154,11 @@ function buildDiscordCommandContext(
     from: "discord:channel:chan-1",
     to: "slash:user-1",
     accountId: "default",
+    requestConversationBinding: vi.fn(async () => ({ status: "bound" as const })),
+    detachConversationBinding: vi.fn(async () => ({ removed: true })),
+    getCurrentConversationBinding: vi.fn(async () => null),
     ...overrides,
-  };
+  } as unknown as PluginCommandContext;
 }
 
 afterEach(() => {
@@ -160,6 +166,12 @@ afterEach(() => {
 });
 
 describe("Discord controller flows", () => {
+  it("starts cleanly without the legacy runtime.channel.bindings surface", async () => {
+    const { controller } = await createControllerHarnessWithoutLegacyBindings();
+
+    expect(controller).toBeInstanceOf(CodexPluginController);
+  });
+
   it("uses the real Discord conversation target for slash-command resume pickers", async () => {
     const { controller, sendComponentMessage } = await createControllerHarness();
 
@@ -195,6 +207,7 @@ describe("Discord controller flows", () => {
 
     const reply = await controller.handleCommand("codex_model", buildDiscordCommandContext({
       commandBody: "/codex_model",
+      getCurrentConversationBinding: vi.fn(async () => ({ bindingId: "b1" })),
     }));
 
     expect(reply).toEqual({
@@ -386,22 +399,19 @@ describe("Discord controller flows", () => {
     );
   });
 
-  it("normalizes Discord runtime binding refs to raw ids when binding a thread", async () => {
-    const { controller, bindingBind, bindingResolveByConversation } = await createControllerHarness();
-    bindingResolveByConversation.mockReturnValue(null);
+  it("requests approved conversation binding when binding a Discord thread", async () => {
+    const { controller } = await createControllerHarness();
+    const requestConversationBinding = vi.fn(async () => ({ status: "bound" as const }));
 
     await controller.handleCommand("codex_resume", buildDiscordCommandContext({
       args: "thread-1",
       commandBody: "/codex_resume thread-1",
+      requestConversationBinding,
     }));
 
-    expect(bindingBind).toHaveBeenCalledWith(
+    expect(requestConversationBinding).toHaveBeenCalledWith(
       expect.objectContaining({
-        conversation: expect.objectContaining({
-          channel: "discord",
-          accountId: "default",
-          conversationId: "chan-1",
-        }),
+        summary: expect.stringContaining("Bind this conversation to Codex thread"),
       }),
     );
   });
@@ -479,25 +489,8 @@ describe("Discord controller flows", () => {
     expect(startTurn).toHaveBeenCalled();
   });
 
-  it("claims inbound Discord messages from the runtime binding bridge when local state misses", async () => {
-    const { controller, bindingResolveByConversation } = await createControllerHarness();
-    bindingResolveByConversation.mockReturnValue({
-      targetSessionKey: "session-1",
-      metadata: {
-        pluginId: "openclaw-codex-app-server",
-        threadId: "thread-1",
-        workspaceDir: "/repo/openclaw",
-      },
-    });
-    const startTurn = vi.fn(() => ({
-      result: Promise.resolve({
-        threadId: "thread-1",
-        text: "hello",
-      }),
-      getThreadId: () => "thread-1",
-      queueMessage: vi.fn(async () => true),
-    }));
-    (controller as any).client.startTurn = startTurn;
+  it("does not claim inbound Discord messages when only core binding state exists", async () => {
+    const { controller } = await createControllerHarness();
 
     const result = await controller.handleInboundClaim({
       content: "who are you?",
@@ -508,15 +501,7 @@ describe("Discord controller flows", () => {
       metadata: { guildId: "guild-1" },
     });
 
-    expect(result).toEqual({ handled: true });
-    expect(bindingResolveByConversation).toHaveBeenCalledWith(
-      expect.objectContaining({
-        channel: "discord",
-        accountId: "default",
-        conversationId: "1481858418548412579",
-      }),
-    );
-    expect(startTurn).toHaveBeenCalled();
+    expect(result).toEqual({ handled: false });
   });
 
   it("uses a raw Discord channel id for the typing lease on inbound claims", async () => {
