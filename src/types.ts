@@ -327,6 +327,7 @@ export type CallbackAction =
       conversation: ConversationRef;
       prompt: string;
       workspaceDir?: string;
+      collaborationMode?: CollaborationMode;
       createdAt: number;
       expiresAt: number;
     }

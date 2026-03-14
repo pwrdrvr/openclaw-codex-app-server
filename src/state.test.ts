@@ -64,8 +64,15 @@ describe("state store", () => {
         accountId: "default",
         conversationId: "123",
       },
-      prompt: "$skill-creator",
+      prompt: "Implement the plan.",
       workspaceDir: "/tmp/work",
+      collaborationMode: {
+        mode: "default",
+        settings: {
+          model: "openai/gpt-5.4",
+          developerInstructions: null,
+        },
+      },
     });
     const modelCallback = await store.putCallback({
       kind: "set-model",
@@ -99,6 +106,14 @@ describe("state store", () => {
     expect(resumeCallback?.kind).toBe("resume-thread");
     expect(resumeCallback && resumeCallback.kind === "resume-thread" ? resumeCallback.syncTopic : undefined).toBe(true);
     expect(reloaded.getCallback(promptCallback.token)?.kind).toBe("run-prompt");
+    const runPrompt = reloaded.getCallback(promptCallback.token);
+    expect(runPrompt && runPrompt.kind === "run-prompt" ? runPrompt.collaborationMode : undefined).toEqual({
+      mode: "default",
+      settings: {
+        model: "openai/gpt-5.4",
+        developerInstructions: null,
+      },
+    });
     expect(reloaded.getCallback(modelCallback.token)?.kind).toBe("set-model");
     expect(reloaded.getCallback(replyCallback.token)?.kind).toBe("reply-text");
   });

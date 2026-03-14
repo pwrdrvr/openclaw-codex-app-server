@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import { CALLBACK_TTL_MS, CALLBACK_TOKEN_BYTES, PLUGIN_ID, STORE_VERSION } from "./types.js";
 import type {
   CallbackAction,
+  CollaborationMode,
   ConversationTarget,
   StoreSnapshot,
   StoredBinding,
@@ -51,6 +52,7 @@ type PutCallbackInput =
       conversation: ConversationTarget;
       prompt: string;
       workspaceDir?: string;
+      collaborationMode?: CollaborationMode;
       token?: string;
       ttlMs?: number;
     }
@@ -282,6 +284,7 @@ export class PluginStateStore {
                   conversation: callback.conversation,
                   prompt: callback.prompt,
                   workspaceDir: callback.workspaceDir,
+                  collaborationMode: callback.collaborationMode,
                   token: callback.token ?? this.createCallbackToken(),
                   createdAt: now,
                   expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),

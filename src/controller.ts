@@ -36,6 +36,7 @@ import {
   formatThreadState,
   formatTurnCompletion,
 } from "./format.js";
+import type { CollaborationMode } from "./types.js";
 import {
   buildPendingQuestionnaireResponse,
   formatPendingQuestionnairePrompt,
@@ -1284,6 +1285,7 @@ export class CodexPluginController {
     workspaceDir: string;
     prompt: string;
     reason: "command" | "inbound" | "plan";
+    collaborationMode?: CollaborationMode;
   }): Promise<void> {
     const key = buildConversationKey(params.conversation);
     const existing = this.activeRuns.get(key);
@@ -1299,6 +1301,7 @@ export class CodexPluginController {
       runId: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
       existingThreadId: params.binding?.threadId,
       model: this.settings.defaultModel,
+      collaborationMode: params.collaborationMode,
       onPendingInput: async (state) => {
         await this.handlePendingInputState(params.conversation, params.workspaceDir, state, run);
       },
@@ -1455,7 +1458,15 @@ export class CodexPluginController {
             kind: "run-prompt",
             conversation: params.conversation,
             workspaceDir: params.workspaceDir,
-            prompt: `Please implement this plan:\n\n${result.planArtifact.markdown.trim()}`,
+            prompt: "Implement the plan.",
+            collaborationMode: {
+              mode: "default",
+              settings: {
+                model: threadState?.model || this.settings.defaultModel,
+                reasoningEffort: threadState?.reasoningEffort,
+                developerInstructions: null,
+              },
+            },
           });
           const stay = await this.store.putCallback({
             kind: "reply-text",
@@ -2373,6 +2384,7 @@ export class CodexPluginController {
         workspaceDir,
         prompt: callback.prompt,
         reason: "command",
+        collaborationMode: callback.collaborationMode,
       });
       await responders.reply(ackText);
       return;
@@ -2881,7 +2893,7 @@ export class CodexPluginController {
 
   private buildRunPromptAckText(prompt: string): string {
     const trimmed = prompt.trim();
-    if (trimmed.startsWith("Please implement this plan:")) {
+    if (trimmed === "Implement the plan.") {
       return "Sent the plan to Codex.";
     }
     return trimmed.length > 160 ? "Sent the prompt to Codex." : `Sent ${trimmed} to Codex.`;

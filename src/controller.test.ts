@@ -586,7 +586,7 @@ describe("Discord controller flows", () => {
     );
   });
 
-  it("acknowledges long run-prompt callbacks without echoing the full plan", async () => {
+  it("implements a plan by switching back to default mode with a short prompt", async () => {
     const { controller } = await createControllerHarness();
     await (controller as any).store.upsertBinding({
       conversation: {
@@ -608,9 +608,16 @@ describe("Discord controller flows", () => {
         conversationId: "channel:chan-1",
       },
       workspaceDir: "/repo/openclaw",
-      prompt: `Please implement this plan:\n\n${"Step\n".repeat(2000)}`,
+      prompt: "Implement the plan.",
+      collaborationMode: {
+        mode: "default",
+        settings: {
+          model: "openai/gpt-5.4",
+          developerInstructions: null,
+        },
+      },
     });
-    (controller as any).client.startTurn = vi.fn(() => ({
+    const startTurn = vi.fn(() => ({
       result: Promise.resolve({
         threadId: "thread-1",
         text: "implemented",
@@ -622,6 +629,7 @@ describe("Discord controller flows", () => {
       submitPendingInput: vi.fn(async () => false),
       submitPendingInputPayload: vi.fn(async () => false),
     }));
+    (controller as any).client.startTurn = startTurn;
     const reply = vi.fn(async () => {});
 
     await controller.handleDiscordInteractive({
@@ -649,6 +657,18 @@ describe("Discord controller flows", () => {
     } as any);
 
     expect(reply).toHaveBeenCalledWith({ text: "Sent the plan to Codex.", ephemeral: true });
+    expect(startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: "Implement the plan.",
+        collaborationMode: {
+          mode: "default",
+          settings: {
+            model: "openai/gpt-5.4",
+            developerInstructions: null,
+          },
+        },
+      }),
+    );
   });
 
   it("passes trusted local media roots when sending a Telegram plan attachment", async () => {
