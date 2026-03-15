@@ -28,6 +28,8 @@ jobs:
 
       - name: Install Node.js and dependencies
         uses: ./.github/actions/configure-nodejs
+        with:
+          lookup-only: "true"
 
   typecheck:
     name: Typecheck
