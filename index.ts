@@ -8,7 +8,7 @@ const COMMANDS = [
   ["codex_status", "Show the current Codex binding and thread state."],
   ["codex_stop", "Stop the active Codex turn."],
   ["codex_steer", "Send a steer message to the active Codex turn."],
-  ["codex_plan", "Ask Codex to produce a plan instead of executing work."],
+  ["codex_plan", "Ask Codex to produce a plan, or use 'off' to exit plan mode."],
   ["codex_review", "Run Codex review on the current changes."],
   ["codex_compact", "Compact the current Codex thread."],
   ["codex_skills", "List Codex skills."],

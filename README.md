@@ -84,6 +84,7 @@ Buttons are presented for project and thread selection, model switching, and ski
 | `/codex_stop` | Interrupt the active Codex run. | Only applies when a turn is currently in progress. |
 | `/codex_steer <message>` | Send follow-up steer text to an active run. | Example: `/codex_steer focus on the failing tests first` |
 | `/codex_plan <goal>` | Ask Codex to plan instead of execute. | The plugin relays plan questions and the final plan back into chat. |
+| `/codex_plan off` | Exit plan mode for this conversation. | Interrupts a lingering plan run so future turns go back to default coding mode. |
 | `/codex_review` | Review the current uncommitted changes in the bound workspace. | Requires an existing binding. |
 | `/codex_review <focus>` | Review with custom instructions. | Example: `/codex_review focus on thread selection regressions` |
 | `/codex_compact` | Compact the bound Codex thread. | The plugin posts progress and final context usage. |

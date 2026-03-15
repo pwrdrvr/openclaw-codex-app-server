@@ -744,6 +744,104 @@ describe("Discord controller flows", () => {
     );
   });
 
+  it("supports codex_plan off to interrupt an active plan run", async () => {
+    const { controller } = await createControllerHarness();
+    const interrupt = vi.fn(async () => {});
+    (controller as any).activeRuns.set("discord::default::channel:chan-1::", {
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:chan-1",
+      },
+      workspaceDir: "/repo/openclaw",
+      mode: "plan",
+      handle: {
+        result: Promise.resolve({ threadId: "thread-1", text: "planned" }),
+        queueMessage: vi.fn(async () => true),
+        getThreadId: () => "thread-1",
+        interrupt,
+        isAwaitingInput: () => false,
+        submitPendingInput: vi.fn(async () => false),
+        submitPendingInputPayload: vi.fn(async () => false),
+      },
+    });
+
+    const reply = await controller.handleCommand(
+      "codex_plan",
+      buildDiscordCommandContext({
+        args: "off",
+        commandBody: "/codex_plan off",
+      }),
+    );
+
+    expect(interrupt).toHaveBeenCalled();
+    expect(reply).toEqual({
+      text: "Exited Codex plan mode. Future turns will use default coding mode.",
+    });
+  });
+
+  it("restarts a lingering active plan run instead of queueing a normal inbound message into it", async () => {
+    const { controller } = await createControllerHarness();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:1481858418548412579",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+    const staleQueueMessage = vi.fn(async () => true);
+    const staleInterrupt = vi.fn(async () => {});
+    (controller as any).activeRuns.set("discord::default::channel:1481858418548412579::", {
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:1481858418548412579",
+      },
+      workspaceDir: "/repo/openclaw",
+      mode: "plan",
+      handle: {
+        result: Promise.resolve({ threadId: "thread-1", text: "stale-plan" }),
+        queueMessage: staleQueueMessage,
+        getThreadId: () => "thread-1",
+        interrupt: staleInterrupt,
+        isAwaitingInput: () => false,
+        submitPendingInput: vi.fn(async () => false),
+        submitPendingInputPayload: vi.fn(async () => false),
+      },
+    });
+    const startTurn = vi.fn(() => ({
+      result: Promise.resolve({
+        threadId: "thread-1",
+        text: "hello",
+      }),
+      getThreadId: () => "thread-1",
+      queueMessage: vi.fn(async () => true),
+      interrupt: vi.fn(async () => {}),
+      isAwaitingInput: () => false,
+      submitPendingInput: vi.fn(async () => false),
+      submitPendingInputPayload: vi.fn(async () => false),
+    }));
+    (controller as any).client.startTurn = startTurn;
+
+    const result = await controller.handleInboundClaim({
+      content: "And? Build it?",
+      channel: "discord",
+      accountId: "default",
+      conversationId: "1481858418548412579",
+      isGroup: true,
+      metadata: { guildId: "guild-1" },
+    });
+
+    expect(result).toEqual({ handled: true });
+    expect(staleQueueMessage).not.toHaveBeenCalled();
+    expect(staleInterrupt).toHaveBeenCalled();
+    expect(startTurn).toHaveBeenCalled();
+  });
+
   it("passes trusted local media roots when sending a Telegram plan attachment", async () => {
     const { controller, sendMessageTelegram, stateDir } = await createControllerHarness();
     const attachmentPath = path.join(stateDir, "tmp", "plan.md");
@@ -793,6 +891,7 @@ describe("Discord controller flows", () => {
         conversationId: "channel:1481858418548412579",
       },
       workspaceDir: "/repo/openclaw",
+      mode: "default",
       handle: {
         result: Promise.resolve({ threadId: "thread-1", text: "stale" }),
         queueMessage: vi.fn(async () => {

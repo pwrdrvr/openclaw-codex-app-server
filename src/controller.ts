@@ -72,6 +72,7 @@ import {
 type ActiveRunRecord = {
   conversation: ConversationTarget;
   workspaceDir: string;
+  mode: "default" | "plan" | "review";
   handle: ActiveCodexRun;
 };
 
@@ -400,6 +401,17 @@ function normalizeOptionDashes(text: string): string {
     .replace(/[\u2010-\u2015\u2212]/g, "-");
 }
 
+function parsePlanArgs(args: string): { mode: "off" } | { mode: "start"; prompt: string } {
+  const normalized = normalizeOptionDashes(args).trim();
+  if (!normalized) {
+    return { mode: "start", prompt: "" };
+  }
+  if (normalized === "off" || normalized === "--off") {
+    return { mode: "off" };
+  }
+  return { mode: "start", prompt: args.trim() };
+}
+
 function parseRenameArgs(args: string): { syncTopic: boolean; name: string } | null {
   const tokens = normalizeOptionDashes(args)
     .split(/\s+/)
@@ -493,6 +505,13 @@ export class CodexPluginController {
       const activeKey = buildConversationKey(conversation);
       const active = this.activeRuns.get(activeKey);
       if (active) {
+        if (active.mode === "plan") {
+          this.api.logger.debug?.(
+            `codex inbound claim restarting active plan run conversation=${conversation.conversationId}`,
+          );
+          this.activeRuns.delete(activeKey);
+          await active.handle.interrupt().catch(() => undefined);
+        } else {
         const pending = this.store.getPendingRequestByConversation(conversation);
         if (pending?.state.questionnaire && !event.content.trim().startsWith("/")) {
           const handled = await this.handlePendingQuestionnaireFreeformAnswer(
@@ -520,6 +539,7 @@ export class CodexPluginController {
         }
         this.activeRuns.delete(activeKey);
         await active.handle.interrupt().catch(() => undefined);
+        }
       }
       const resolvedBinding =
         this.store.getBinding(conversation) ??
@@ -911,9 +931,19 @@ export class CodexPluginController {
     if (!conversation) {
       return { text: "This command needs a Telegram or Discord conversation." };
     }
-    const prompt = args.trim();
+    const parsed = parsePlanArgs(args);
+    if (parsed.mode === "off") {
+      const key = buildConversationKey(conversation);
+      const active = this.activeRuns.get(key);
+      if (active?.mode === "plan") {
+        this.activeRuns.delete(key);
+        await active.handle.interrupt().catch(() => undefined);
+      }
+      return { text: "Exited Codex plan mode. Future turns will use default coding mode." };
+    }
+    const prompt = parsed.prompt.trim();
     if (!prompt) {
-      return { text: "Usage: /codex_plan <goal>" };
+      return { text: "Usage: /codex_plan <goal> or /codex_plan off" };
     }
     const workspaceDir = resolveWorkspaceDir({
       bindingWorkspaceDir: binding?.workspaceDir,
@@ -1294,8 +1324,13 @@ export class CodexPluginController {
     const key = buildConversationKey(params.conversation);
     const existing = this.activeRuns.get(key);
     if (existing) {
-      await existing.handle.queueMessage(params.prompt);
-      return;
+      if (existing.mode === "plan" && (params.collaborationMode?.mode ?? "default") !== "plan") {
+        this.activeRuns.delete(key);
+        await existing.handle.interrupt().catch(() => undefined);
+      } else {
+        await existing.handle.queueMessage(params.prompt);
+        return;
+      }
     }
     const typing = await this.startTypingLease(params.conversation);
     const run = this.client.startTurn({
@@ -1316,6 +1351,7 @@ export class CodexPluginController {
     this.activeRuns.set(key, {
       conversation: params.conversation,
       workspaceDir: params.workspaceDir,
+      mode: params.collaborationMode?.mode === "plan" ? "plan" : "default",
       handle: run,
     });
     void (run.result as Promise<import("./types.js").TurnResult>)
@@ -1430,6 +1466,7 @@ export class CodexPluginController {
     this.activeRuns.set(key, {
       conversation: params.conversation,
       workspaceDir: params.workspaceDir,
+      mode: "plan",
       handle: run,
     });
     void (run.result as Promise<import("./types.js").TurnResult>)
@@ -1573,6 +1610,7 @@ export class CodexPluginController {
     this.activeRuns.set(key, {
       conversation: params.conversation,
       workspaceDir: params.workspaceDir,
+      mode: "review",
       handle: run,
     });
     void (run.result as Promise<import("./types.js").ReviewResult>)
@@ -2376,10 +2414,15 @@ export class CodexPluginController {
       const active = this.activeRuns.get(buildConversationKey(conversation));
       const ackText = this.buildRunPromptAckText(callback.prompt);
       if (active) {
-        const handled = await active.handle.queueMessage(callback.prompt);
-        if (handled) {
-          await responders.reply(ackText);
-          return;
+        if (active.mode === "plan" && (callback.collaborationMode?.mode ?? "default") !== "plan") {
+          this.activeRuns.delete(buildConversationKey(conversation));
+          await active.handle.interrupt().catch(() => undefined);
+        } else {
+          const handled = await active.handle.queueMessage(callback.prompt);
+          if (handled) {
+            await responders.reply(ackText);
+            return;
+          }
         }
       }
       await this.startTurn({
