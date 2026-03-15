@@ -1,3 +1,4 @@
+import os from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildCodexPlanMarkdownPreview,
@@ -8,6 +9,7 @@ import {
   formatCodexPlanSteps,
   formatCodexReviewFindingMessage,
   formatCodexStatusText,
+  getCodexStatusTimeZoneLabel,
   formatMcpServers,
   formatModels,
   formatSkills,
@@ -15,6 +17,17 @@ import {
   formatThreadButtonLabel,
   parseCodexReviewOutput,
 } from "./format.js";
+
+function shortenHomePathForTest(value: string): string {
+  const home = os.homedir();
+  if (value === home) {
+    return "~";
+  }
+  if (value.startsWith(`${home}/`)) {
+    return `~/${value.slice(home.length + 1)}`;
+  }
+  return value;
+}
 
 describe("formatThreadButtonLabel", () => {
   it("uses worktree and age badges while keeping the project suffix at the end", () => {
@@ -124,8 +137,12 @@ describe("formatCodexStatusText", () => {
     expect(text).toContain("Binding: active");
     expect(text).toContain("Thread: Fix Telegram approval flow");
     expect(text).toContain("Model: openai/gpt-5.4 · reasoning high");
-    expect(text).toContain("Project folder: ~/github/openclaw");
-    expect(text).toContain("Worktree folder: ~/.codex/worktrees/41fb/openclaw");
+    expect(text).toContain(
+      `Project folder: ${shortenHomePathForTest("/Users/huntharo/github/openclaw")}`,
+    );
+    expect(text).toContain(
+      `Worktree folder: ${shortenHomePathForTest("/Users/huntharo/.codex/worktrees/41fb/openclaw")}`,
+    );
     expect(text).toContain("Fast mode: off");
     expect(text).toContain("Plan mode: off");
     expect(text).toContain("Context usage: unavailable until Codex emits a token-usage update");
@@ -344,10 +361,13 @@ describe("formatCodexStatusText", () => {
       ],
     });
 
-    expect(text).toContain(
-      `Rate limits timezone: ${new Intl.DateTimeFormat().resolvedOptions().timeZone}`,
-    );
-    expect(text).toContain("5h limit: 89% left (resets 12:28 PM)");
+    const expectedFiveHourReset = new Intl.DateTimeFormat(undefined, {
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(new Date("2026-03-07T17:28:00Z"));
+
+    expect(text).toContain(`Rate limits timezone: ${getCodexStatusTimeZoneLabel()}`);
+    expect(text).toContain(`5h limit: 89% left (resets ${expectedFiveHourReset})`);
     expect(text).toContain("Weekly limit: 80% left (resets Mar 11)");
     expect(text).not.toContain("Jan 21");
   });
