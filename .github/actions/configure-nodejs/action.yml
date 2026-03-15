@@ -12,20 +12,35 @@ inputs:
 runs:
   using: "composite"
   steps:
+    - name: Lookup node_modules cache
+      if: inputs.lookup-only == 'true'
+      id: cache-node-modules-lookup
+      uses: actions/cache@v5
+      with:
+        path: |
+          node_modules
+          !node_modules/.cache
+        key: node-modules-${{ inputs.node-version }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package.json', 'pnpm-lock.yaml') }}
+        lookup-only: true
+
     - uses: actions/setup-node@v5
+      if: inputs.lookup-only != 'true' || steps.cache-node-modules-lookup.outputs.cache-hit != 'true'
       with:
         node-version: ${{ inputs.node-version }}
         package-manager-cache: false
 
     - name: Enable Corepack
+      if: inputs.lookup-only != 'true' || steps.cache-node-modules-lookup.outputs.cache-hit != 'true'
       shell: bash
       run: corepack enable
 
     - name: Activate pnpm
+      if: inputs.lookup-only != 'true' || steps.cache-node-modules-lookup.outputs.cache-hit != 'true'
       shell: bash
       run: corepack prepare pnpm@10.29.3 --activate
 
     - name: Restore node_modules from cache
+      if: inputs.lookup-only != 'true'
       id: cache-node-modules
       uses: actions/cache@v5
       with:
@@ -33,9 +48,9 @@ runs:
           node_modules
           !node_modules/.cache
         key: node-modules-${{ inputs.node-version }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package.json', 'pnpm-lock.yaml') }}
-        lookup-only: ${{ inputs.lookup-only }}
+        lookup-only: false
 
     - name: Install dependencies
-      if: steps.cache-node-modules.outputs.cache-hit != 'true'
+      if: (inputs.lookup-only == 'true' && steps.cache-node-modules-lookup.outputs.cache-hit != 'true') || (inputs.lookup-only != 'true' && steps.cache-node-modules.outputs.cache-hit != 'true')
       shell: bash
       run: pnpm install --frozen-lockfile
