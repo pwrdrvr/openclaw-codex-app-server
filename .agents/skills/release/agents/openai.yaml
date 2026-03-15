@@ -1,0 +1,4 @@
+interface:
+  display_name: "Release"
+  short_description: "Plan and publish a GitHub release with a real changelog"
+  default_prompt: "Use $release to prepare a GitHub Release, propose the next vX.Y.Z tag, draft better notes than GitHub's defaults, update CHANGELOG.md, and publish from the exact changelog commit."

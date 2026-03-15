@@ -1,0 +1,9 @@
+.github/
+.agents/
+.local/
+AGENTS.md
+OVERNIGHT-TODO.md
+pnpm-lock.yaml
+scripts/
+src/**/*.test.ts
+tsconfig.json

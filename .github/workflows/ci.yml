@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**/README.md"
+      - "**/AGENTS.md"
+      - "**/CLAUDE.md"
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - "**/README.md"
+      - "**/AGENTS.md"
+      - "**/CLAUDE.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  install-deps:
+    name: Install Dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Node.js and dependencies
+        uses: ./.github/actions/configure-nodejs
+
+  typecheck:
+    name: Typecheck
+    runs-on: ubuntu-latest
+    needs: install-deps
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Node.js and dependencies
+        uses: ./.github/actions/configure-nodejs
+
+      - name: Run typecheck
+        run: pnpm typecheck
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    needs: install-deps
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Node.js and dependencies
+        uses: ./.github/actions/configure-nodejs
+
+      - name: Run tests
+        run: pnpm test
+
+  package-smoke:
+    name: Package Smoke
+    runs-on: ubuntu-latest
+    needs: install-deps
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Node.js and dependencies
+        uses: ./.github/actions/configure-nodejs
+
+      - name: Pack and install the publishable package
+        run: pnpm pack:smoke

@@ -1,8 +1,9 @@
 {
-  "name": "@pwrdrvr/openclaw-codex-app-server",
-  "version": "0.0.0-development",
+  "name": "openclaw-codex-app-server",
+  "version": "0.0.0",
   "description": "OpenClaw plugin for Codex App Server conversations",
   "license": "MIT",
+  "packageManager": "pnpm@10.29.3",
   "type": "module",
   "openclaw": {
     "extensions": [
@@ -11,7 +12,9 @@
   },
   "scripts": {
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "pack:smoke": "node ./scripts/pack-smoke.mjs",
+    "release:apply-version": "node ./scripts/apply-release-version.mjs"
   },
   "peerDependencies": {
     "openclaw": "*"

@@ -1,0 +1,51 @@
+name: Publish
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag in the form vX.Y.Z
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: Publish Package
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.event.release.tag_name }}
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Node.js and dependencies
+        uses: ./.github/actions/configure-nodejs
+
+      - name: Apply release version from tag
+        run: pnpm release:apply-version "$RELEASE_TAG"
+
+      - name: Run typecheck
+        run: pnpm typecheck
+
+      - name: Run tests
+        run: pnpm test
+
+      - name: Run package smoke install
+        run: pnpm pack:smoke
+
+      - name: Configure npm authentication
+        if: ${{ env.NODE_AUTH_TOKEN != '' }}
+        run: |
+          cat <<'EOF' > ~/.npmrc
+          //registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}
+          EOF
+
+      - name: Publish openclaw-codex-app-server
+        run: pnpm publish --no-git-checks --access public

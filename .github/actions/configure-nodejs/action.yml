@@ -1,0 +1,28 @@
+name: "Configure Node.js"
+description: "Install Node.js and dependencies using a lockfile-keyed pnpm store cache (run an install-deps job first to seed cache)"
+
+inputs:
+  node-version:
+    description: "Node.js version"
+    default: "22"
+
+runs:
+  using: "composite"
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - name: Enable Corepack
+      shell: bash
+      run: corepack enable
+
+    - name: Restore pnpm store from cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.pnpm-store
+        key: pnpm-store-${{ inputs.node-version }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+    - name: Install dependencies
+      shell: bash
+      run: pnpm install --frozen-lockfile
