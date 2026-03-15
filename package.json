@@ -1,6 +1,6 @@
 {
   "name": "openclaw-codex-app-server",
-  "version": "0.0.0",
+  "version": "2026.3.13",
   "description": "OpenClaw plugin for Codex App Server conversations",
   "license": "MIT",
   "packageManager": "pnpm@10.29.3",
@@ -24,7 +24,6 @@
   },
   "devDependencies": {
     "@types/node": "^24.6.0",
-    "openclaw": "file:/Users/huntharo/.codex/worktrees/cb00/openclaw",
     "typescript": "^5.9.2",
     "vitest": "^3.2.4"
   }

@@ -733,7 +733,7 @@ async function initializeClient(params: {
 }): Promise<void> {
   await params.client.request("initialize", {
     protocolVersion: DEFAULT_PROTOCOL_VERSION,
-    clientInfo: { name: "openclaw-codex-app-server", version: "0.0.0" },
+    clientInfo: { name: "openclaw-codex-app-server", version: "2026.3.13" },
     capabilities: { experimentalApi: true },
   });
   await params.client.notify("initialized", {});

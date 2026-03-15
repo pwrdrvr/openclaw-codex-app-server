@@ -32,18 +32,7 @@ pnpm install
 
 Once the PR is merged, use `main` instead.
 
-### 2. Point this plugin repo at your local OpenClaw checkout
-
-From this repository:
-
-```bash
-pnpm add -D openclaw@file:/absolute/path/to/openclaw
-pnpm install
-```
-
-That makes the local `openclaw` package available to this plugin before a published release includes the new interface.
-
-### 3. Install the plugin from your local checkout
+### 2. Install the plugin from your local checkout
 
 From the openclaw repository:
 
@@ -51,13 +40,24 @@ From the openclaw repository:
 pnpm openclaw plugins install --link "/absolute/path/to/openclaw-codex-app-server"
 ```
 
-### 4. Start OpenClaw
+### 3. Start OpenClaw
 
 From your OpenClaw checkout:
 
 ```bash
 pnpm gateway:watch
 ```
+
+### Optional: override `openclaw` locally inside this repo
+
+This repository no longer commits a machine-local `openclaw` dev dependency, so CI stays portable. If you want a local checkout of this plugin repo to resolve `openclaw` from your own OpenClaw source tree, add a local-only override in your working copy:
+
+```bash
+pnpm add -D openclaw@file:/absolute/path/to/openclaw
+pnpm install
+```
+
+That override is for local development only. Do not commit the resulting `package.json` or `pnpm-lock.yaml` changes.
 
 ## Typical Workflow
 
