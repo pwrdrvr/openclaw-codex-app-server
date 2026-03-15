@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.1 - 2026-03-15
+
+### Internal
+
+- Added Codex server startup diagnostics so the plugin logs the launch command, working directory, and early startup details when the app server fails before a turn begins.
+
 ## v0.1.0 - 2026-03-15
 
 ### Highlights
