@@ -176,6 +176,37 @@ describe("extractThreadTokenUsageSnapshot", () => {
   });
 });
 
+describe("extractFileChangePathsFromReadResult", () => {
+  it("formats in-workspace files as relative paths and keeps outside files absolute", () => {
+    expect(
+      __testing.extractFileChangePathsFromReadResult(
+        {
+          thread: {
+            turns: [
+              {
+                id: "turn-1",
+                items: [
+                  {
+                    type: "fileChange",
+                    id: "item-1",
+                    changes: [
+                      { path: "/repo/openclaw/src/a.ts", kind: "update" },
+                      { path: "/repo/openclaw/docs/b.md", kind: "add" },
+                      { path: "/tmp/outside.txt", kind: "delete" },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        },
+        "item-1",
+        "/repo/openclaw",
+      ),
+    ).toEqual(["src/a.ts", "docs/b.md", "/tmp/outside.txt"]);
+  });
+});
+
 describe("extractRateLimitSummaries", () => {
   it("extracts primary and secondary window snapshots from rateLimitsByLimitId", () => {
     expect(

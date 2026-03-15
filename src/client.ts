@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import * as path from "node:path";
 import readline from "node:readline";
 import WebSocket from "ws";
 import type { PluginLogger } from "openclaw/plugin-sdk";
@@ -343,7 +344,12 @@ function dedupeJoinedText(chunks: string[]): string {
   return out.join("\n\n").trim();
 }
 
-function extractIds(value: unknown): { threadId?: string; runId?: string; requestId?: string } {
+function extractIds(value: unknown): {
+  threadId?: string;
+  runId?: string;
+  requestId?: string;
+  itemId?: string;
+} {
   const record = asRecord(value);
   if (!record) {
     return {};
@@ -360,6 +366,9 @@ function extractIds(value: unknown): { threadId?: string; runId?: string; reques
     requestId:
       pickString(record, ["requestId", "request_id", "serverRequestId"]) ??
       pickString(asRecord(record.serverRequest) ?? {}, ["id", "requestId", "request_id"]),
+    itemId:
+      pickString(record, ["itemId", "item_id"]) ??
+      pickString(asRecord(record.item) ?? {}, ["id", "itemId", "item_id"]),
   };
 }
 
@@ -1083,6 +1092,88 @@ function extractThreadReplayFromReadResult(value: unknown): ThreadReplay {
     }
   }
   return { lastUserMessage, lastAssistantMessage };
+}
+
+function normalizeApprovalFilePath(rawPath: string, workspaceDir?: string): string {
+  const trimmed = rawPath.trim();
+  if (!trimmed) {
+    return "";
+  }
+  if (!path.isAbsolute(trimmed)) {
+    return trimmed.replace(/\\/g, "/");
+  }
+  const root = workspaceDir?.trim();
+  if (root && path.isAbsolute(root)) {
+    const relative = path.relative(root, trimmed);
+    if (relative && !relative.startsWith("..") && !path.isAbsolute(relative)) {
+      return relative.replace(/\\/g, "/");
+    }
+  }
+  return trimmed;
+}
+
+function extractFileChangePathsFromReadResult(
+  value: unknown,
+  itemId: string,
+  workspaceDir?: string,
+): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const targetId = itemId.trim();
+  const visit = (node: unknown) => {
+    if (Array.isArray(node)) {
+      node.forEach((entry) => visit(entry));
+      return;
+    }
+    const record = asRecord(node);
+    if (!record) {
+      return;
+    }
+    const item = asRecord(record.item) ?? record;
+    const type = pickString(item, ["type"])?.trim().toLowerCase();
+    const id = pickString(item, ["id", "itemId", "item_id"])?.trim();
+    if (type === "filechange" && id === targetId) {
+      const changes = Array.isArray(item.changes) ? item.changes : [];
+      for (const changeValue of changes) {
+        const change = asRecord(changeValue);
+        const rawPath = pickString(change ?? {}, ["path"]);
+        if (!rawPath) {
+          continue;
+        }
+        const formatted = normalizeApprovalFilePath(rawPath, workspaceDir);
+        if (!formatted || seen.has(formatted)) {
+          continue;
+        }
+        seen.add(formatted);
+        out.push(formatted);
+      }
+      return;
+    }
+    for (const key of ["turns", "items", "data", "results", "thread", "response", "result"]) {
+      visit(record[key]);
+    }
+  };
+  visit(value);
+  return out;
+}
+
+async function readFileChangePathsWithClient(params: {
+  client: JsonRpcClient;
+  settings: PluginSettings;
+  threadId: string;
+  itemId: string;
+  workspaceDir?: string;
+}): Promise<string[]> {
+  const result = await requestWithFallbacks({
+    client: params.client,
+    methods: ["thread/read"],
+    payloads: [
+      { threadId: params.threadId, includeTurns: true },
+      { thread_id: params.threadId, include_turns: true },
+    ],
+    timeoutMs: params.settings.requestTimeoutMs,
+  });
+  return extractFileChangePathsFromReadResult(result, params.itemId, params.workspaceDir);
 }
 
 function extractModelSummaries(value: unknown): ModelSummary[] {
@@ -2232,10 +2323,23 @@ export class CodexAppServerClient {
       const options = extractOptionValues(requestParams);
       const requestId = ids.requestId ?? `${params.runId}-${Date.now().toString(36)}`;
       const expiresAt = Date.now() + this.settings.inputTimeoutMs;
+      const enrichedRequestParams =
+        methodLower.includes("filechange/requestapproval") && ids.threadId && ids.itemId
+          ? {
+              ...(asRecord(requestParams) ?? {}),
+              filePaths: await readFileChangePathsWithClient({
+                client,
+                settings: this.settings,
+                threadId: ids.threadId,
+                itemId: ids.itemId,
+                workspaceDir: params.workspaceDir,
+              }).catch(() => []),
+            }
+          : requestParams;
       const state = createPendingInputState({
         method,
         requestId,
-        requestParams,
+        requestParams: enrichedRequestParams,
         options,
         expiresAt,
       });
@@ -2490,10 +2594,23 @@ export class CodexAppServerClient {
       const options = extractOptionValues(requestParams);
       const requestId = ids.requestId ?? `${params.runId}-${Date.now().toString(36)}`;
       const expiresAt = Date.now() + this.settings.inputTimeoutMs;
+      const enrichedRequestParams =
+        methodLower.includes("filechange/requestapproval") && ids.threadId && ids.itemId
+          ? {
+              ...(asRecord(requestParams) ?? {}),
+              filePaths: await readFileChangePathsWithClient({
+                client,
+                settings: this.settings,
+                threadId: ids.threadId,
+                itemId: ids.itemId,
+                workspaceDir: params.workspaceDir,
+              }).catch(() => []),
+            }
+          : requestParams;
       const state = createPendingInputState({
         method,
         requestId,
-        requestParams,
+        requestParams: enrichedRequestParams,
         options,
         expiresAt,
       });
@@ -2716,6 +2833,7 @@ export class CodexAppServerClient {
 
 export const __testing = {
   buildTurnStartPayloads,
+  extractFileChangePathsFromReadResult,
   extractThreadTokenUsageSnapshot,
   extractRateLimitSummaries,
 };

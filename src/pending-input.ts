@@ -291,6 +291,35 @@ function buildApprovalActionsFromMethod(
   return actions;
 }
 
+function extractFilePaths(value: unknown): string[] {
+  const record = asRecord(value);
+  if (!record) {
+    return [];
+  }
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const pushPath = (pathValue: unknown) => {
+    if (typeof pathValue !== "string") {
+      return;
+    }
+    const trimmed = pathValue.trim();
+    if (!trimmed || seen.has(trimmed)) {
+      return;
+    }
+    seen.add(trimmed);
+    out.push(trimmed);
+  };
+  const filePaths = Array.isArray(record.filePaths)
+    ? record.filePaths
+    : Array.isArray(record.file_paths)
+      ? record.file_paths
+      : [];
+  filePaths.forEach((entry) => pushPath(entry));
+  const changes = Array.isArray(record.changes) ? record.changes : [];
+  changes.forEach((entry) => pushPath(asRecord(entry)?.path));
+  return out;
+}
+
 export function buildPendingUserInputActions(params: {
   method?: string;
   requestParams?: unknown;
@@ -658,6 +687,18 @@ export function buildPendingPromptText(params: {
   const grantRoot = findFirstStringByKeys(params.requestParams, ["grantRoot", "grant_root"]);
   if (grantRoot) {
     lines.push("", `Requested writable root: \`${grantRoot}\``);
+  }
+  if (isFileChangeApprovalMethod(methodLower)) {
+    const filePaths = extractFilePaths(params.requestParams);
+    if (filePaths.length > 0) {
+      lines.push("", "Files:");
+      for (const filePath of filePaths.slice(0, 12)) {
+        lines.push(`- \`${filePath}\``);
+      }
+      if (filePaths.length > 12) {
+        lines.push(`- ...and ${filePaths.length - 12} more`);
+      }
+    }
   }
   if (params.actions.length > 0) {
     lines.push("", "Choices:");

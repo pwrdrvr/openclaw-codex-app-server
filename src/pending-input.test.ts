@@ -80,6 +80,34 @@ describe("pending-input helpers", () => {
     expect(text).not.toContain("019cd368-7eda-7863-86ba-6586598bc5a3");
   });
 
+  it("lists changed files for file change approvals", () => {
+    const text = buildPendingPromptText({
+      method: "item/fileChange/requestApproval",
+      requestId: "req-file-2",
+      requestParams: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        itemId: "item-1",
+        filePaths: ["src/app.ts", "README.md", "/tmp/outside.txt"],
+      },
+      options: [],
+      actions: buildPendingUserInputActions({
+        method: "item/fileChange/requestApproval",
+        requestParams: {
+          threadId: "thread-1",
+          turnId: "turn-1",
+          itemId: "item-1",
+        },
+      }),
+      expiresAt: Date.now() + 60_000,
+    });
+
+    expect(text).toContain("Files:");
+    expect(text).toContain("`src/app.ts`");
+    expect(text).toContain("`README.md`");
+    expect(text).toContain("`/tmp/outside.txt`");
+  });
+
   it("creates a stable request token", () => {
     expect(requestToken("abc")).toBe(requestToken("abc"));
     expect(requestToken("abc")).not.toBe(requestToken("def"));
