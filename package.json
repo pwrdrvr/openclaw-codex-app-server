@@ -2,6 +2,7 @@
   "name": "openclaw-codex-app-server",
   "version": "2026.3.13",
   "description": "OpenClaw plugin for Codex App Server conversations",
+  "author": "PwrDrvr LLC",
   "license": "MIT",
   "packageManager": "pnpm@10.29.3",
   "type": "module",
