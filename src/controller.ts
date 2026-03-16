@@ -2554,7 +2554,9 @@ export class CodexPluginController {
         responders.requestConversationBinding,
       );
       if (bindResult.status === "pending") {
-        await responders.reply(bindResult.reply.text ?? "Bind approval requested.");
+        // Interactive bind requests already send the approval prompt with the
+        // channel-specific buttons/components from responders.requestConversationBinding.
+        // Sending another plain-text reply here duplicates the same prompt.
         return;
       }
       if (bindResult.status === "error") {

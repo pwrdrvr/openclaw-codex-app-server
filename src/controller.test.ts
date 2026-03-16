@@ -658,6 +658,58 @@ describe("Discord controller flows", () => {
     expect(reply).toEqual({ text: 'Renamed the Codex thread to "New Topic Name".' });
   });
 
+
+
+it("sends the Telegram bind approval prompt only once for resume callbacks", async () => {
+  const { controller } = await createControllerHarness();
+  const callback = await (controller as any).store.putCallback({
+    kind: "resume-thread",
+    conversation: {
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123:topic:456",
+      parentConversationId: "123",
+    },
+    threadId: "thread-1",
+    workspaceDir: "/repo/openclaw",
+  });
+  const reply = vi.fn(async () => {});
+  const buttons = [[{ text: "Allow once", callback_data: "pluginbind:approval:o" }]];
+
+  await controller.handleTelegramInteractive({
+    channel: "telegram",
+    accountId: "default",
+    conversationId: "123:topic:456",
+    parentConversationId: "123",
+    threadId: 456,
+    requestConversationBinding: vi.fn(async () => ({
+      status: "pending" as const,
+      reply: {
+        text: "Plugin bind approval required",
+        channelData: {
+          telegram: {
+            buttons,
+          },
+        },
+      },
+    })),
+    callback: {
+      payload: callback.token,
+    },
+    respond: {
+      clearButtons: vi.fn(async () => {}),
+      reply,
+      editMessage: vi.fn(async () => {}),
+    },
+  } as any);
+
+  expect(reply).toHaveBeenCalledTimes(1);
+  expect(reply).toHaveBeenCalledWith({
+    text: "Plugin bind approval required",
+    buttons,
+  });
+});
+
   it("offers compact rename style buttons for codex_rename --sync without a name", async () => {
     const { controller } = await createControllerHarness();
     await (controller as any).store.upsertBinding({
@@ -746,6 +798,68 @@ describe("Discord controller flows", () => {
       }),
     );
   });
+
+
+
+it("sends the Discord bind approval prompt only once for resume callbacks", async () => {
+  const { controller, sendComponentMessage } = await createControllerHarness();
+  const callback = await (controller as any).store.putCallback({
+    kind: "resume-thread",
+    conversation: {
+      channel: "discord",
+      accountId: "default",
+      conversationId: "channel:chan-1",
+    },
+    threadId: "thread-1",
+    workspaceDir: "/repo/openclaw",
+  });
+  const reply = vi.fn(async () => {});
+
+  await controller.handleDiscordInteractive({
+    channel: "discord",
+    accountId: "default",
+    interactionId: "interaction-1",
+    conversationId: "channel:chan-1",
+    auth: { isAuthorizedSender: true },
+    interaction: {
+      kind: "button",
+      data: `codexapp:${callback.token}`,
+      namespace: "codexapp",
+      payload: callback.token,
+      messageId: "message-1",
+    },
+    senderId: "user-1",
+    senderUsername: "Ada",
+    requestConversationBinding: vi.fn(async () => ({
+      status: "pending" as const,
+      reply: {
+        text: "Plugin bind approval required",
+        channelData: {
+          telegram: {
+            buttons: [[{ text: "Allow once", callback_data: "pluginbind:approval:o" }]],
+          },
+        },
+      },
+    })),
+    respond: {
+      acknowledge: vi.fn(async () => {}),
+      reply,
+      followUp: vi.fn(async () => {}),
+      editMessage: vi.fn(async () => {}),
+      clearComponents: vi.fn(async () => {}),
+    },
+  } as any);
+
+  expect(sendComponentMessage).toHaveBeenCalledTimes(1);
+  expect(sendComponentMessage).toHaveBeenCalledWith(
+    "channel:chan-1",
+    expect.objectContaining({
+      text: "Plugin bind approval required",
+    }),
+    expect.objectContaining({ accountId: "default" }),
+  );
+  expect(reply).not.toHaveBeenCalled();
+});
 
   it("claims inbound Discord messages for raw thread ids after a typed bind", async () => {
     const { controller } = await createControllerHarness();
