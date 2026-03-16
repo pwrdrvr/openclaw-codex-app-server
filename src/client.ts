@@ -3002,12 +3002,12 @@ export class CodexAppServerClient {
     const handleResult = (async () => {
       try {
         this.logger.debug(
-          `codex turn connect start run=${params.runId} existingThread=${threadId || "<none>"} workspace=${params.workspaceDir} mode=${params.collaborationMode?.mode ?? "default"} prompt="${summarizeTextForLog(params.prompt)}"`,
+          `codex turn attaching to shared app-server connection run=${params.runId} existingThread=${threadId || "<none>"} workspace=${params.workspaceDir} mode=${params.collaborationMode?.mode ?? "default"} prompt="${summarizeTextForLog(params.prompt)}"`,
         );
-        this.logger.debug(`codex turn transport connected run=${params.runId}`);
+        this.logger.debug(`codex turn shared app-server connection ready run=${params.runId}`);
         const client = await getClient();
         this.logger.debug(
-          `codex turn client initialized run=${params.runId} session=${params.sessionKey ?? "<none>"}`,
+          `codex turn using shared app-server client run=${params.runId} session=${params.sessionKey ?? "<none>"}`,
         );
         if (!threadId) {
           const created = await requestWithFallbacks({
