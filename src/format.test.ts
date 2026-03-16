@@ -133,7 +133,6 @@ describe("formatCodexStatusText", () => {
       ],
     });
 
-    expect(text).toContain("OpenAI Codex");
     expect(text).toContain("Binding: active");
     expect(text).toContain("Thread: Fix Telegram approval flow");
     expect(text).toContain("Model: openai/gpt-5.4 · reasoning high");

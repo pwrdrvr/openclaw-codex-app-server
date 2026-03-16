@@ -489,7 +489,7 @@ export function formatCodexStatusText(params: {
   contextUsage?: ContextUsageSnapshot;
   planMode?: boolean;
 }): string {
-  const lines = ["OpenAI Codex"];
+  const lines = [];
   lines.push(`Binding: ${params.bindingActive ? "active" : "none"}`);
   if (params.threadState?.threadName?.trim()) {
     lines.push(`Thread: ${params.threadState.threadName.trim()}`);
