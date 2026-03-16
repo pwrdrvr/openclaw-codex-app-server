@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.1.2 - 2026-03-15
+
+### Fixes
+
+- Aligned the Codex app-server client with the current turn protocol so resumed and bound conversations use the required `threadId`, `expectedTurnId`, and `input` request shapes instead of stale fallback variants.
+- Stopped sending invalid collaboration-mode and thread lifecycle payload variants that newer Codex app-server builds reject during `/codex_resume` and follow-up replies.
+
+### Internal
+
+- Added regression coverage for `turn/start`, `turn/steer`, and `thread/resume` payload builders, plus explicit logs when a queued steer or interrupt is skipped because no active turn id is available.
+
 ## v0.1.1 - 2026-03-15
 
 ### Internal
