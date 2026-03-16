@@ -508,6 +508,9 @@ export class CodexPluginController {
         this.serviceWorkspaceDir = ctx.workspaceDir;
         await this.start();
       },
+      stop: async () => {
+        await this.stop();
+      },
     };
   }
 
@@ -518,6 +521,18 @@ export class CodexPluginController {
     await this.store.load();
     await this.client.logStartupProbe().catch(() => undefined);
     this.started = true;
+  }
+
+  async stop(): Promise<void> {
+    if (!this.started) {
+      return;
+    }
+    for (const active of this.activeRuns.values()) {
+      await active.handle.interrupt().catch(() => undefined);
+    }
+    this.activeRuns.clear();
+    await this.client.close().catch(() => undefined);
+    this.started = false;
   }
 
   private formatConversationForLog(conversation: ConversationTarget): string {

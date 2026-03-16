@@ -221,6 +221,37 @@ describe("Discord controller flows", () => {
     expect(controller).toBeInstanceOf(CodexPluginController);
   });
 
+  it("stops the shared app-server client and interrupts active runs on service stop", async () => {
+    const { controller } = await createControllerHarness();
+    const interrupt = vi.fn(async () => undefined);
+    const close = vi.fn(async () => undefined);
+    (controller as any).client.close = close;
+    (controller as any).activeRuns.set("discord::default::channel:chan-1::", {
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:chan-1",
+      },
+      workspaceDir: "/repo/openclaw",
+      mode: "default",
+      handle: {
+        result: Promise.resolve({ threadId: "thread-1", aborted: true }),
+        queueMessage: vi.fn(async () => false),
+        submitPendingInput: vi.fn(async () => false),
+        submitPendingInputPayload: vi.fn(async () => false),
+        interrupt,
+        isAwaitingInput: vi.fn(() => false),
+        getThreadId: vi.fn(() => "thread-1"),
+      },
+    });
+
+    await controller.stop();
+
+    expect(interrupt).toHaveBeenCalled();
+    expect(close).toHaveBeenCalled();
+    expect((controller as any).activeRuns.size).toBe(0);
+  });
+
   it("uses the real Discord conversation target for slash-command resume pickers", async () => {
     const { controller, sendComponentMessage } = await createControllerHarness();
 
