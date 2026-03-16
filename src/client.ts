@@ -581,6 +581,7 @@ class StdioJsonRpcClient implements JsonRpcClient {
     private readonly command: string,
     private readonly args: string[],
     private readonly requestTimeoutMs: number,
+    private readonly logger?: PluginLogger,
   ) {}
 
   setNotificationHandler(handler: JsonRpcNotificationHandler): void {
@@ -603,12 +604,31 @@ class StdioJsonRpcClient implements JsonRpcClient {
       throw new Error("codex app server stdio pipes unavailable");
     }
     this.process = child;
+    this.logger?.debug(
+      formatStdioProcessLog("spawned", {
+        pid: child.pid,
+        command: this.command,
+        args: ["app-server", ...this.args],
+      }),
+    );
     const lineReader = readline.createInterface({ input: child.stdout });
     lineReader.on("line", (line) => {
       void this.handleLine(line);
     });
     child.stderr.on("data", () => undefined);
-    child.on("close", () => {
+    child.on("error", (error) => {
+      this.logger?.warn(
+        `codex app server process error pid=${child.pid ?? "<unknown>"} command=${this.command}: ${error.message}`,
+      );
+    });
+    child.on("close", (code, signal) => {
+      this.logger?.debug(
+        formatStdioProcessLog("exited", {
+          pid: child.pid,
+          code,
+          signal,
+        }),
+      );
       this.flushPending(new Error("codex app server stdio closed"));
       this.process = null;
     });
@@ -739,14 +759,14 @@ async function dispatchJsonRpcEnvelope(
   }
 }
 
-function createJsonRpcClient(settings: PluginSettings): JsonRpcClient {
+function createJsonRpcClient(settings: PluginSettings, logger?: PluginLogger): JsonRpcClient {
   if (settings.transport === "websocket") {
     if (!settings.url) {
       throw new Error("Codex websocket transport requires a url.");
     }
     return new WsJsonRpcClient(settings.url, settings.headers, settings.requestTimeoutMs);
   }
-  return new StdioJsonRpcClient(settings.command, settings.args, settings.requestTimeoutMs);
+  return new StdioJsonRpcClient(settings.command, settings.args, settings.requestTimeoutMs, logger);
 }
 
 async function initializeClient(params: {
@@ -845,6 +865,28 @@ function formatStartupProbeLog(info: StartupProbeInfo): string {
     info.cliVersion ? `cliVersion=${info.cliVersion}` : undefined,
     info.serverName ? `serverName=${info.serverName}` : undefined,
     info.serverVersion ? `serverVersion=${info.serverVersion}` : undefined,
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function formatStdioProcessLog(
+  event: "spawned" | "exited",
+  params: {
+    pid?: number;
+    command?: string;
+    args?: string[];
+    code?: number | null;
+    signal?: NodeJS.Signals | null;
+  },
+): string {
+  return [
+    `codex app server process ${event}`,
+    `pid=${params.pid ?? "<unknown>"}`,
+    params.command ? `command=${params.command}` : undefined,
+    params.args ? `args=${JSON.stringify(params.args)}` : undefined,
+    event === "exited" ? `code=${params.code ?? "<none>"}` : undefined,
+    event === "exited" ? `signal=${params.signal ?? "<none>"}` : undefined,
   ]
     .filter(Boolean)
     .join(" ");
@@ -1983,6 +2025,7 @@ async function withInitializedClient<T>(
   params: {
     settings: PluginSettings;
     sessionKey?: string;
+    logger?: PluginLogger;
   },
   callback: (args: {
     client: JsonRpcClient;
@@ -1990,7 +2033,7 @@ async function withInitializedClient<T>(
     initializeResult: unknown;
   }) => Promise<T>,
 ): Promise<T> {
-  const client = createJsonRpcClient(params.settings);
+  const client = createJsonRpcClient(params.settings, params.logger);
   try {
     await client.connect();
     const initializeResult = await initializeClient({
@@ -2030,7 +2073,7 @@ export class CodexAppServerClient {
     const stdioProbe =
       this.settings.transport === "stdio" ? await probeStdioVersion(this.settings) : {};
     await withInitializedClient(
-      { settings: this.settings, sessionKey: params.sessionKey },
+      { settings: this.settings, sessionKey: params.sessionKey, logger: this.logger },
       async ({ initializeResult }) => {
         const info = extractStartupProbeInfo(initializeResult, {
           ...base,
@@ -2052,7 +2095,7 @@ export class CodexAppServerClient {
     filter?: string;
   }): Promise<ThreadSummary[]> {
     return await withInitializedClient(
-      { settings: this.settings, sessionKey: params.sessionKey },
+      { settings: this.settings, sessionKey: params.sessionKey, logger: this.logger },
       async ({ client, settings }) => {
         const result = await requestWithFallbacks({
           client,
@@ -2067,7 +2110,7 @@ export class CodexAppServerClient {
 
   async listModels(params: { sessionKey?: string }): Promise<ModelSummary[]> {
     return await withInitializedClient(
-      { settings: this.settings, sessionKey: params.sessionKey },
+      { settings: this.settings, sessionKey: params.sessionKey, logger: this.logger },
       async ({ client, settings }) => {
         const result = await requestWithFallbacks({
           client,
@@ -2082,7 +2125,7 @@ export class CodexAppServerClient {
 
   async listSkills(params: { sessionKey?: string; workspaceDir?: string }): Promise<SkillSummary[]> {
     return await withInitializedClient(
-      { settings: this.settings, sessionKey: params.sessionKey },
+      { settings: this.settings, sessionKey: params.sessionKey, logger: this.logger },
       async ({ client, settings }) => {
         const result = await requestWithFallbacks({
           client,
@@ -2106,7 +2149,7 @@ export class CodexAppServerClient {
     sessionKey?: string;
   }): Promise<ExperimentalFeatureSummary[]> {
     return await withInitializedClient(
-      { settings: this.settings, sessionKey: params.sessionKey },
+      { settings: this.settings, sessionKey: params.sessionKey, logger: this.logger },
       async ({ client, settings }) => {
         const result = await requestWithFallbacks({
           client,
@@ -2121,7 +2164,7 @@ export class CodexAppServerClient {
 
   async listMcpServers(params: { sessionKey?: string }): Promise<McpServerSummary[]> {
     return await withInitializedClient(
-      { settings: this.settings, sessionKey: params.sessionKey },
+      { settings: this.settings, sessionKey: params.sessionKey, logger: this.logger },
       async ({ client, settings }) => {
         const result = await requestWithFallbacks({
           client,
@@ -2136,7 +2179,7 @@ export class CodexAppServerClient {
 
   async readRateLimits(params: { sessionKey?: string }): Promise<RateLimitSummary[]> {
     return await withInitializedClient(
-      { settings: this.settings, sessionKey: params.sessionKey },
+      { settings: this.settings, sessionKey: params.sessionKey, logger: this.logger },
       async ({ client, settings }) => {
         const result = await requestWithFallbacks({
           client,
@@ -2154,7 +2197,7 @@ export class CodexAppServerClient {
     refreshToken?: boolean;
   }): Promise<AccountSummary> {
     return await withInitializedClient(
-      { settings: this.settings, sessionKey: params.sessionKey },
+      { settings: this.settings, sessionKey: params.sessionKey, logger: this.logger },
       async ({ client, settings }) => {
         const refreshToken = params.refreshToken ?? false;
         const result = await requestWithFallbacks({
@@ -2170,7 +2213,7 @@ export class CodexAppServerClient {
 
   async readThreadState(params: { sessionKey?: string; threadId: string }): Promise<ThreadState> {
     return await withInitializedClient(
-      { settings: this.settings, sessionKey: params.sessionKey },
+      { settings: this.settings, sessionKey: params.sessionKey, logger: this.logger },
       async ({ client, settings }) => {
         try {
           const result = await requestWithFallbacks({
@@ -2198,7 +2241,7 @@ export class CodexAppServerClient {
     name: string;
   }): Promise<void> {
     await withInitializedClient(
-      { settings: this.settings, sessionKey: params.sessionKey },
+      { settings: this.settings, sessionKey: params.sessionKey, logger: this.logger },
       async ({ client, settings }) => {
         await requestWithFallbacks({
           client,
@@ -2217,7 +2260,7 @@ export class CodexAppServerClient {
     workspaceDir?: string;
   }): Promise<ThreadState> {
     return await withInitializedClient(
-      { settings: this.settings, sessionKey: params.sessionKey },
+      { settings: this.settings, sessionKey: params.sessionKey, logger: this.logger },
       async ({ client, settings }) => {
         try {
           const result = await requestWithFallbacks({
@@ -2249,7 +2292,7 @@ export class CodexAppServerClient {
     serviceTier: string | null;
   }): Promise<ThreadState> {
     return await withInitializedClient(
-      { settings: this.settings, sessionKey: params.sessionKey },
+      { settings: this.settings, sessionKey: params.sessionKey, logger: this.logger },
       async ({ client, settings }) => {
         try {
           const result = await requestWithFallbacks({
@@ -2279,7 +2322,7 @@ export class CodexAppServerClient {
     threadId: string;
     onProgress?: (progress: CompactProgress) => Promise<void> | void;
   }): Promise<CompactResult> {
-    const client = createJsonRpcClient(this.settings);
+    const client = createJsonRpcClient(this.settings, this.logger);
     let latestUsage: ContextUsageSnapshot | undefined;
     let compactionItemId = "";
     let compactionCompleted = false;
@@ -2395,7 +2438,7 @@ export class CodexAppServerClient {
     threadId: string;
   }): Promise<ThreadReplay> {
     return await withInitializedClient(
-      { settings: this.settings, sessionKey: params.sessionKey },
+      { settings: this.settings, sessionKey: params.sessionKey, logger: this.logger },
       async ({ client, settings }) => {
         const result = await requestWithFallbacks({
           client,
@@ -2417,7 +2460,7 @@ export class CodexAppServerClient {
     onPendingInput?: (state: PendingInputState | null) => Promise<void> | void;
     onInterrupted?: () => Promise<void> | void;
   }): ActiveCodexRun {
-    const client = createJsonRpcClient(this.settings);
+    const client = createJsonRpcClient(this.settings, this.logger);
     let reviewThreadId = params.threadId.trim();
     let turnId = "";
     let reviewText = "";
@@ -2677,7 +2720,7 @@ export class CodexAppServerClient {
     onPendingInput?: (state: PendingInputState | null) => Promise<void> | void;
     onInterrupted?: () => Promise<void> | void;
   }): ActiveCodexRun {
-    const client = createJsonRpcClient(this.settings);
+    const client = createJsonRpcClient(this.settings, this.logger);
     let threadId = params.existingThreadId?.trim() || "";
     let turnId = "";
     let assistantText = "";
@@ -3083,4 +3126,5 @@ export const __testing = {
   extractStartupProbeInfo,
   extractThreadTokenUsageSnapshot,
   extractRateLimitSummaries,
+  formatStdioProcessLog,
 };

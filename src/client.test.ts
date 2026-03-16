@@ -134,6 +134,30 @@ describe("extractStartupProbeInfo", () => {
   });
 });
 
+describe("formatStdioProcessLog", () => {
+  it("includes pid and command details for spawned processes", () => {
+    expect(
+      __testing.formatStdioProcessLog("spawned", {
+        pid: 4321,
+        command: "codex",
+        args: ["app-server", "--stdio-json"],
+      }),
+    ).toBe(
+      'codex app server process spawned pid=4321 command=codex args=["app-server","--stdio-json"]',
+    );
+  });
+
+  it("includes exit status details for exited processes", () => {
+    expect(
+      __testing.formatStdioProcessLog("exited", {
+        pid: 4321,
+        code: 0,
+        signal: null,
+      }),
+    ).toBe("codex app server process exited pid=4321 code=0 signal=<none>");
+  });
+});
+
 describe("extractThreadTokenUsageSnapshot", () => {
   it("prefers current-context usage over cumulative totals when both are present", () => {
     expect(
