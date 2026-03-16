@@ -209,6 +209,11 @@ beforeEach(() => {
   vi.spyOn(CodexAppServerClient.prototype, "logStartupProbe").mockResolvedValue();
 });
 
+async function flushAsyncWork(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 describe("Discord controller flows", () => {
   it("starts cleanly without the legacy runtime.channel.bindings surface", async () => {
     const { controller } = await createControllerHarnessWithoutLegacyBindings();
@@ -1241,6 +1246,138 @@ describe("Discord controller flows", () => {
     expect(startTurn).toHaveBeenCalled();
     expect(api.logger.warn).toHaveBeenCalledWith(
       expect.stringContaining("reached an active run but was not accepted; restarting"),
+    );
+  });
+
+  it("tells the user to log back in when Codex reports OpenAI auth is required", async () => {
+    const { controller, clientMock, sendMessageTelegram } = await createControllerHarness();
+    clientMock.readAccount.mockResolvedValue({
+      type: "chatgpt",
+      requiresOpenaiAuth: true,
+    } as any);
+    (controller as any).client.startTurn = vi.fn(() => ({
+      result: Promise.reject(new Error("codex app server rpc error (-32001): unauthorized")),
+      getThreadId: () => undefined,
+      queueMessage: vi.fn(async () => false),
+      interrupt: vi.fn(async () => {}),
+      isAwaitingInput: () => false,
+      submitPendingInput: vi.fn(async () => false),
+      submitPendingInputPayload: vi.fn(async () => false),
+    }));
+
+    await (controller as any).startTurn({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "8460800771",
+      },
+      binding: {
+        conversation: {
+          channel: "telegram",
+          accountId: "default",
+          conversationId: "8460800771",
+        },
+        sessionKey: "session-1",
+        threadId: "thread-1",
+        workspaceDir: "/repo/openclaw",
+        updatedAt: Date.now(),
+      },
+      workspaceDir: "/repo/openclaw",
+      prompt: "who are you?",
+      reason: "inbound",
+    });
+
+    await flushAsyncWork();
+    expect(sendMessageTelegram).toHaveBeenCalledWith(
+      "8460800771",
+      "Codex authentication failed on this machine. Run `codex logout` and `codex login`, then try again.",
+      expect.anything(),
+    );
+    expect(clientMock.readAccount).toHaveBeenCalledWith({
+      sessionKey: "session-1",
+      refreshToken: true,
+    });
+  });
+
+  it("maps obvious OAuth failures to the same re-login guidance even if account/read also fails", async () => {
+    const { controller, clientMock, sendMessageTelegram } = await createControllerHarness();
+    clientMock.readAccount.mockRejectedValue(new Error("account probe failed"));
+    (controller as any).client.startTurn = vi.fn(() => ({
+      result: Promise.reject(new Error("refresh token expired")),
+      getThreadId: () => undefined,
+      queueMessage: vi.fn(async () => false),
+      interrupt: vi.fn(async () => {}),
+      isAwaitingInput: () => false,
+      submitPendingInput: vi.fn(async () => false),
+      submitPendingInputPayload: vi.fn(async () => false),
+    }));
+
+    await (controller as any).startTurn({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "8460800771",
+      },
+      binding: null,
+      workspaceDir: "/repo/openclaw",
+      prompt: "who are you?",
+      reason: "inbound",
+    });
+
+    await flushAsyncWork();
+    expect(sendMessageTelegram).toHaveBeenCalledWith(
+      "8460800771",
+      "Codex authentication failed on this machine. Run `codex logout` and `codex login`, then try again.",
+      expect.anything(),
+    );
+  });
+
+  it("maps empty completed turns to the same re-login guidance when Codex now requires auth", async () => {
+    const { controller, clientMock, sendMessageTelegram } = await createControllerHarness();
+    clientMock.readAccount.mockResolvedValue({
+      type: "chatgpt",
+      requiresOpenaiAuth: true,
+    } as any);
+    (controller as any).client.startTurn = vi.fn(() => ({
+      result: Promise.resolve({
+        threadId: "thread-1",
+        text: "",
+      }),
+      getThreadId: () => "thread-1",
+      queueMessage: vi.fn(async () => false),
+      interrupt: vi.fn(async () => {}),
+      isAwaitingInput: () => false,
+      submitPendingInput: vi.fn(async () => false),
+      submitPendingInputPayload: vi.fn(async () => false),
+    }));
+
+    await (controller as any).startTurn({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "8460800771",
+      },
+      binding: {
+        conversation: {
+          channel: "telegram",
+          accountId: "default",
+          conversationId: "8460800771",
+        },
+        sessionKey: "session-1",
+        threadId: "thread-1",
+        workspaceDir: "/repo/openclaw",
+        updatedAt: Date.now(),
+      },
+      workspaceDir: "/repo/openclaw",
+      prompt: "who are you?",
+      reason: "inbound",
+    });
+
+    await flushAsyncWork();
+    expect(sendMessageTelegram).toHaveBeenCalledWith(
+      "8460800771",
+      "Codex authentication failed on this machine. Run `codex logout` and `codex login`, then try again.",
+      expect.anything(),
     );
   });
 });

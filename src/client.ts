@@ -2149,14 +2149,18 @@ export class CodexAppServerClient {
     );
   }
 
-  async readAccount(params: { sessionKey?: string }): Promise<AccountSummary> {
+  async readAccount(params: {
+    sessionKey?: string;
+    refreshToken?: boolean;
+  }): Promise<AccountSummary> {
     return await withInitializedClient(
       { settings: this.settings, sessionKey: params.sessionKey },
       async ({ client, settings }) => {
+        const refreshToken = params.refreshToken ?? false;
         const result = await requestWithFallbacks({
           client,
           methods: ["account/read"],
-          payloads: [{ refreshToken: false }, { refresh_token: false }, {}],
+          payloads: [{ refreshToken }, { refresh_token: refreshToken }, {}],
           timeoutMs: settings.requestTimeoutMs,
         });
         return extractAccountSummary(result);

@@ -36,7 +36,7 @@ import {
   formatThreadState,
   formatTurnCompletion,
 } from "./format.js";
-import type { CollaborationMode } from "./types.js";
+import type { AccountSummary, CollaborationMode } from "./types.js";
 import {
   buildPendingQuestionnaireResponse,
   formatPendingQuestionnairePrompt,
@@ -1583,14 +1583,26 @@ export class CodexPluginController {
         this.api.logger.debug?.(
           `codex turn completed ${this.formatConversationForLog(params.conversation)} thread=${threadId ?? "<none>"} aborted=${result.aborted ? "yes" : "no"} text=${result.text ? "yes" : "no"} plan=${result.planArtifact ? "yes" : "no"}`,
         );
-        await this.sendText(params.conversation, formatTurnCompletion(result));
+        const completionText =
+          !result.aborted && !result.text?.trim() && !result.planArtifact?.markdown
+            ? await this.describeEmptyTurnCompletion({
+                sessionKey: params.binding?.sessionKey,
+              })
+            : formatTurnCompletion(result);
+        await this.sendText(params.conversation, completionText);
       })
       .catch(async (error) => {
         const message = error instanceof Error ? error.message : String(error);
         this.api.logger.warn(
           `codex turn failed ${this.formatConversationForLog(params.conversation)}: ${message}`,
         );
-        await this.sendText(params.conversation, `Codex failed: ${message}`);
+        await this.sendText(
+          params.conversation,
+          await this.describeTurnFailure({
+            sessionKey: params.binding?.sessionKey,
+            error,
+          }),
+        );
       })
       .finally(async () => {
         typing?.stop();
@@ -1603,6 +1615,74 @@ export class CodexPluginController {
           `codex turn cleaned up ${this.formatConversationForLog(params.conversation)}`,
         );
       });
+  }
+
+  private async describeTurnFailure(params: {
+    sessionKey?: string;
+    error: unknown;
+  }): Promise<string> {
+    const message = params.error instanceof Error ? params.error.message : String(params.error);
+    const account = await this.client
+      .readAccount({
+        sessionKey: params.sessionKey,
+        refreshToken: true,
+      })
+      .catch(() => undefined);
+    if (account?.requiresOpenaiAuth === true) {
+      this.api.logger.warn?.(
+        `codex auth requires login session=${params.sessionKey ?? "<none>"}`,
+      );
+      return this.formatCodexAuthFailureMessage(account);
+    }
+    if (this.looksLikeCodexAuthFailure(message)) {
+      this.api.logger.warn?.(
+        `codex auth failure inferred from turn error session=${params.sessionKey ?? "<none>"}: ${message}`,
+      );
+      return this.formatCodexAuthFailureMessage(account);
+    }
+    return `Codex failed: ${message}`;
+  }
+
+  private async describeEmptyTurnCompletion(params: {
+    sessionKey?: string;
+  }): Promise<string> {
+    const account = await this.client
+      .readAccount({
+        sessionKey: params.sessionKey,
+        refreshToken: true,
+      })
+      .catch(() => undefined);
+    if (account?.requiresOpenaiAuth === true) {
+      this.api.logger.warn?.(
+        `codex auth requires login after empty turn session=${params.sessionKey ?? "<none>"}`,
+      );
+      return this.formatCodexAuthFailureMessage(account);
+    }
+    return "Codex completed without a text reply.";
+  }
+
+  private formatCodexAuthFailureMessage(account: AccountSummary | undefined): string {
+    if (account?.type === "apiKey" && account.requiresOpenaiAuth !== true) {
+      return "Codex authentication failed on this machine. Check the configured API key and try again.";
+    }
+    return "Codex authentication failed on this machine. Run `codex logout` and `codex login`, then try again.";
+  }
+
+  private looksLikeCodexAuthFailure(message: string): boolean {
+    const normalized = message.trim().toLowerCase();
+    return [
+      "unauthorized",
+      "401",
+      "oauth",
+      "invalid token",
+      "invalid oauth",
+      "invalid_grant",
+      "refresh token expired",
+      "requires openai auth",
+      "requiresopenaiauth",
+      "not signed in",
+      "login required",
+    ].some((pattern) => normalized.includes(pattern));
   }
 
   private async startPlan(params: {
