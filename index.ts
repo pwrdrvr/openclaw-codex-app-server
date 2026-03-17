@@ -31,9 +31,16 @@ const plugin = {
 
     api.registerService(controller.createService());
 
-    api.onConversationBindingResolved(async (event) => {
-      await controller.handleConversationBindingResolved(event);
-    });
+    const bindingResolvedHook = (
+      api as OpenClawPluginApi & {
+        onConversationBindingResolved?: OpenClawPluginApi["onConversationBindingResolved"];
+      }
+    ).onConversationBindingResolved;
+    if (typeof bindingResolvedHook === "function") {
+      bindingResolvedHook(async (event) => {
+        await controller.handleConversationBindingResolved(event);
+      });
+    }
 
     api.on("inbound_claim", async (event) => {
       return await controller.handleInboundClaim(event);
