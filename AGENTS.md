@@ -3,6 +3,8 @@
 ## Project Structure & Module Organization
 `index.ts` is the plugin entrypoint and registers commands, services, and interactive handlers. Core implementation lives in [`src/`](./src): controller flow in `controller.ts`, API/client integration in `client.ts`, configuration in `config.ts`, state and thread helpers in `state.ts`, `thread-picker.ts`, and `thread-selection.ts`, and user-facing text formatting in `format.ts`. Tests are colocated with source files as `src/*.test.ts`. Plugin metadata lives in `openclaw.plugin.json`; package and TypeScript settings are in `package.json` and `tsconfig.json`.
 
+Design notes and upstream behavior captures live under [`docs/specs/`](./docs/specs). Before changing approval, trust, sandbox, file-edit, or media-handling behavior, review [`docs/specs/PERMISSIONS.md`](./docs/specs/PERMISSIONS.md) and [`docs/specs/MEDIA.md`](./docs/specs/MEDIA.md).
+
 ## Build, Test, and Development Commands
 Use `pnpm` for local work.
 
