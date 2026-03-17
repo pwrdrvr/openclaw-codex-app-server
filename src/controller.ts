@@ -14,6 +14,7 @@ import type {
   ReplyPayload,
   ConversationRef,
 } from "openclaw/plugin-sdk";
+import { resolveDiscordAccount } from "openclaw/plugin-sdk/discord";
 import { resolvePluginSettings, resolveWorkspaceDir } from "./config.js";
 import { CodexAppServerClient, type ActiveCodexRun, isMissingThreadError } from "./client.js";
 import {
@@ -111,11 +112,6 @@ type ScopedBindingApi = {
   getCurrentConversationBinding?: () => Promise<unknown>;
 };
 
-type FollowUpSummary = {
-  initialReply: ReplyPayload;
-  followUps: string[];
-};
-
 type HydratedBindingResult = {
   binding: StoredBinding;
   pendingBind?: StoredPendingBind;
@@ -126,6 +122,18 @@ type PlanDelivery = {
   attachmentPath?: string;
   attachmentFallbackText?: string;
 };
+
+type DeliveredMessageRef =
+  | {
+      provider: "telegram";
+      messageId: string;
+      chatId: string;
+    }
+  | {
+      provider: "discord";
+      messageId: string;
+      channelId: string;
+    };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -546,6 +554,7 @@ export class CodexPluginController {
   private readonly threadChangesCache = new Map<string, Promise<boolean | undefined>>();
   private readonly store;
   private serviceWorkspaceDir?: string;
+  private lastRuntimeConfig?: unknown;
   private started = false;
 
   constructor(private readonly api: OpenClawPluginApi) {
@@ -888,6 +897,7 @@ export class CodexPluginController {
 
   async handleCommand(commandName: string, ctx: PluginCommandContext): Promise<ReplyPayload> {
     await this.start();
+    this.lastRuntimeConfig = ctx.config;
     const bindingApi = asScopedBindingApi(ctx);
     const conversation = toConversationTargetFromCommand(ctx);
     const currentBinding =
@@ -1021,9 +1031,8 @@ export class CodexPluginController {
           await this.renameConversationIfSupported(conversation, syncedName);
         }
       }
-      const summary = await this.buildBoundConversationSummaryReply(conversation);
-      this.queueFollowUpTexts(conversation, summary.followUps);
-      return summary.initialReply;
+      await this.sendBoundConversationSummary(conversation);
+      return {};
     }
     if (parsed.listProjects || !parsed.query) {
       const passthroughArgs = [
@@ -1090,9 +1099,8 @@ export class CodexPluginController {
         await this.renameConversationIfSupported(conversation, syncedName);
       }
     }
-    const summary = await this.buildBoundConversationSummaryReply(conversation);
-    this.queueFollowUpTexts(conversation, summary.followUps);
-    return summary.initialReply;
+    await this.sendBoundConversationSummary(conversation);
+    return {};
   }
 
   private async handleStatusCommand(
@@ -2975,6 +2983,7 @@ export class CodexPluginController {
     },
   ): Promise<StoredBinding> {
     const sessionKey = buildPluginSessionKey(params.threadId);
+    const existing = this.store.getBinding(conversation);
     const record: StoredBinding = {
       conversation: {
         channel: conversation.channel,
@@ -2986,7 +2995,8 @@ export class CodexPluginController {
       threadId: params.threadId,
       workspaceDir: params.workspaceDir,
       threadTitle: params.threadTitle,
-      contextUsage: this.store.getBinding(conversation)?.contextUsage,
+      pinnedBindingMessage: existing?.pinnedBindingMessage,
+      contextUsage: existing?.contextUsage,
       updatedAt: Date.now(),
     };
     await this.store.upsertBinding(record);
@@ -3171,35 +3181,14 @@ export class CodexPluginController {
       parentConversationId: conversation.parentConversationId,
       threadId: "threadId" in conversation ? conversation.threadId : undefined,
     };
-    for (const message of messages) {
+    const [firstMessage, ...followUps] = messages;
+    if (firstMessage) {
+      const delivered = await this.sendTextWithDeliveryRef(target, firstMessage);
+      await this.pinBindingMessage(target, delivered);
+    }
+    for (const message of followUps) {
       await this.sendText(target, message);
     }
-  }
-
-  private async buildBoundConversationSummaryReply(
-    conversation: ConversationTarget | ConversationRef,
-  ): Promise<FollowUpSummary> {
-    const messages = await this.buildBoundConversationMessages(conversation);
-    const [firstMessage, ...followUps] = messages;
-    return {
-      initialReply: buildPlainReply(firstMessage ?? "Codex thread bound."),
-      followUps,
-    };
-  }
-
-  private queueFollowUpTexts(conversation: ConversationTarget, texts: string[]): void {
-    if (texts.length === 0) {
-      return;
-    }
-    setTimeout(() => {
-      void (async () => {
-        for (const text of texts) {
-          await this.sendText(conversation, text);
-        }
-      })().catch((error) => {
-        this.api.logger.warn(`codex follow-up send failed: ${String(error)}`);
-      });
-    }, 0);
   }
 
   private async buildStatusText(
@@ -3484,6 +3473,10 @@ export class CodexPluginController {
   }
 
   private async unbindConversation(conversation: ConversationTarget): Promise<void> {
+    const binding = this.store.getBinding(conversation);
+    if (binding?.pinnedBindingMessage) {
+      await this.unpinStoredBindingMessage(binding);
+    }
     await this.store.removeBinding(conversation);
   }
 
@@ -3524,6 +3517,219 @@ export class CodexPluginController {
       text,
       buttons: opts?.buttons,
     });
+  }
+
+  private async sendTextWithDeliveryRef(
+    conversation: ConversationTarget,
+    text: string,
+  ): Promise<DeliveredMessageRef | null> {
+    const trimmed = text.trim();
+    if (!trimmed) {
+      return null;
+    }
+    if (isTelegramChannel(conversation.channel)) {
+      const limit = this.api.runtime.channel.text.resolveTextChunkLimit(
+        undefined,
+        "telegram",
+        conversation.accountId,
+        { fallbackLimit: 4000 },
+      );
+      const chunks = this.api.runtime.channel.text.chunkText(trimmed, limit).filter(Boolean);
+      const textChunks = chunks.length > 0 ? chunks : [trimmed];
+      let firstDelivered: DeliveredMessageRef | null = null;
+      for (const chunk of textChunks) {
+        const result = await this.api.runtime.channel.telegram.sendMessageTelegram(
+          conversation.parentConversationId ?? conversation.conversationId,
+          chunk,
+          {
+            accountId: conversation.accountId,
+            messageThreadId: conversation.threadId,
+          },
+        );
+        if (!firstDelivered) {
+          firstDelivered = {
+            provider: "telegram",
+            messageId: result.messageId,
+            chatId: result.chatId,
+          };
+        }
+      }
+      return firstDelivered;
+    }
+    if (isDiscordChannel(conversation.channel)) {
+      const limit = this.api.runtime.channel.text.resolveTextChunkLimit(
+        undefined,
+        "discord",
+        conversation.accountId,
+        { fallbackLimit: 2000 },
+      );
+      const chunks = this.api.runtime.channel.text.chunkText(trimmed, limit).filter(Boolean);
+      const textChunks = chunks.length > 0 ? chunks : [trimmed];
+      let firstDelivered: DeliveredMessageRef | null = null;
+      for (const chunk of textChunks) {
+        const result = await this.api.runtime.channel.discord.sendMessageDiscord(
+          conversation.conversationId,
+          chunk,
+          {
+            accountId: conversation.accountId,
+          },
+        );
+        if (!firstDelivered) {
+          firstDelivered = {
+            provider: "discord",
+            messageId: result.messageId,
+            channelId: result.channelId,
+          };
+        }
+      }
+      return firstDelivered;
+    }
+    await this.sendText(conversation, trimmed);
+    return null;
+  }
+
+  private async pinBindingMessage(
+    conversation: ConversationTarget,
+    delivered: DeliveredMessageRef | null,
+  ): Promise<void> {
+    if (!delivered) {
+      return;
+    }
+    const binding = this.store.getBinding(conversation);
+    if (!binding) {
+      return;
+    }
+    if (binding.pinnedBindingMessage) {
+      await this.unpinStoredBindingMessage(binding).catch(() => undefined);
+    }
+    try {
+      if (delivered.provider === "telegram") {
+        const token = await this.resolveTelegramBotToken(conversation.accountId);
+        if (!token) {
+          this.api.logger.debug?.(
+            `codex telegram pin skipped ${this.formatConversationForLog(conversation)} reason=no-token`,
+          );
+          return;
+        }
+        await this.callTelegramPinApi("pinChatMessage", token, {
+          chat_id: delivered.chatId,
+          message_id: Number(delivered.messageId),
+          disable_notification: true,
+        });
+      } else {
+        const token = await this.resolveDiscordBotToken(conversation.accountId);
+        if (!token) {
+          this.api.logger.debug?.(
+            `codex discord pin skipped ${this.formatConversationForLog(conversation)} reason=no-token`,
+          );
+          return;
+        }
+        await this.callDiscordPinApi("pin", token, delivered.channelId, delivered.messageId);
+      }
+      await this.store.upsertBinding({
+        ...binding,
+        pinnedBindingMessage: delivered,
+        updatedAt: Date.now(),
+      });
+    } catch (error) {
+      this.api.logger.warn(`codex binding message pin failed: ${String(error)}`);
+    }
+  }
+
+  private async unpinStoredBindingMessage(binding: StoredBinding): Promise<void> {
+    const pinned = binding.pinnedBindingMessage;
+    if (!pinned) {
+      return;
+    }
+    try {
+      if (pinned.provider === "telegram") {
+        const token = await this.resolveTelegramBotToken(binding.conversation.accountId);
+        if (!token) {
+          this.api.logger.debug?.(
+            `codex telegram unpin skipped conversation=${binding.conversation.conversationId} reason=no-token`,
+          );
+          return;
+        }
+        await this.callTelegramPinApi("unpinChatMessage", token, {
+          chat_id: pinned.chatId,
+          message_id: Number(pinned.messageId),
+        });
+      } else {
+        const token = await this.resolveDiscordBotToken(binding.conversation.accountId);
+        if (!token) {
+          this.api.logger.debug?.(
+            `codex discord unpin skipped conversation=${binding.conversation.conversationId} reason=no-token`,
+          );
+          return;
+        }
+        await this.callDiscordPinApi("unpin", token, pinned.channelId, pinned.messageId);
+      }
+    } catch (error) {
+      this.api.logger.warn(`codex binding message unpin failed: ${String(error)}`);
+    }
+  }
+
+  private async resolveTelegramBotToken(accountId?: string): Promise<string | undefined> {
+    const resolution = this.api.runtime.channel.telegram.resolveTelegramToken?.(
+      this.lastRuntimeConfig,
+      { accountId },
+    );
+    const token = resolution?.token?.trim();
+    return token || undefined;
+  }
+
+  private async resolveDiscordBotToken(accountId?: string): Promise<string | undefined> {
+    const cfg = this.lastRuntimeConfig;
+    if (!cfg) {
+      return undefined;
+    }
+    const account = resolveDiscordAccount({
+      cfg: cfg as Parameters<typeof resolveDiscordAccount>[0]["cfg"],
+      accountId,
+    });
+    const token = account.token?.trim();
+    return token || undefined;
+  }
+
+  private async callDiscordPinApi(
+    action: "pin" | "unpin",
+    token: string,
+    channelId: string,
+    messageId: string,
+  ): Promise<void> {
+    const response = await fetch(
+      `https://discord.com/api/v10/channels/${encodeURIComponent(channelId)}/pins/${encodeURIComponent(messageId)}`,
+      {
+        method: action === "pin" ? "PUT" : "DELETE",
+        headers: {
+          Authorization: `Bot ${token}`,
+        },
+      },
+    );
+    if (!response.ok) {
+      throw new Error(
+        `Discord ${action} failed status=${response.status} body=${await response.text()}`,
+      );
+    }
+  }
+
+  private async callTelegramPinApi(
+    method: "pinChatMessage" | "unpinChatMessage",
+    token: string,
+    body: Record<string, unknown>,
+  ): Promise<void> {
+    const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      throw new Error(
+        `Telegram ${method} failed status=${response.status} body=${await response.text()}`,
+      );
+    }
   }
 
   private async renameConversationIfSupported(

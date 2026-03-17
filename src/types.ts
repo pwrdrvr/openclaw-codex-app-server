@@ -244,6 +244,17 @@ export type StoredBinding = {
   threadId: string;
   workspaceDir: string;
   threadTitle?: string;
+  pinnedBindingMessage?:
+    | {
+        provider: "telegram";
+        messageId: string;
+        chatId: string;
+      }
+    | {
+        provider: "discord";
+        messageId: string;
+        channelId: string;
+      };
   contextUsage?: ContextUsageSnapshot;
   updatedAt: number;
 };
