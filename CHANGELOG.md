@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.2.0 - 2026-03-16
+
+### Highlights
+
+- Reused a shared Codex app-server connection across plugin operations so thread actions and follow-up commands avoid repeated reconnect churn and stay more reliable. @huntharo (#3)
+
+### Fixes
+
+- Added clearer recovery guidance when local Codex authentication expires, including the case where a turn ends without returning assistant text.
+- Restored missing bind-approval buttons and removed duplicate approval prompts so Telegram and Discord binding flows stay actionable.
+- Replayed topic-sync updates after bind approval so `/codex_resume --sync` still renames the conversation once approval finishes.
+- Clarified the project as an independent OpenClaw bridge and removed leftover OpenAI-branded status text from user-facing surfaces.
+
 ## v0.1.2 - 2026-03-15
 
 ### Fixes
