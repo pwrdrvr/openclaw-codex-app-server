@@ -251,6 +251,90 @@ describe("extractFileChangePathsFromReadResult", () => {
   });
 });
 
+describe("extractFileEditSummariesFromNotification", () => {
+  it("extracts relative paths and +/- stats from fileChange item notifications", () => {
+    expect(
+      __testing.extractFileEditSummariesFromNotification(
+        {
+          item: {
+            type: "fileChange",
+            id: "item-1",
+            status: "inProgress",
+            changes: [
+              {
+                path: "/repo/openclaw/src/a.ts",
+                kind: "update",
+                diff: "@@ -1 +1 @@\n-oldValue\n+newValue\n",
+              },
+              {
+                path: "/repo/openclaw/README.md",
+                kind: "add",
+                diff: "line 1\nline 2\n",
+              },
+              {
+                path: "/tmp/outside.txt",
+                kind: "delete",
+                diff: "gone\n",
+              },
+            ],
+          },
+        },
+        "/repo/openclaw",
+      ),
+    ).toEqual([
+      { path: "src/a.ts", verb: "Edited", added: 1, removed: 1 },
+      { path: "README.md", verb: "Added", added: 2, removed: 0 },
+      { path: "/tmp/outside.txt", verb: "Deleted", added: 0, removed: 1 },
+    ]);
+  });
+});
+
+describe("formatFileEditNotice", () => {
+  it("matches the desktop-style single-file summary", () => {
+    expect(
+      __testing.formatFileEditNotice([
+        { path: "AGENTS.md", verb: "Edited", added: 2, removed: 0 },
+      ]),
+    ).toBe("Edited `AGENTS.md` (+2 -0)");
+  });
+
+  it("renders a compact batch summary with per-file stats", () => {
+    expect(
+      __testing.formatFileEditNotice([
+        { path: "src/a.ts", verb: "Edited", added: 1, removed: 1 },
+        { path: "README.md", verb: "Added", added: 2, removed: 0 },
+      ]),
+    ).toBe(
+      "Edited 2 files (+3 -1)\n- Added `README.md` (+2 -0)\n- Edited `src/a.ts` (+1 -1)",
+    );
+  });
+});
+
+describe("createFileEditNoticeBatcher", () => {
+  it("merges repeated edits for the same file before flushing", async () => {
+    const emitted: string[] = [];
+    const batcher = __testing.createFileEditNoticeBatcher({
+      onFlush: async (text: string) => {
+        emitted.push(text);
+      },
+    });
+
+    batcher.add([
+      { path: "src/a.ts", verb: "Edited", added: 1, removed: 0 },
+      { path: "README.md", verb: "Added", added: 2, removed: 0 },
+    ]);
+    batcher.add([{ path: "src/a.ts", verb: "Edited", added: 0, removed: 1 }]);
+
+    expect(batcher.hasPending()).toBe(true);
+    await batcher.flush();
+
+    expect(emitted).toEqual([
+      "Edited 2 files (+3 -1)\n- Added `README.md` (+2 -0)\n- Edited `src/a.ts` (+1 -1)",
+    ]);
+    expect(batcher.hasPending()).toBe(false);
+  });
+});
+
 describe("extractRateLimitSummaries", () => {
   it("extracts primary and secondary window snapshots from rateLimitsByLimitId", () => {
     expect(

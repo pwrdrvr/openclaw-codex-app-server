@@ -86,6 +86,13 @@ type StartupProbeInfo = {
   serverVersion?: string;
 };
 
+type FileEditSummary = {
+  path: string;
+  verb: "Added" | "Deleted" | "Edited";
+  added: number;
+  removed: number;
+};
+
 function isTransportClosedError(error: unknown): boolean {
   const text = error instanceof Error ? error.message : String(error);
   const normalized = text.trim().toLowerCase();
@@ -1243,6 +1250,140 @@ function normalizeApprovalFilePath(rawPath: string, workspaceDir?: string): stri
     }
   }
   return trimmed;
+}
+
+function countTextLines(text: string): number {
+  const normalized = text.replace(/\r\n/g, "\n");
+  if (!normalized) {
+    return 0;
+  }
+  const lines = normalized.split("\n");
+  if (lines[lines.length - 1] === "") {
+    lines.pop();
+  }
+  return lines.length;
+}
+
+function calculateAddRemoveFromDiff(diff: string): { added: number; removed: number } {
+  let added = 0;
+  let removed = 0;
+  for (const line of diff.replace(/\r\n/g, "\n").split("\n")) {
+    if (line.startsWith("+++") || line.startsWith("---")) {
+      continue;
+    }
+    if (line.startsWith("+")) {
+      added += 1;
+    } else if (line.startsWith("-")) {
+      removed += 1;
+    }
+  }
+  return { added, removed };
+}
+
+function extractFileEditSummariesFromNotification(
+  value: unknown,
+  workspaceDir?: string,
+): FileEditSummary[] {
+  const item = asRecord(asRecord(value)?.item);
+  if (!item) {
+    return [];
+  }
+  const itemType = pickString(item, ["type"])?.trim().toLowerCase();
+  if (itemType !== "filechange") {
+    return [];
+  }
+  const rawChanges = Array.isArray(item.changes) ? item.changes : [];
+  return rawChanges
+    .map((entry) => {
+      const change = asRecord(entry);
+      if (!change) {
+        return null;
+      }
+      const rawPath = pickString(change, ["path"]);
+      if (!rawPath) {
+        return null;
+      }
+      const diff = pickString(change, ["diff"], { trim: false }) ?? "";
+      const kind = pickString(change, ["kind"])?.trim().toLowerCase();
+      const stats =
+        kind === "add"
+          ? { added: countTextLines(diff), removed: 0 }
+          : kind === "delete"
+            ? { added: 0, removed: countTextLines(diff) }
+            : calculateAddRemoveFromDiff(diff);
+      return {
+        path: normalizeApprovalFilePath(rawPath, workspaceDir),
+        verb:
+          kind === "add" ? "Added" : kind === "delete" ? "Deleted" : "Edited",
+        added: stats.added,
+        removed: stats.removed,
+      } satisfies FileEditSummary;
+    })
+    .filter((entry): entry is FileEditSummary => Boolean(entry?.path));
+}
+
+function mergeFileEditSummary(
+  current: FileEditSummary | undefined,
+  incoming: FileEditSummary,
+): FileEditSummary {
+  if (!current) {
+    return incoming;
+  }
+  return {
+    path: incoming.path,
+    verb:
+      current.verb === incoming.verb && current.verb !== "Edited" ? current.verb : "Edited",
+    added: current.added + incoming.added,
+    removed: current.removed + incoming.removed,
+  };
+}
+
+function formatFileEditNotice(summaries: FileEditSummary[]): string {
+  if (summaries.length === 0) {
+    return "";
+  }
+  const ordered = [...summaries].sort((left, right) => left.path.localeCompare(right.path));
+  if (ordered.length === 1) {
+    const [entry] = ordered;
+    return `${entry.verb} \`${entry.path}\` (+${entry.added} -${entry.removed})`;
+  }
+  const totalAdded = ordered.reduce((sum, entry) => sum + entry.added, 0);
+  const totalRemoved = ordered.reduce((sum, entry) => sum + entry.removed, 0);
+  const noun = ordered.length === 1 ? "file" : "files";
+  const lines = [
+    `Edited ${ordered.length} ${noun} (+${totalAdded} -${totalRemoved})`,
+    ...ordered.map(
+      (entry) => `- ${entry.verb} \`${entry.path}\` (+${entry.added} -${entry.removed})`,
+    ),
+  ];
+  return lines.join("\n");
+}
+
+function createFileEditNoticeBatcher(params: {
+  onFlush?: (text: string) => Promise<void> | void;
+}) {
+  const summaries = new Map<string, FileEditSummary>();
+
+  return {
+    add(entries: FileEditSummary[]) {
+      for (const entry of entries) {
+        summaries.set(entry.path, mergeFileEditSummary(summaries.get(entry.path), entry));
+      }
+    },
+    hasPending() {
+      return summaries.size > 0;
+    },
+    async flush() {
+      if (summaries.size === 0) {
+        return;
+      }
+      const text = formatFileEditNotice([...summaries.values()]);
+      summaries.clear();
+      if (text) {
+        await params.onFlush?.(text);
+      }
+    },
+  };
 }
 
 function extractFileChangePathsFromReadResult(
@@ -2796,6 +2937,7 @@ export class CodexAppServerClient {
     model?: string;
     collaborationMode?: CollaborationMode;
     onPendingInput?: (state: PendingInputState | null) => Promise<void> | void;
+    onFileEdits?: (text: string) => Promise<void> | void;
     onInterrupted?: () => Promise<void> | void;
   }): ActiveCodexRun {
     let threadId = params.existingThreadId?.trim() || "";
@@ -2824,6 +2966,9 @@ export class CodexAppServerClient {
         awaitingInput = false;
       },
     });
+    const fileEditNoticeBatcher = createFileEditNoticeBatcher({
+      onFlush: params.onFileEdits,
+    });
     let completeTurn: (() => void) | null = null;
     const completion = new Promise<void>((resolve) => {
       completeTurn = () => {
@@ -2850,6 +2995,16 @@ export class CodexAppServerClient {
         const tokenUsage = extractThreadTokenUsageSnapshot(notificationParams);
         if (tokenUsage) {
           latestContextUsage = tokenUsage;
+        }
+        if (methodLower === "item/started") {
+          const fileEditSummaries = extractFileEditSummariesFromNotification(
+            notificationParams,
+            params.workspaceDir,
+          );
+          if (fileEditSummaries.length > 0) {
+            fileEditNoticeBatcher.add(fileEditSummaries);
+            return;
+          }
         }
         if (methodLower === "serverrequest/resolved") {
           await pendingInputCoordinator.clearCurrent();
@@ -2914,6 +3069,7 @@ export class CodexAppServerClient {
           methodLower === "turn/failed" ||
           methodLower === "turn/cancelled"
         ) {
+          await fileEditNoticeBatcher.flush();
           this.logger.debug(
             `codex turn terminal notification run=${params.runId} thread=${threadId || "<pending>"} turn=${turnId || "<pending>"} method=${methodLower}`,
           );
@@ -2941,6 +3097,7 @@ export class CodexAppServerClient {
       const requestId = ids.requestId ?? `${params.runId}-${Date.now().toString(36)}`;
       const expiresAt = Date.now() + this.settings.inputTimeoutMs;
       const client = await getClient();
+      await fileEditNoticeBatcher.flush();
       const enrichedRequestParams =
         methodLower.includes("filechange/requestapproval") && ids.threadId && ids.itemId
           ? {
@@ -3206,9 +3363,12 @@ export const __testing = {
   buildThreadResumePayloads,
   buildTurnStartPayloads,
   buildTurnSteerPayloads,
+  createFileEditNoticeBatcher,
   createPendingInputCoordinator,
+  extractFileEditSummariesFromNotification,
   extractFileChangePathsFromReadResult,
   extractStartupProbeInfo,
+  formatFileEditNotice,
   extractThreadTokenUsageSnapshot,
   extractRateLimitSummaries,
   formatStdioProcessLog,

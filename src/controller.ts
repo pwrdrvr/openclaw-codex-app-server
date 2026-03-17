@@ -1689,6 +1689,9 @@ export class CodexPluginController {
         );
         await this.handlePendingInputState(params.conversation, params.workspaceDir, state, run);
       },
+      onFileEdits: async (text) => {
+        await this.sendText(params.conversation, text);
+      },
       onInterrupted: async () => {
         this.api.logger.debug?.(
           `codex turn interrupted ${this.formatConversationForLog(params.conversation)}`,

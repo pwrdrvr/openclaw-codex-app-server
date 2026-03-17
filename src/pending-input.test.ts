@@ -108,6 +108,59 @@ describe("pending-input helpers", () => {
     expect(text).toContain("`/tmp/outside.txt`");
   });
 
+  it("includes writable-root context for file change approvals that request broader access", () => {
+    const text = buildPendingPromptText({
+      method: "item/fileChange/requestApproval",
+      requestId: "req-file-3",
+      requestParams: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        itemId: "item-1",
+        reason: "Codex needs write access outside the workspace.",
+        grantRoot: "/Users/huntharo/github/codex",
+      },
+      options: [],
+      actions: buildPendingUserInputActions({
+        method: "item/fileChange/requestApproval",
+        requestParams: {
+          threadId: "thread-1",
+          turnId: "turn-1",
+          itemId: "item-1",
+        },
+      }),
+      expiresAt: Date.now() + 60_000,
+    });
+
+    expect(text).toContain("Codex file change approval requested");
+    expect(text).toContain("Codex needs write access outside the workspace.");
+    expect(text).toContain("Requested writable root: `/Users/huntharo/github/codex`");
+    expect(text).not.toContain("Command:");
+  });
+
+  it("uses explicit approval decision labels when command approvals provide them", () => {
+    const actions = buildPendingUserInputActions({
+      method: "item/commandExecution/requestApproval",
+      requestParams: {
+        availableDecisions: [
+          { decision: "accept", label: "Allow once" },
+          {
+            decision: "acceptForSession",
+            label: "Always allow `pnpm typecheck`",
+            proposedExecpolicyAmendment: { prefix: ["pnpm", "typecheck"] },
+          },
+          { decision: "decline", label: "Deny" },
+        ],
+      },
+    });
+
+    expect(actions.map((action) => action.label)).toEqual([
+      "Allow once",
+      "Always allow `pnpm typecheck`",
+      "Deny",
+      "Tell Codex What To Do",
+    ]);
+  });
+
   it("creates a stable request token", () => {
     expect(requestToken("abc")).toBe(requestToken("abc"));
     expect(requestToken("abc")).not.toBe(requestToken("def"));
