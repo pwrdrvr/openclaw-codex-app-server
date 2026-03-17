@@ -192,7 +192,15 @@ declare module "openclaw/plugin-sdk" {
               textMode?: "markdown" | "html";
               buttons?: PluginInteractiveButtons;
             },
-          ) => Promise<unknown>;
+          ) => Promise<{ messageId: string; chatId: string }>;
+          resolveTelegramToken: (
+            cfg?: unknown,
+            opts?: {
+              envToken?: string | null;
+              accountId?: string | null;
+              logMissingFile?: (message: string) => void;
+            },
+          ) => { token: string; source: string };
           typing: {
             start: (params: {
               to: string;
@@ -218,7 +226,7 @@ declare module "openclaw/plugin-sdk" {
               mediaUrl?: string;
               mediaLocalRoots?: readonly string[];
             },
-          ) => Promise<unknown>;
+          ) => Promise<{ messageId: string; channelId: string }>;
           sendComponentMessage: (
             to: string,
             spec: unknown,

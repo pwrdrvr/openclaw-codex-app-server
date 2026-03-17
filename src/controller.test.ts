@@ -13,10 +13,12 @@ function makeStateDir(): string {
 function createApiMock() {
   const stateDir = makeStateDir();
   const sendComponentMessage = vi.fn(async () => ({}));
-  const sendMessageDiscord = vi.fn(async () => ({}));
-  const sendMessageTelegram = vi.fn(async () => ({}));
+  const sendMessageDiscord = vi.fn(async () => ({ messageId: "discord-msg-1", channelId: "channel:chan-1" }));
+  const sendMessageTelegram = vi.fn(async () => ({ messageId: "1", chatId: "123" }));
   const discordTypingStart = vi.fn(async () => ({ refresh: vi.fn(async () => {}), stop: vi.fn() }));
   const renameTopic = vi.fn(async () => ({}));
+  const resolveTelegramToken = vi.fn(() => ({ token: "telegram-token", source: "config" }));
+  const editChannel = vi.fn(async () => ({}));
   const api = {
     id: "test-plugin",
     pluginConfig: {
@@ -46,6 +48,7 @@ function createApiMock() {
         },
         telegram: {
           sendMessageTelegram,
+          resolveTelegramToken,
           typing: {
             start: vi.fn(async () => ({ refresh: vi.fn(async () => {}), stop: vi.fn() })),
           },
@@ -60,7 +63,7 @@ function createApiMock() {
             start: discordTypingStart,
           },
           conversationActions: {
-            editChannel: vi.fn(async () => ({})),
+            editChannel,
           },
         },
       },
@@ -78,6 +81,8 @@ function createApiMock() {
     sendMessageTelegram,
     discordTypingStart,
     renameTopic,
+    resolveTelegramToken,
+    editChannel,
     stateDir,
   };
 }
@@ -90,6 +95,8 @@ async function createControllerHarness() {
     sendMessageTelegram,
     discordTypingStart,
     renameTopic,
+    resolveTelegramToken,
+    editChannel,
     stateDir,
   } = createApiMock();
   const controller = new CodexPluginController(api);
@@ -145,6 +152,8 @@ async function createControllerHarness() {
     sendMessageTelegram,
     discordTypingStart,
     renameTopic,
+    resolveTelegramToken,
+    editChannel,
     stateDir,
   };
 }
@@ -204,10 +213,19 @@ function buildTelegramCommandContext(
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 beforeEach(() => {
   vi.spyOn(CodexAppServerClient.prototype, "logStartupProbe").mockResolvedValue();
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => "",
+    })),
+  );
 });
 
 async function flushAsyncWork(): Promise<void> {
@@ -660,7 +678,7 @@ describe("Discord controller flows", () => {
   });
 
   it("parses unicode em dash --sync for codex_resume and renames the Telegram topic", async () => {
-    const { controller, renameTopic } = await createControllerHarness();
+    const { controller, renameTopic, sendMessageTelegram } = await createControllerHarness();
 
     const reply = await controller.handleCommand(
       "codex_resume",
@@ -677,7 +695,128 @@ describe("Discord controller flows", () => {
       "Discord Thread (openclaw)",
       expect.objectContaining({ accountId: "default" }),
     );
-    expect(reply.text).toContain("Codex thread bound.");
+    expect(reply).toEqual({});
+    expect(sendMessageTelegram).toHaveBeenCalledWith(
+      "123",
+      expect.stringContaining("Thread Name: Discord Thread"),
+      expect.objectContaining({ accountId: "default", messageThreadId: 456 }),
+    );
+  });
+
+  it("pins the Telegram binding summary message on resume and unpins it on detach", async () => {
+    const { controller } = await createControllerHarness();
+    const fetchMock = vi.mocked(fetch);
+
+    await controller.handleCommand(
+      "codex_resume",
+      buildTelegramCommandContext({
+        args: "thread-1",
+        commandBody: "/codex_resume thread-1",
+        messageThreadId: 456,
+      }),
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.telegram.org/bottelegram-token/pinChatMessage",
+      expect.objectContaining({
+        method: "POST",
+      }),
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual(
+      expect.objectContaining({
+        chat_id: "123",
+        message_id: 1,
+      }),
+    );
+    expect(
+      (controller as any).store.getBinding({
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123:topic:456",
+        parentConversationId: "123",
+      }),
+    ).toEqual(
+      expect.objectContaining({
+        pinnedBindingMessage: {
+          provider: "telegram",
+          messageId: "1",
+          chatId: "123",
+        },
+      }),
+    );
+
+    await controller.handleCommand(
+      "codex_detach",
+      buildTelegramCommandContext({
+        commandBody: "/codex_detach",
+        messageThreadId: 456,
+        getCurrentConversationBinding: vi.fn(async () => ({ bindingId: "binding-1" })),
+      }),
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.telegram.org/bottelegram-token/unpinChatMessage",
+      expect.objectContaining({
+        method: "POST",
+      }),
+    );
+  });
+
+  it("pins the Discord binding summary message on resume and unpins it on detach", async () => {
+    const { controller } = await createControllerHarness();
+    const fetchMock = vi.mocked(fetch);
+    vi.spyOn(controller as any, "resolveDiscordBotToken").mockResolvedValue("discord-token");
+
+    await controller.handleCommand(
+      "codex_resume",
+      buildDiscordCommandContext({
+        args: "thread-1",
+        commandBody: "/codex_resume thread-1",
+      }),
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://discord.com/api/v10/channels/channel%3Achan-1/pins/discord-msg-1",
+      expect.objectContaining({
+        method: "PUT",
+        headers: expect.objectContaining({
+          Authorization: "Bot discord-token",
+        }),
+      }),
+    );
+    expect(
+      (controller as any).store.getBinding({
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:chan-1",
+      }),
+    ).toEqual(
+      expect.objectContaining({
+        pinnedBindingMessage: {
+          provider: "discord",
+          messageId: "discord-msg-1",
+          channelId: "channel:chan-1",
+        },
+      }),
+    );
+
+    await controller.handleCommand(
+      "codex_detach",
+      buildDiscordCommandContext({
+        commandBody: "/codex_detach",
+        getCurrentConversationBinding: vi.fn(async () => ({ bindingId: "binding-1" })),
+      }),
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://discord.com/api/v10/channels/channel%3Achan-1/pins/discord-msg-1",
+      expect.objectContaining({
+        method: "DELETE",
+        headers: expect.objectContaining({
+          Authorization: "Bot discord-token",
+        }),
+      }),
+    );
   });
 
   it("replays pending codex_resume --sync effects after approval hydrates on the next resume command", async () => {
@@ -735,7 +874,12 @@ describe("Discord controller flows", () => {
       "Discord Thread (openclaw)",
       expect.objectContaining({ accountId: "default" }),
     );
-    expect(hydratedReply.text).toContain("Codex thread bound.");
+    expect(hydratedReply).toEqual({});
+    expect(sendMessageTelegram).toHaveBeenCalledWith(
+      "123",
+      expect.stringContaining("Thread Name: Discord Thread"),
+      expect.objectContaining({ accountId: "default", messageThreadId: 456 }),
+    );
     expect(sendMessageTelegram).toHaveBeenCalledWith(
       "123",
       "Last User Request in Thread:",
