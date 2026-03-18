@@ -1,0 +1,4 @@
+interface:
+  display_name: "Project Manager"
+  short_description: "Manage issues, board, and local tracker"
+  default_prompt: "Use $project-manager to capture requirements into GitHub issues, keep project 7 in sync, and update the local .local tracker for this repo."

@@ -12,6 +12,7 @@
     ]
   },
   "scripts": {
+    "project:sync": "node ./.agents/skills/project-manager/scripts/sync-work-items.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "pack:smoke": "node ./scripts/pack-smoke.mjs",
@@ -27,6 +28,7 @@
   "devDependencies": {
     "@types/node": "^24.6.0",
     "typescript": "^5.9.2",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "yaml": "^2.8.2"
   }
 }

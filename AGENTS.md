@@ -5,6 +5,14 @@
 
 Design notes and upstream behavior captures live under [`docs/specs/`](./docs/specs). Before changing approval, trust, sandbox, file-edit, or media-handling behavior, review [`docs/specs/PERMISSIONS.md`](./docs/specs/PERMISSIONS.md) and [`docs/specs/MEDIA.md`](./docs/specs/MEDIA.md).
 
+## Project Management
+Use the repo-local [`project-manager`](./.agents/skills/project-manager/SKILL.md) skill for GitHub issue and project-board work in this repository.
+
+- Project board: <https://github.com/orgs/pwrdrvr/projects/7>
+- Canonical local tracker: `.local/work-items.yaml` (derived; refresh with `pnpm project:sync`)
+- Canonical local issue drafts: `.local/issue-drafts/`
+- Do not create parallel scratch trackers or alternate temp directories for issue workups.
+
 ## Build, Test, and Development Commands
 Use `pnpm` for local work.
 
