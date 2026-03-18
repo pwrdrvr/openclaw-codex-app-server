@@ -38,7 +38,7 @@ import {
   formatThreadState,
   formatTurnCompletion,
 } from "./format.js";
-import type { AccountSummary, CollaborationMode } from "./types.js";
+import type { AccountSummary, CollaborationMode, TurnTerminalError } from "./types.js";
 import {
   buildPendingQuestionnaireResponse,
   formatPendingQuestionnairePrompt,
@@ -1747,14 +1747,21 @@ export class CodexPluginController {
           }
         }
         this.api.logger.debug?.(
-          `codex turn completed ${this.formatConversationForLog(params.conversation)} thread=${threadId ?? "<none>"} aborted=${result.aborted ? "yes" : "no"} text=${result.text ? "yes" : "no"} plan=${result.planArtifact ? "yes" : "no"}`,
+          `codex turn completed ${this.formatConversationForLog(params.conversation)} thread=${threadId ?? "<none>"} aborted=${result.aborted ? "yes" : "no"} stoppedReason=${result.stoppedReason ?? "none"} terminalStatus=${result.terminalStatus ?? "none"} text=${result.text ? "yes" : "no"} plan=${result.planArtifact ? "yes" : "no"}`,
         );
         const completionText =
-          !result.aborted && !result.text?.trim() && !result.planArtifact?.markdown
-            ? await this.describeEmptyTurnCompletion({
+          result.terminalStatus === "failed"
+            ? await this.describeTurnFailure({
                 sessionKey: params.binding?.sessionKey,
+                error: result.terminalError?.message ?? "turn failed",
+                terminalError: result.terminalError,
               })
-            : formatTurnCompletion(result);
+            : !result.aborted &&
+                result.stoppedReason !== "approval" &&
+                !result.text?.trim() &&
+                !result.planArtifact?.markdown
+              ? await this.describeEmptyTurnCompletion()
+              : formatTurnCompletion(result);
         await this.sendText(params.conversation, completionText);
       })
       .catch(async (error) => {
@@ -1786,21 +1793,30 @@ export class CodexPluginController {
   private async describeTurnFailure(params: {
     sessionKey?: string;
     error: unknown;
+    terminalError?: TurnTerminalError;
   }): Promise<string> {
-    const message = params.error instanceof Error ? params.error.message : String(params.error);
-    const account = await this.client
-      .readAccount({
-        sessionKey: params.sessionKey,
-        refreshToken: true,
-      })
-      .catch(() => undefined);
-    if (account?.requiresOpenaiAuth === true) {
+    const message =
+      params.terminalError?.message?.trim() ||
+      (params.error instanceof Error ? params.error.message : String(params.error));
+    if (this.looksLikeExplicitCodexAuthFailure(params.terminalError, message)) {
+      const account = await this.client
+        .readAccount({
+          sessionKey: params.sessionKey,
+          refreshToken: true,
+        })
+        .catch(() => undefined);
       this.api.logger.warn?.(
-        `codex auth requires login session=${params.sessionKey ?? "<none>"}`,
+        `codex auth failure from terminal turn error session=${params.sessionKey ?? "<none>"}: ${message}`,
       );
       return this.formatCodexAuthFailureMessage(account);
     }
     if (this.looksLikeCodexAuthFailure(message)) {
+      const account = await this.client
+        .readAccount({
+          sessionKey: params.sessionKey,
+          refreshToken: true,
+        })
+        .catch(() => undefined);
       this.api.logger.warn?.(
         `codex auth failure inferred from turn error session=${params.sessionKey ?? "<none>"}: ${message}`,
       );
@@ -1809,21 +1825,7 @@ export class CodexPluginController {
     return `Codex failed: ${message}`;
   }
 
-  private async describeEmptyTurnCompletion(params: {
-    sessionKey?: string;
-  }): Promise<string> {
-    const account = await this.client
-      .readAccount({
-        sessionKey: params.sessionKey,
-        refreshToken: true,
-      })
-      .catch(() => undefined);
-    if (account?.requiresOpenaiAuth === true) {
-      this.api.logger.warn?.(
-        `codex auth requires login after empty turn session=${params.sessionKey ?? "<none>"}`,
-      );
-      return this.formatCodexAuthFailureMessage(account);
-    }
+  private async describeEmptyTurnCompletion(): Promise<string> {
     return "Codex completed without a text reply.";
   }
 
@@ -1849,6 +1851,20 @@ export class CodexPluginController {
       "not signed in",
       "login required",
     ].some((pattern) => normalized.includes(pattern));
+  }
+
+  private looksLikeExplicitCodexAuthFailure(
+    terminalError: TurnTerminalError | undefined,
+    message: string,
+  ): boolean {
+    if (terminalError?.httpStatusCode === 401) {
+      return true;
+    }
+    const codexErrorInfo = terminalError?.codexErrorInfo?.trim().toLowerCase() ?? "";
+    if (codexErrorInfo.includes("unauthorized")) {
+      return true;
+    }
+    return this.looksLikeCodexAuthFailure(message);
   }
 
   private async startPlan(params: {

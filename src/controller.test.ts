@@ -1939,16 +1939,17 @@ describe("Discord controller flows", () => {
     );
   });
 
-  it("maps empty completed turns to the same re-login guidance when Codex now requires auth", async () => {
+  it("surfaces explicit failed turns as auth failures when the terminal error is unauthorized", async () => {
     const { controller, clientMock, sendMessageTelegram } = await createControllerHarness();
-    clientMock.readAccount.mockResolvedValue({
-      type: "chatgpt",
-      requiresOpenaiAuth: true,
-    } as any);
     (controller as any).client.startTurn = vi.fn(() => ({
       result: Promise.resolve({
         threadId: "thread-1",
-        text: "",
+        terminalStatus: "failed",
+        terminalError: {
+          message: "unauthorized",
+          codexErrorInfo: "unauthorized",
+          httpStatusCode: 401,
+        },
       }),
       getThreadId: () => "thread-1",
       queueMessage: vi.fn(async () => false),
@@ -1986,5 +1987,102 @@ describe("Discord controller flows", () => {
       "Codex authentication failed on this machine. Run `codex logout` and `codex login`, then try again.",
       expect.anything(),
     );
+    expect(clientMock.readAccount).toHaveBeenCalledWith({
+      sessionKey: "session-1",
+      refreshToken: true,
+    });
+  });
+
+  it("keeps empty completed turns generic instead of inferring an auth failure", async () => {
+    const { controller, clientMock, sendMessageTelegram } = await createControllerHarness();
+    (controller as any).client.startTurn = vi.fn(() => ({
+      result: Promise.resolve({
+        threadId: "thread-1",
+        text: "",
+        terminalStatus: "completed",
+      }),
+      getThreadId: () => "thread-1",
+      queueMessage: vi.fn(async () => false),
+      interrupt: vi.fn(async () => {}),
+      isAwaitingInput: () => false,
+      submitPendingInput: vi.fn(async () => false),
+      submitPendingInputPayload: vi.fn(async () => false),
+    }));
+
+    await (controller as any).startTurn({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "8460800771",
+      },
+      binding: {
+        conversation: {
+          channel: "telegram",
+          accountId: "default",
+          conversationId: "8460800771",
+        },
+        sessionKey: "session-1",
+        threadId: "thread-1",
+        workspaceDir: "/repo/openclaw",
+        updatedAt: Date.now(),
+      },
+      workspaceDir: "/repo/openclaw",
+      prompt: "who are you?",
+      reason: "inbound",
+    });
+
+    await flushAsyncWork();
+    expect(sendMessageTelegram).toHaveBeenCalledWith(
+      "8460800771",
+      "Codex completed without a text reply.",
+      expect.anything(),
+    );
+    expect(clientMock.readAccount).not.toHaveBeenCalled();
+  });
+
+  it("does not probe auth after an approval cancel completes without assistant text", async () => {
+    const { controller, clientMock, sendMessageTelegram } = await createControllerHarness();
+    (controller as any).client.startTurn = vi.fn(() => ({
+      result: Promise.resolve({
+        threadId: "thread-1",
+        stoppedReason: "approval",
+      }),
+      getThreadId: () => "thread-1",
+      queueMessage: vi.fn(async () => false),
+      interrupt: vi.fn(async () => {}),
+      isAwaitingInput: () => false,
+      submitPendingInput: vi.fn(async () => false),
+      submitPendingInputPayload: vi.fn(async () => false),
+    }));
+
+    await (controller as any).startTurn({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "8460800771",
+      },
+      binding: {
+        conversation: {
+          channel: "telegram",
+          accountId: "default",
+          conversationId: "8460800771",
+        },
+        sessionKey: "session-1",
+        threadId: "thread-1",
+        workspaceDir: "/repo/openclaw",
+        updatedAt: Date.now(),
+      },
+      workspaceDir: "/repo/openclaw",
+      prompt: "who are you?",
+      reason: "inbound",
+    });
+
+    await flushAsyncWork();
+    expect(sendMessageTelegram).toHaveBeenCalledWith(
+      "8460800771",
+      "Cancelled the Codex approval request.",
+      expect.anything(),
+    );
+    expect(clientMock.readAccount).not.toHaveBeenCalled();
   });
 });

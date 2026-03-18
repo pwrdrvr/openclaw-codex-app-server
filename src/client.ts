@@ -24,6 +24,7 @@ import type {
   ThreadReplay,
   ThreadState,
   ThreadSummary,
+  TurnTerminalError,
   TurnResult,
 } from "./types.js";
 
@@ -158,6 +159,19 @@ function pickFiniteNumber(record: Record<string, unknown>, keys: string[]): numb
       if (Number.isFinite(parsed)) {
         return parsed;
       }
+    }
+  }
+  return undefined;
+}
+
+function parseFiniteNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value.trim());
+    if (Number.isFinite(parsed)) {
+      return parsed;
     }
   }
   return undefined;
@@ -329,6 +343,38 @@ function findFirstNestedValue(value: unknown, keys: readonly string[], depth = 0
   }
   for (const nested of Object.values(record)) {
     const match = findFirstNestedValue(nested, keys, depth + 1);
+    if (match !== undefined) {
+      return match;
+    }
+  }
+  return undefined;
+}
+
+function findFirstNestedNumber(value: unknown, keys: readonly string[], depth = 0): number | undefined {
+  if (depth > 6) {
+    return undefined;
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const match = findFirstNestedNumber(entry, keys, depth + 1);
+      if (match !== undefined) {
+        return match;
+      }
+    }
+    return undefined;
+  }
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  for (const key of keys) {
+    const parsed = parseFiniteNumber(record[key]);
+    if (parsed !== undefined) {
+      return parsed;
+    }
+  }
+  for (const nested of Object.values(record)) {
+    const match = findFirstNestedNumber(nested, keys, depth + 1);
     if (match !== undefined) {
       return match;
     }
@@ -2022,6 +2068,98 @@ function extractContextCompactionProgress(
   };
 }
 
+function normalizeTurnTerminalStatus(
+  value: string | undefined,
+): TurnResult["terminalStatus"] | undefined {
+  const normalized = value?.trim().toLowerCase();
+  switch (normalized) {
+    case "completed":
+      return "completed";
+    case "interrupted":
+    case "cancelled":
+    case "canceled":
+      return "interrupted";
+    case "failed":
+    case "error":
+      return "failed";
+    default:
+      return undefined;
+  }
+}
+
+function summarizeCodexErrorInfo(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    return value.trim() || undefined;
+  }
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  for (const [key, nested] of Object.entries(record)) {
+    const nestedRecord = asRecord(nested);
+    const httpStatusCode = nestedRecord
+      ? pickFiniteNumber(nestedRecord, ["httpStatusCode", "http_status_code"])
+      : undefined;
+    if (httpStatusCode !== undefined) {
+      return `${key}:${httpStatusCode}`;
+    }
+    const nestedSummary = summarizeCodexErrorInfo(nested);
+    if (nestedSummary) {
+      return `${key}:${nestedSummary}`;
+    }
+    return key;
+  }
+  return undefined;
+}
+
+function extractTurnTerminalState(
+  method: string,
+  params: unknown,
+): { status?: TurnResult["terminalStatus"]; error?: TurnTerminalError } | undefined {
+  const methodLower = method.trim().toLowerCase();
+  if (
+    methodLower !== "turn/completed" &&
+    methodLower !== "turn/failed" &&
+    methodLower !== "turn/cancelled"
+  ) {
+    return undefined;
+  }
+  const record = asRecord(params) ?? {};
+  const turn = asRecord(record.turn) ?? record;
+  const errorRecord = asRecord(turn.error) ?? asRecord(record.error) ?? null;
+  const status =
+    normalizeTurnTerminalStatus(
+      pickString(turn, ["status"]) ??
+        (methodLower === "turn/failed"
+          ? "failed"
+          : methodLower === "turn/cancelled"
+            ? "interrupted"
+            : "completed"),
+    ) ??
+    (methodLower === "turn/failed"
+      ? "failed"
+      : methodLower === "turn/cancelled"
+        ? "interrupted"
+        : undefined);
+  if (!errorRecord) {
+    return { status };
+  }
+  const codexErrorInfoValue =
+    errorRecord.codexErrorInfo ?? errorRecord.codex_error_info ?? errorRecord.type;
+  const error: TurnTerminalError = {
+    message:
+      pickString(errorRecord, ["message", "text", "summary", "reason"], { trim: true }) ??
+      undefined,
+    codexErrorInfo: summarizeCodexErrorInfo(codexErrorInfoValue),
+    httpStatusCode: findFirstNestedNumber(codexErrorInfoValue, ["httpStatusCode", "http_status_code"]),
+  };
+  return {
+    status,
+    error:
+      error.message || error.codexErrorInfo || error.httpStatusCode !== undefined ? error : undefined,
+  };
+}
+
 function mapPendingInputResponse(params: {
   methodLower: string;
   requestParams: unknown;
@@ -2059,6 +2197,30 @@ function mapPendingInputResponse(params: {
     return { cancelled: true, reason: "timeout" };
   }
   return response;
+}
+
+function extractApprovalDecision(value: unknown): string | undefined {
+  const record = asRecord(value);
+  return record ? pickString(record, ["decision"]) : undefined;
+}
+
+function resolveTurnStoppedReason(params: {
+  interrupted: boolean;
+  terminalStatus?: TurnResult["terminalStatus"];
+  approvalCancelled: boolean;
+  assistantText: string;
+  hasPlanArtifact: boolean;
+}): TurnResult["stoppedReason"] | undefined {
+  if (params.interrupted) {
+    return "interrupt";
+  }
+  if (params.terminalStatus === "interrupted") {
+    return "cancelled";
+  }
+  if (params.approvalCancelled && !params.assistantText.trim() && !params.hasPlanArtifact) {
+    return "approval";
+  }
+  return undefined;
 }
 
 type PendingInputQueueEntry = {
@@ -2953,6 +3115,9 @@ export class CodexAppServerClient {
     let interrupted = false;
     let completed = false;
     let latestContextUsage: ContextUsageSnapshot | undefined;
+    let terminalStatus: TurnResult["terminalStatus"] | undefined;
+    let terminalError: TurnTerminalError | undefined;
+    let approvalCancelled = false;
     let notificationQueue = Promise.resolve();
     const pendingInputCoordinator = createPendingInputCoordinator({
       inputTimeoutMs: this.settings.inputTimeoutMs,
@@ -3069,6 +3234,9 @@ export class CodexAppServerClient {
           methodLower === "turn/failed" ||
           methodLower === "turn/cancelled"
         ) {
+          const terminalState = extractTurnTerminalState(method, notificationParams);
+          terminalStatus = terminalState?.status ?? terminalStatus;
+          terminalError = terminalState?.error ?? terminalError;
           await fileEditNoticeBatcher.flush();
           this.logger.debug(
             `codex turn terminal notification run=${params.runId} thread=${threadId || "<pending>"} turn=${turnId || "<pending>"} method=${methodLower}`,
@@ -3136,6 +3304,13 @@ export class CodexAppServerClient {
         actions: state.actions ?? [],
         timedOut: pendingEntry.timedOut,
       });
+      const approvalDecision = extractApprovalDecision(mappedResponse)?.toLowerCase();
+      if (approvalDecision === "cancel") {
+        approvalCancelled = true;
+        this.logger.debug(
+          `codex turn approval cancelled by user run=${params.runId} thread=${threadId || "<none>"} turn=${turnId || "<none>"} method=${methodLower}`,
+        );
+      }
       const responseRecord = asRecord(response);
       const steerText =
         methodLower.includes("requestapproval") && typeof responseRecord?.steerText === "string"
@@ -3216,6 +3391,14 @@ export class CodexAppServerClient {
         this.logger.debug(
           `codex turn completion settled run=${params.runId} thread=${threadId || "<none>"} turn=${turnId || "<none>"} interrupted=${interrupted ? "yes" : "no"} assistantChars=${assistantText.length}`,
         );
+        const stoppedReason = resolveTurnStoppedReason({
+          interrupted,
+          terminalStatus,
+          approvalCancelled,
+          assistantText,
+          hasPlanArtifact:
+            Boolean(finalPlanMarkdown) || planDraftByItemId.size > 0 || planSteps.length > 0,
+        });
         return {
           threadId,
           text:
@@ -3229,7 +3412,10 @@ export class CodexAppServerClient {
                 markdown: finalPlanMarkdown,
               }
             : undefined,
-          aborted: interrupted,
+          aborted: stoppedReason === "interrupt" || stoppedReason === "cancelled",
+          stoppedReason,
+          terminalStatus,
+          terminalError,
           usage: latestContextUsage,
         } satisfies TurnResult;
       } catch (error) {
@@ -3365,6 +3551,8 @@ export const __testing = {
   buildTurnSteerPayloads,
   createFileEditNoticeBatcher,
   createPendingInputCoordinator,
+  extractApprovalDecision,
+  extractTurnTerminalState,
   extractFileEditSummariesFromNotification,
   extractFileChangePathsFromReadResult,
   extractStartupProbeInfo,
@@ -3372,4 +3560,5 @@ export const __testing = {
   extractThreadTokenUsageSnapshot,
   extractRateLimitSummaries,
   formatStdioProcessLog,
+  resolveTurnStoppedReason,
 };

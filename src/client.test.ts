@@ -458,3 +458,90 @@ describe("createPendingInputCoordinator", () => {
     await expect(second.response).resolves.toEqual({ index: 0, option: "approve" });
   });
 });
+
+describe("turn stop detection", () => {
+  it("treats silent approval cancels as an approval stop reason", () => {
+    expect(
+      __testing.resolveTurnStoppedReason({
+        interrupted: false,
+        terminalStatus: "completed",
+        approvalCancelled: true,
+        assistantText: "",
+        hasPlanArtifact: false,
+      }),
+    ).toBe("approval");
+  });
+
+  it("does not hide assistant output after an approval cancel", () => {
+    expect(
+      __testing.resolveTurnStoppedReason({
+        interrupted: false,
+        terminalStatus: "completed",
+        approvalCancelled: true,
+        assistantText: "Cancelled, but here is context.",
+        hasPlanArtifact: false,
+      }),
+    ).toBeUndefined();
+  });
+
+  it("keeps explicit turn cancellations distinct from approval cancels", () => {
+    expect(
+      __testing.resolveTurnStoppedReason({
+        interrupted: false,
+        terminalStatus: "interrupted",
+        approvalCancelled: false,
+        assistantText: "",
+        hasPlanArtifact: false,
+      }),
+    ).toBe("cancelled");
+  });
+});
+
+describe("extractTurnTerminalState", () => {
+  it("parses failed turn/completed notifications with unauthorized details", () => {
+    expect(
+      __testing.extractTurnTerminalState("turn/completed", {
+        turn: {
+          id: "turn-1",
+          status: "failed",
+          error: {
+            message: "unauthorized",
+            codexErrorInfo: "unauthorized",
+          },
+        },
+      }),
+    ).toEqual({
+      status: "failed",
+      error: {
+        message: "unauthorized",
+        codexErrorInfo: "unauthorized",
+        httpStatusCode: undefined,
+      },
+    });
+  });
+
+  it("extracts upstream http status codes from nested codex error info", () => {
+    expect(
+      __testing.extractTurnTerminalState("turn/completed", {
+        turn: {
+          status: "failed",
+          error: {
+            message: "request failed",
+            codexErrorInfo: {
+              httpConnectionFailed: {
+                httpStatusCode: 401,
+              },
+            },
+          },
+        },
+      }),
+    ).toEqual({
+      status: "failed",
+      error: {
+        message: "request failed",
+        codexErrorInfo: "httpConnectionFailed:401",
+        httpStatusCode: 401,
+      },
+    });
+  });
+});

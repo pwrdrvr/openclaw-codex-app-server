@@ -230,11 +230,20 @@ export type ReviewResult = {
   aborted?: boolean;
 };
 
+export type TurnTerminalError = {
+  message?: string;
+  codexErrorInfo?: string;
+  httpStatusCode?: number;
+};
+
 export type TurnResult = {
   threadId: string;
   text?: string;
   planArtifact?: CodexPlanArtifact;
   aborted?: boolean;
+  stoppedReason?: "interrupt" | "cancelled" | "approval";
+  terminalStatus?: "completed" | "interrupted" | "failed";
+  terminalError?: TurnTerminalError;
   usage?: ContextUsageSnapshot;
 };
 

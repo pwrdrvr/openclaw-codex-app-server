@@ -698,6 +698,9 @@ export function formatTurnCompletion(result: TurnResult): string {
   if (result.text?.trim()) {
     return result.text.trim();
   }
+  if (result.stoppedReason === "approval") {
+    return "Cancelled the Codex approval request.";
+  }
   if (result.aborted) {
     return "Codex turn stopped.";
   }
