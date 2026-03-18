@@ -15,13 +15,16 @@ from pathlib import Path
 from typing import Any
 
 
-SEMVER_TAG_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
+STABLE_TAG_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
+PRERELEASE_TAG_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)-([A-Za-z][0-9A-Za-z-]*)(?:\.(\d+))?$")
+CHANNEL_RE = re.compile(r"^[A-Za-z][0-9A-Za-z-]*$")
 CONVENTIONAL_RE = re.compile(r"^(?P<type>[a-z]+)(?:\([^)]+\))?(?P<breaking>!)?: (?P<summary>.+)$")
 TRAILING_PR_RE = re.compile(r"\s+\(#\d+\)$")
 HOUSEKEEPING_SUBJECT_RES = (
     re.compile(r"^docs: (?:add|update|write) changelog\b", re.IGNORECASE),
     re.compile(r"^chore(?:\(release\))?: release\b", re.IGNORECASE),
     re.compile(r"^chore(?:\(release\))?: prepare v\d+\.\d+\.\d+\b", re.IGNORECASE),
+    re.compile(r"^docs: (?:add|update|write) changelog for v\d+\.\d+\.\d+-[A-Za-z][0-9A-Za-z-]*(?:\.\d+)?\b", re.IGNORECASE),
 )
 PATCH_TYPES = {"fix", "docs", "ci", "build", "chore", "deps", "test"}
 FEATURE_TYPES = {"feat", "perf", "refactor"}
@@ -78,6 +81,15 @@ def parse_args() -> argparse.Namespace:
         default=".local/release",
         help="Directory for release-plan.json and release-plan.md (default: .local/release)",
     )
+    parser.add_argument(
+        "--channel",
+        default="stable",
+        help="Release channel to plan. Use stable for normal releases, or a prerelease channel such as beta or rc.",
+    )
+    parser.add_argument(
+        "--promote-from",
+        help="Promote an existing prerelease tag such as v0.3.0-beta.2 to its stable v0.3.0 release.",
+    )
     return parser.parse_args()
 
 
@@ -92,7 +104,7 @@ def current_iso_date() -> str:
 
 
 def parse_semver(tag: str) -> tuple[int, int, int]:
-    match = SEMVER_TAG_RE.match(tag)
+    match = STABLE_TAG_RE.match(tag)
     if not match:
         raise ValueError(f"Unsupported tag format: {tag}")
     return tuple(int(part) for part in match.groups())
@@ -101,6 +113,31 @@ def parse_semver(tag: str) -> tuple[int, int, int]:
 def format_tag(parts: tuple[int, int, int]) -> str:
     major, minor, patch = parts
     return f"v{major}.{minor}.{patch}"
+
+
+def normalize_channel(value: str) -> str:
+    channel = value.strip().lower()
+    if channel == "stable":
+        return channel
+    if not CHANNEL_RE.match(channel):
+        raise ValueError(
+            f"Unsupported release channel: {value}. Use stable or a leading-alphabetic channel such as beta or rc."
+        )
+    return channel
+
+
+def parse_prerelease_tag(tag: str) -> dict[str, Any]:
+    match = PRERELEASE_TAG_RE.match(tag)
+    if not match:
+        raise ValueError(f"Unsupported prerelease tag format: {tag}")
+    major, minor, patch, channel, sequence = match.groups()
+    stable_tag = format_tag((int(major), int(minor), int(patch)))
+    return {
+        "tag": tag,
+        "stableTag": stable_tag,
+        "channel": channel.lower(),
+        "sequence": int(sequence) if sequence else 0,
+    }
 
 
 def strip_conventional(subject: str) -> tuple[str, str]:
@@ -170,9 +207,25 @@ def get_last_release(repo_root: str) -> ReleaseInfo | None:
     )
     for release in releases or []:
         tag = release.get("tagName")
-        if tag and SEMVER_TAG_RE.match(tag):
+        if tag and STABLE_TAG_RE.match(tag):
             return ReleaseInfo(tag=tag, name=release.get("name"), published_at=release.get("publishedAt"))
     return None
+
+
+def get_latest_prerelease_number(repo_root: str, stable_tag: str, channel: str) -> int:
+    output = git("tag", "--list", f"{stable_tag}-{channel}*", cwd=repo_root)
+    numbers = [0]
+    for raw_tag in output.splitlines():
+        tag = raw_tag.strip()
+        if not tag:
+            continue
+        try:
+            parsed = parse_prerelease_tag(tag)
+        except ValueError:
+            continue
+        if parsed["stableTag"] == stable_tag and parsed["channel"] == channel:
+            numbers.append(parsed["sequence"])
+    return max(numbers)
 
 
 def get_commit_files(repo_root: str, sha: str) -> list[str]:
@@ -230,7 +283,7 @@ def get_associated_pr(repo_root: str, repo_name: str, sha: str) -> dict[str, Any
     }
 
 
-def suggest_version(last_release: ReleaseInfo | None, meaningful_commits: list[dict[str, Any]]) -> dict[str, Any]:
+def suggest_stable_version(last_release: ReleaseInfo | None, meaningful_commits: list[dict[str, Any]]) -> dict[str, Any]:
     if last_release is None:
         return {
             "tag": "v0.1.0",
@@ -238,6 +291,8 @@ def suggest_version(last_release: ReleaseInfo | None, meaningful_commits: list[d
             "reason": "No published semver release was found, so start at v0.1.0.",
             "minorAlternative": None,
             "patchAlternative": None,
+            "releaseChannel": "stable",
+            "stableBaseTag": "v0.1.0",
         }
 
     major, minor, patch = parse_semver(last_release.tag)
@@ -268,6 +323,8 @@ def suggest_version(last_release: ReleaseInfo | None, meaningful_commits: list[d
             "reason": reason,
             "minorAlternative": minor_tag,
             "patchAlternative": None,
+            "releaseChannel": "stable",
+            "stableBaseTag": patch_tag,
         }
 
     reason = (
@@ -284,6 +341,60 @@ def suggest_version(last_release: ReleaseInfo | None, meaningful_commits: list[d
         "reason": reason,
         "minorAlternative": None,
         "patchAlternative": patch_tag,
+        "releaseChannel": "stable",
+        "stableBaseTag": minor_tag,
+    }
+
+
+def suggest_version(
+    repo_root: str,
+    last_release: ReleaseInfo | None,
+    meaningful_commits: list[dict[str, Any]],
+    channel: str,
+    promote_from: str | None,
+) -> dict[str, Any]:
+    stable_suggestion = suggest_stable_version(last_release, meaningful_commits)
+    if promote_from:
+        prerelease = parse_prerelease_tag(promote_from)
+        return {
+            "tag": prerelease["stableTag"],
+            "kind": "promotion",
+            "reason": f"Promote {promote_from} to stable {prerelease['stableTag']} from the same prerelease code base.",
+            "minorAlternative": None,
+            "patchAlternative": None,
+            "releaseChannel": "stable",
+            "stableBaseTag": prerelease["stableTag"],
+            "promotionSourceTag": promote_from,
+            "promotionChannel": prerelease["channel"],
+        }
+
+    if channel == "stable":
+        return stable_suggestion
+
+    stable_tag = stable_suggestion["tag"]
+    last_number = get_latest_prerelease_number(repo_root, stable_tag, channel)
+    prerelease_number = last_number + 1
+    prerelease_tag = f"{stable_tag}-{channel}.{prerelease_number}"
+    if last_number == 0:
+        reason = (
+            f"{channel} prerelease suggested from upcoming stable {stable_tag}. "
+            f"This will publish on the npm {channel} dist-tag instead of latest."
+        )
+    else:
+        reason = (
+            f"{channel} prerelease suggested from upcoming stable {stable_tag}. "
+            f"Found existing {channel} prereleases up to .{last_number}, so the next tag is {prerelease_tag}."
+        )
+    return {
+        "tag": prerelease_tag,
+        "kind": channel,
+        "reason": reason,
+        "minorAlternative": stable_suggestion.get("minorAlternative"),
+        "patchAlternative": stable_suggestion.get("patchAlternative"),
+        "releaseChannel": channel,
+        "stableBaseTag": stable_tag,
+        "promotionSourceTag": None,
+        "promotionChannel": None,
     }
 
 
@@ -352,24 +463,32 @@ def build_release_items(repo_root: str, repo_name: str, commits: list[dict[str, 
 def render_markdown(plan: dict[str, Any]) -> str:
     lines: list[str] = []
     repo = plan["repository"]["nameWithOwner"]
+    suggested_version = plan["suggestedVersion"]
     lines.append("# Release Plan")
     lines.append("")
     lines.append(f"- Repo: `{repo}`")
     lines.append(f"- Default branch: `{plan['repository']['defaultBranch']}`")
-    lines.append(f"- Planned branch tip: `{plan['planning']['baseSha']}`")
+    lines.append(f"- Planned source ref: `{plan['planning']['baseRef']}`")
+    lines.append(f"- Planned source SHA: `{plan['planning']['baseSha']}`")
     lines.append(f"- Current branch: `{plan['workingTree']['currentBranch']}`")
     lines.append(f"- Clean working tree: `{str(plan['workingTree']['isClean']).lower()}`")
+    lines.append(f"- Release channel: `{suggested_version['releaseChannel']}`")
+    lines.append(f"- Stable base tag: `{suggested_version['stableBaseTag']}`")
+    if suggested_version.get("promotionSourceTag"):
+        lines.append(f"- Promotion source tag: `{suggested_version['promotionSourceTag']}`")
 
     last_release = plan.get("lastRelease")
     if last_release:
-      lines.append(f"- Last release: `{last_release['tag']}` published `{last_release.get('publishedAt') or 'unknown'}`")
+        lines.append(f"- Last release: `{last_release['tag']}` published `{last_release.get('publishedAt') or 'unknown'}`")
     else:
-      lines.append("- Last release: none found")
+        lines.append("- Last release: none found")
 
     lines.append(f"- Commits on main since last release: `{plan['counts']['rawCommitCount']}`")
     lines.append(f"- Meaningful commits after filtering housekeeping: `{plan['counts']['meaningfulCommitCount']}`")
-    lines.append(f"- Suggested tag: `{plan['suggestedVersion']['tag']}` ({plan['suggestedVersion']['kind']})")
-    lines.append(f"- Version rationale: {plan['suggestedVersion']['reason']}")
+    lines.append(f"- Suggested tag: `{suggested_version['tag']}` ({suggested_version['kind']})")
+    lines.append(f"- Version rationale: {suggested_version['reason']}")
+    if suggested_version["releaseChannel"] != "stable":
+        lines.append(f"- npm dist-tag on publish: `{suggested_version['releaseChannel']}`")
     if plan["warnings"]:
         lines.append("")
         lines.append("## Warnings")
@@ -410,7 +529,17 @@ def render_markdown(plan: dict[str, Any]) -> str:
 
     lines.append("## Changelog Heading")
     lines.append("")
-    lines.append(f"Use this heading in `CHANGELOG.md`: `## {plan['suggestedVersion']['tag']} - {plan['generatedAtDate']}`")
+    lines.append(f"Use this heading in `CHANGELOG.md`: `## {suggested_version['tag']} - {plan['generatedAtDate']}`")
+    if suggested_version["releaseChannel"] != "stable":
+        lines.append("")
+        lines.append(
+            "For prereleases, prefer keeping the prerelease notes in the GitHub release and leave `CHANGELOG.md` for the eventual stable promotion unless the user explicitly wants prerelease entries there."
+        )
+    if suggested_version.get("promotionSourceTag"):
+        lines.append("")
+        lines.append(
+            "Promotion note: tag the same prerelease commit for exact code parity, or add only changelog/release-note edits on top before creating the stable tag."
+        )
     lines.append("")
     lines.append("Do not copy the raw titles verbatim into the release notes; rewrite them.")
     return "\n".join(lines).rstrip() + "\n"
@@ -420,6 +549,11 @@ def main() -> int:
     args = parse_args()
     repo_root = git("rev-parse", "--show-toplevel", cwd=os.getcwd())
     output_dir = Path(repo_root) / args.output_dir
+    channel = normalize_channel(args.channel)
+    if args.promote_from and channel != "stable":
+        raise RuntimeError("--promote-from can only be used with --channel stable.")
+    if args.promote_from:
+        parse_prerelease_tag(args.promote_from)
     try:
         output_dir_rel = output_dir.relative_to(Path(repo_root)).as_posix()
     except ValueError:
@@ -428,11 +562,17 @@ def main() -> int:
     repo_name = repo_info["nameWithOwner"]
     default_branch = repo_info["defaultBranchRef"]["name"]
     remote_ref = f"refs/remotes/origin/{default_branch}"
+    planning_ref = remote_ref
 
-    try:
-        base_sha = git("rev-parse", remote_ref, cwd=repo_root)
-    except RuntimeError:
-        base_sha = git("rev-parse", default_branch, cwd=repo_root)
+    if args.promote_from:
+        base_sha = git("rev-list", "-n", "1", args.promote_from, cwd=repo_root)
+        planning_ref = f"refs/tags/{args.promote_from}"
+    else:
+        try:
+            base_sha = git("rev-parse", remote_ref, cwd=repo_root)
+        except RuntimeError:
+            base_sha = git("rev-parse", default_branch, cwd=repo_root)
+            planning_ref = default_branch
 
     current_branch = git("branch", "--show-current", cwd=repo_root) or "(detached HEAD)"
     working_tree_status = git("status", "--porcelain", "--untracked-files=all", cwd=repo_root)
@@ -460,14 +600,18 @@ def main() -> int:
             meaningful_commits.append(commit)
 
     items = build_release_items(repo_root, repo_name, meaningful_commits)
-    suggested_version = suggest_version(last_release, meaningful_commits)
+    suggested_version = suggest_version(repo_root, last_release, meaningful_commits, channel, args.promote_from)
 
     warnings: list[str] = []
     if not is_clean:
         warnings.append("Working tree is not clean; pause before editing or releasing.")
     if current_branch != default_branch:
         warnings.append(f"Current branch is {current_branch}, not the default branch {default_branch}.")
-    if local_head != base_sha:
+    if args.promote_from and local_head != base_sha:
+        warnings.append(
+            f"Local HEAD {local_head[:7]} does not match promotion source {args.promote_from} {base_sha[:7]}; check out the prerelease commit or keep follow-up edits changelog-only before tagging stable."
+        )
+    if not args.promote_from and local_head != base_sha:
         warnings.append(
             f"Local HEAD {local_head[:7]} does not match origin/{default_branch} {base_sha[:7]}; fast-forward before releasing."
         )
@@ -487,7 +631,7 @@ def main() -> int:
             "defaultBranch": default_branch,
         },
         "planning": {
-            "baseRef": remote_ref,
+            "baseRef": planning_ref,
             "baseSha": base_sha,
             "range": commit_range,
         },

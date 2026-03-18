@@ -1,9 +1,10 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseReleaseTag } from "./release-tag.mjs";
 
 const workspaceRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const version = parseReleaseVersion(process.argv[2]);
+const version = parseReleaseTag(process.argv[2]).version;
 
 const packageJsonPath = path.join(workspaceRoot, "package.json");
 const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8"));
@@ -22,14 +23,3 @@ if (updatedClientSource === clientSource) {
 }
 writeFileSync(clientPath, updatedClientSource);
 process.stdout.write(`updated src/client.ts -> ${version}\n`);
-
-function parseReleaseVersion(tagName) {
-  if (!tagName) {
-    throw new Error("Missing release tag. Expected vX.Y.Z");
-  }
-  const match = tagName.trim().match(/^v(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)$/);
-  if (!match) {
-    throw new Error(`Invalid release tag: ${tagName}. Expected vX.Y.Z`);
-  }
-  return match[1];
-}
