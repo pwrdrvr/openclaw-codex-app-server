@@ -1072,6 +1072,7 @@ function buildTurnStartPayloads(params: {
   prompt: string;
   model?: string;
   collaborationMode?: CollaborationMode;
+  collaborationFallbackModel?: string;
 }): unknown[] {
   const base: Record<string, unknown> = {
     threadId: params.threadId,
@@ -1085,7 +1086,7 @@ function buildTurnStartPayloads(params: {
   }
   const collaborationPayloads = buildCollaborationModePayloads(
     params.collaborationMode,
-    params.model,
+    params.collaborationFallbackModel ?? params.model,
   ).flatMap((variant) => [
     {
       ...base,
@@ -1097,6 +1098,34 @@ function buildTurnStartPayloads(params: {
     },
   ]);
   return [...collaborationPayloads, base];
+}
+
+function buildDefaultCollaborationMode(settings: {
+  model?: string;
+  reasoningEffort?: string;
+}): CollaborationMode | undefined {
+  const model = settings.model?.trim();
+  if (!model) {
+    return undefined;
+  }
+  return {
+    mode: "default",
+    settings: {
+      model,
+      ...(settings.reasoningEffort?.trim()
+        ? { reasoningEffort: settings.reasoningEffort.trim() }
+        : {}),
+      developerInstructions: null,
+    },
+  };
+}
+
+function payloadHasCollaborationMode(payload: unknown): boolean {
+  const record = asRecord(payload);
+  return Boolean(
+    record &&
+      (Object.hasOwn(record, "collaborationMode") || Object.hasOwn(record, "collaboration_mode")),
+  );
 }
 
 function buildTurnSteerPayloads(params: {
@@ -3104,6 +3133,8 @@ export class CodexAppServerClient {
   }): ActiveCodexRun {
     let threadId = params.existingThreadId?.trim() || "";
     let turnId = "";
+    let threadModel = "";
+    let threadReasoningEffort = "";
     let assistantText = "";
     let sawAssistantOutput = false;
     let assistantItemId = "";
@@ -3352,29 +3383,58 @@ export class CodexAppServerClient {
             ],
             timeoutMs: this.settings.requestTimeoutMs,
           });
+          const createdState = extractThreadState(created);
           threadId = extractIds(created).threadId ?? "";
+          threadModel = createdState.model?.trim() || threadModel;
+          threadReasoningEffort = createdState.reasoningEffort?.trim() || threadReasoningEffort;
           if (!threadId) {
             throw new Error("Codex App Server did not return a thread id.");
           }
-          this.logger.debug(`codex turn thread created run=${params.runId} thread=${threadId}`);
+          this.logger.debug(
+            `codex turn thread created run=${params.runId} thread=${threadId} model=${threadModel || "<none>"} reasoningEffort=${threadReasoningEffort || "<none>"}`,
+          );
         } else {
-          await requestWithFallbacks({
+          const resumed = await requestWithFallbacks({
             client,
             methods: ["thread/resume"],
             payloads: [{ threadId }],
             timeoutMs: this.settings.requestTimeoutMs,
           }).catch(() => undefined);
-          this.logger.debug(`codex turn thread resumed run=${params.runId} thread=${threadId}`);
+          const resumedState = resumed ? extractThreadState(resumed) : undefined;
+          threadModel = resumedState?.model?.trim() || threadModel;
+          threadReasoningEffort =
+            resumedState?.reasoningEffort?.trim() || threadReasoningEffort;
+          this.logger.debug(
+            `codex turn thread resumed run=${params.runId} thread=${threadId} model=${threadModel || "<none>"} reasoningEffort=${threadReasoningEffort || "<none>"}`,
+          );
+        }
+        const synthesizedDefaultMode = buildDefaultCollaborationMode({
+          model: params.model?.trim() || threadModel,
+          reasoningEffort: threadReasoningEffort,
+        });
+        const collaborationMode = params.collaborationMode ?? synthesizedDefaultMode;
+        const turnStartPayloads = buildTurnStartPayloads({
+          threadId,
+          prompt: params.prompt,
+          model: params.model,
+          collaborationMode,
+          collaborationFallbackModel: params.model?.trim() || threadModel,
+        });
+        const collaborationPayload = turnStartPayloads.some((payload) =>
+          payloadHasCollaborationMode(payload),
+        );
+        this.logger.debug(
+          `codex turn start payload run=${params.runId} thread=${threadId} requestedMode=${params.collaborationMode?.mode ?? "default"} modeSource=${params.collaborationMode ? "explicit" : "synthesized"} requestedModel=${params.model?.trim() || "<none>"} threadModel=${threadModel || "<none>"} collaborationPayload=${collaborationPayload ? "yes" : "no"}`,
+        );
+        if (collaborationMode && !collaborationPayload) {
+          this.logger.warn(
+            `codex turn start omitted collaboration mode payload run=${params.runId} thread=${threadId} requestedMode=${collaborationMode.mode} requestedModel=${params.model?.trim() || "<none>"} threadModel=${threadModel || "<none>"}`,
+          );
         }
         const started = await requestWithFallbacks({
           client,
           methods: ["turn/start"],
-          payloads: buildTurnStartPayloads({
-            threadId,
-            prompt: params.prompt,
-            model: params.model,
-            collaborationMode: params.collaborationMode,
-          }),
+          payloads: turnStartPayloads,
           timeoutMs: this.settings.requestTimeoutMs,
         });
         const startedIds = extractIds(started);

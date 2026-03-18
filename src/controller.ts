@@ -1156,6 +1156,9 @@ export class CodexPluginController {
     if (parsed.mode === "off") {
       const key = buildConversationKey(conversation);
       const active = this.activeRuns.get(key);
+      this.api.logger.debug?.(
+        `codex plan off requested ${this.formatConversationForLog(conversation)} active=${active?.mode ?? "none"} boundThread=${binding?.threadId ?? "<none>"}`,
+      );
       if (active?.mode === "plan") {
         this.activeRuns.delete(key);
         await active.handle.interrupt().catch(() => undefined);
@@ -3239,6 +3242,9 @@ export class CodexPluginController {
       }).catch(() => []),
       this.resolveProjectFolder(binding?.workspaceDir || workspaceDir),
     ]);
+    this.api.logger.debug?.(
+      `codex status snapshot bindingActive=${bindingActive ? "yes" : "no"} activeRun=${activeRun?.mode ?? "none"} boundThread=${binding?.threadId ?? "<none>"} threadModel=${threadState?.model?.trim() || "<none>"} threadCwd=${threadState?.cwd?.trim() || "<none>"}`,
+    );
 
     return formatCodexStatusText({
       threadState,

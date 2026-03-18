@@ -64,6 +64,49 @@ describe("buildTurnStartPayloads", () => {
       },
     ]);
   });
+
+  it("uses the fallback model to send an explicit default collaboration mode", () => {
+    expect(
+      __testing.buildTurnStartPayloads({
+        threadId: "thread-123",
+        prompt: "run it",
+        collaborationMode: {
+          mode: "default",
+          settings: {
+            developerInstructions: null,
+          },
+        },
+        collaborationFallbackModel: "gpt-5.4",
+      }),
+    ).toEqual([
+      {
+        threadId: "thread-123",
+        input: [{ type: "text", text: "run it" }],
+        collaborationMode: {
+          mode: "default",
+          settings: {
+            model: "gpt-5.4",
+            developerInstructions: null,
+          },
+        },
+      },
+      {
+        threadId: "thread-123",
+        input: [{ type: "text", text: "run it" }],
+        collaboration_mode: {
+          mode: "default",
+          settings: {
+            model: "gpt-5.4",
+            developer_instructions: null,
+          },
+        },
+      },
+      {
+        threadId: "thread-123",
+        input: [{ type: "text", text: "run it" }],
+      },
+    ]);
+  });
 });
 
 describe("buildTurnSteerPayloads", () => {
