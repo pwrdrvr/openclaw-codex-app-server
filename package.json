@@ -15,6 +15,7 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "pack:smoke": "node ./scripts/pack-smoke.mjs",
+    "release:metadata": "node ./scripts/release-metadata.mjs",
     "release:apply-version": "node ./scripts/apply-release-version.mjs"
   },
   "peerDependencies": {

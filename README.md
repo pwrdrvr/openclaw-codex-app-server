@@ -34,6 +34,8 @@ openclaw plugins uninstall openclaw-codex-app-server
 
 OpenClaw `main` included the required plugin interface changes as of `2026-03-16`. Use any OpenClaw release that includes those changes, or use the local developer workflow at the bottom of this document.
 
+Pre-release packages are published on matching npm dist-tags instead of `latest`. For example, a tag such as `v0.3.0-beta.1` publishes to `openclaw-codex-app-server@beta`, so `npm install openclaw-codex-app-server@latest` stays on the newest stable release.
+
 ## Why Try It
 
 - Uses your existing local Codex CLI setup instead of a separate hosted bridge.
