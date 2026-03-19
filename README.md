@@ -49,7 +49,7 @@ Pre-release packages are published on matching npm dist-tags instead of `latest`
 2. Use the picker buttons, or pass a filter like `/codex_resume release-fix` or `/codex_resume --projects`.
 3. Send normal chat messages once the thread is bound.
 4. Use control commands such as `/codex_status`, `/codex_plan`, `/codex_review`, `/codex_model`, and `/codex_stop` as needed.
-5. If you used `/codex_plan`, run `/codex_plan off` when you want future turns to return to normal coding and execution mode.
+5. If you leave plan mode through the normal `Implement this plan` button, you do not need `/codex_plan off`; use `/codex_plan off` only when you want to exit planning manually instead.
 
 ## Command Reference
 
@@ -66,7 +66,7 @@ Pre-release packages are published on matching npm dist-tags instead of `latest`
 | `/codex_stop` | Interrupt the active Codex run. | Only applies when a turn is currently in progress. |
 | `/codex_steer <message>` | Send follow-up steer text to an active run. | Example: `/codex_steer focus on the failing tests first` |
 | `/codex_plan <goal>` | Ask Codex to plan instead of execute. | The plugin relays plan questions and the final plan back into chat. |
-| `/codex_plan off` | Exit plan mode for this conversation. | Interrupts a lingering plan run and resets the next turn back to default coding mode. |
+| `/codex_plan off` | Exit plan mode for this conversation. | Use this when you want to leave planning manually instead of through the normal `Implement this plan` button. |
 | `/codex_review` | Review the current uncommitted changes in the bound workspace. | Requires an existing binding. |
 | `/codex_review <focus>` | Review with custom instructions. | Example: `/codex_review focus on thread selection regressions` |
 | `/codex_compact` | Compact the bound Codex thread. | The plugin posts progress and final context usage. |
