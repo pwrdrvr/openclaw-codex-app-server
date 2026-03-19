@@ -1,0 +1,9 @@
+{
+  "repo": "pwrdrvr/openclaw-codex-app-server",
+  "projectOwner": "pwrdrvr",
+  "projectNumber": 7,
+  "projectUrl": "https://github.com/orgs/pwrdrvr/projects/7",
+  "trackerPath": ".local/work-items.yaml",
+  "issueDraftDir": ".local/issue-drafts",
+  "localIdPrefix": "ocas-"
+}

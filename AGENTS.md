@@ -8,6 +8,7 @@ Design notes and upstream behavior captures live under [`docs/specs/`](./docs/sp
 ## Project Management
 Use the repo-local [`project-manager`](./.agents/skills/project-manager/SKILL.md) skill for GitHub issue and project-board work in this repository.
 
+- Repo/project config: `.agents/project-manager.config.json`
 - Project board: <https://github.com/orgs/pwrdrvr/projects/7>
 - Canonical local tracker: `.local/work-items.yaml` (derived; refresh with `pnpm project:sync`)
 - Canonical local issue drafts: `.local/issue-drafts/`

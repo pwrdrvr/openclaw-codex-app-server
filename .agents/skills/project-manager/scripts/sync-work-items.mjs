@@ -5,11 +5,9 @@ import fs from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
 
-const REPO = "pwrdrvr/openclaw-codex-app-server";
-const PROJECT_OWNER = "pwrdrvr";
-const PROJECT_NUMBER = 7;
-const PROJECT_URL = "https://github.com/orgs/pwrdrvr/projects/7";
-const TRACKER_PATH = path.resolve(".local/work-items.yaml");
+const CONFIG_PATH = path.resolve(".agents/project-manager.config.json");
+const DEFAULT_TRACKER_PATH = ".local/work-items.yaml";
+const DEFAULT_LOCAL_ID_PREFIX = "item-";
 
 function runGh(args) {
   return execFileSync("gh", args, {
@@ -19,12 +17,65 @@ function runGh(args) {
   });
 }
 
-function loadExistingTracker() {
-  if (!fs.existsSync(TRACKER_PATH)) {
+function readJson(filePath) {
+  return JSON.parse(fs.readFileSync(filePath, "utf8"));
+}
+
+function resolveRepoFromGh() {
+  const repo = JSON.parse(runGh(["repo", "view", "--json", "nameWithOwner"]));
+  const nameWithOwner = repo?.nameWithOwner?.trim();
+  if (!nameWithOwner) {
+    throw new Error("Could not determine repo from gh repo view.");
+  }
+  return nameWithOwner;
+}
+
+function loadConfig() {
+  if (!fs.existsSync(CONFIG_PATH)) {
+    throw new Error(`Missing project manager config at ${CONFIG_PATH}`);
+  }
+  const raw = readJson(CONFIG_PATH);
+  const repo =
+    typeof raw.repo === "string" && raw.repo.trim() ? raw.repo.trim() : resolveRepoFromGh();
+  const projectOwner =
+    typeof raw.projectOwner === "string" && raw.projectOwner.trim()
+      ? raw.projectOwner.trim()
+      : repo.split("/")[0];
+  const projectNumber =
+    typeof raw.projectNumber === "number" && Number.isFinite(raw.projectNumber)
+      ? raw.projectNumber
+      : 0;
+  if (projectNumber <= 0) {
+    throw new Error(`Invalid projectNumber in ${CONFIG_PATH}`);
+  }
+  const trackerPath =
+    typeof raw.trackerPath === "string" && raw.trackerPath.trim()
+      ? path.resolve(raw.trackerPath.trim())
+      : path.resolve(DEFAULT_TRACKER_PATH);
+  const projectUrl =
+    typeof raw.projectUrl === "string" && raw.projectUrl.trim()
+      ? raw.projectUrl.trim()
+      : `https://github.com/orgs/${projectOwner}/projects/${projectNumber}`;
+  const localIdPrefix =
+    typeof raw.localIdPrefix === "string" && raw.localIdPrefix.trim()
+      ? raw.localIdPrefix.trim()
+      : DEFAULT_LOCAL_ID_PREFIX;
+  return {
+    repo,
+    projectOwner,
+    projectNumber,
+    projectUrl,
+    trackerPath,
+    localIdPrefix,
+  };
+}
+
+function loadExistingTracker(trackerPath) {
+  if (!fs.existsSync(trackerPath)) {
     return { version: 1, last_synced_at: null, items: [] };
   }
 
-  const raw = fs.readFileSync(TRACKER_PATH, "utf8");
+  const raw = fs.readFileSync(trackerPath, "utf8");
   const parsed = YAML.parse(raw) ?? {};
   return {
     version: parsed.version ?? 1,
@@ -37,19 +88,21 @@ function normalizeNumber(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
-function nextLocalId(existingItems) {
+function nextLocalId(existingItems, localIdPrefix) {
   let max = 0;
   for (const item of existingItems) {
     const match =
-      typeof item?.local_id === "string" ? item.local_id.match(/^ocas-(\d{4,})$/) : null;
+      typeof item?.local_id === "string"
+        ? item.local_id.match(new RegExp(`^${localIdPrefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\d{4,})$`))
+        : null;
     if (match) {
       max = Math.max(max, Number(match[1]));
     }
   }
-  return `ocas-${String(max + 1).padStart(4, "0")}`;
+  return `${localIdPrefix}${String(max + 1).padStart(4, "0")}`;
 }
 
-function mergeExistingItem(existingByIssue, issueNumber, fallbackLocalId) {
+function mergeExistingItem(existingByIssue, issueNumber, fallbackLocalId, repo) {
   const current = existingByIssue.get(issueNumber);
   if (current && typeof current === "object" && current !== null) {
     return structuredClone(current);
@@ -57,7 +110,7 @@ function mergeExistingItem(existingByIssue, issueNumber, fallbackLocalId) {
   return {
     local_id: fallbackLocalId,
     title: "",
-    repo: REPO,
+    repo,
     source_note: "",
     github: {},
     state: {},
@@ -66,7 +119,8 @@ function mergeExistingItem(existingByIssue, issueNumber, fallbackLocalId) {
 }
 
 function main() {
-  const existing = loadExistingTracker();
+  const config = loadConfig();
+  const existing = loadExistingTracker(config.trackerPath);
   const existingByIssue = new Map();
   for (const item of existing.items) {
     const issueNumber = normalizeNumber(item?.github?.issue_number);
@@ -76,12 +130,31 @@ function main() {
   }
 
   const issueList = JSON.parse(
-    runGh(["issue", "list", "--repo", REPO, "--state", "all", "--limit", "500", "--json", "number,state,title,url"]),
+    runGh([
+      "issue",
+      "list",
+      "--repo",
+      config.repo,
+      "--state",
+      "all",
+      "--limit",
+      "500",
+      "--json",
+      "number,state,title,url",
+    ]),
   );
   const issueByNumber = new Map(issueList.map((issue) => [issue.number, issue]));
 
   const projectData = JSON.parse(
-    runGh(["project", "item-list", String(PROJECT_NUMBER), "--owner", PROJECT_OWNER, "--format", "json"]),
+    runGh([
+      "project",
+      "item-list",
+      String(config.projectNumber),
+      "--owner",
+      config.projectOwner,
+      "--format",
+      "json",
+    ]),
   );
 
   const items = [];
@@ -90,7 +163,7 @@ function main() {
     if (content.type !== "Issue") {
       continue;
     }
-    if (content.repository !== REPO) {
+    if (content.repository !== config.repo) {
       continue;
     }
     const issueNumber = normalizeNumber(content.number);
@@ -99,9 +172,14 @@ function main() {
     }
 
     const issue = issueByNumber.get(issueNumber);
-    const merged = mergeExistingItem(existingByIssue, issueNumber, nextLocalId(existing.items));
+    const merged = mergeExistingItem(
+      existingByIssue,
+      issueNumber,
+      nextLocalId(existing.items, config.localIdPrefix),
+      config.repo,
+    );
     merged.title = content.title ?? issue?.title ?? merged.title ?? "";
-    merged.repo = REPO;
+    merged.repo = config.repo;
     merged.source_note = typeof merged.source_note === "string" ? merged.source_note : "";
     if (typeof merged.raw_example !== "string") {
       delete merged.raw_example;
@@ -110,8 +188,8 @@ function main() {
       ...(merged.github && typeof merged.github === "object" ? merged.github : {}),
       issue_number: issueNumber,
       issue_url: content.url ?? issue?.url ?? "",
-      project_number: PROJECT_NUMBER,
-      project_url: PROJECT_URL,
+      project_number: config.projectNumber,
+      project_url: config.projectUrl,
       project_item_id: item.id ?? "",
     };
     merged.state = {
@@ -137,10 +215,10 @@ function main() {
   let counter = 1;
   for (const item of items) {
     if (typeof item.local_id !== "string" || usedIds.has(item.local_id)) {
-      while (usedIds.has(`ocas-${String(counter).padStart(4, "0")}`)) {
+      while (usedIds.has(`${config.localIdPrefix}${String(counter).padStart(4, "0")}`)) {
         counter += 1;
       }
-      item.local_id = `ocas-${String(counter).padStart(4, "0")}`;
+      item.local_id = `${config.localIdPrefix}${String(counter).padStart(4, "0")}`;
       counter += 1;
     }
     usedIds.add(item.local_id);
@@ -152,9 +230,9 @@ function main() {
     items,
   };
 
-  fs.mkdirSync(path.dirname(TRACKER_PATH), { recursive: true });
-  fs.writeFileSync(TRACKER_PATH, YAML.stringify(output, { lineWidth: 0 }), "utf8");
-  process.stdout.write(`Synced ${items.length} items to ${TRACKER_PATH}\n`);
+  fs.mkdirSync(path.dirname(config.trackerPath), { recursive: true });
+  fs.writeFileSync(config.trackerPath, YAML.stringify(output, { lineWidth: 0 }), "utf8");
+  process.stdout.write(`Synced ${items.length} items to ${config.trackerPath}\n`);
 }
 
 main();
