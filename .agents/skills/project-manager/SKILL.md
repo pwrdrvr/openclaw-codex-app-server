@@ -1,11 +1,11 @@
 ---
 name: project-manager
-description: "Manage GitHub issues and the GitHub Project board for this repository, while keeping the local tracker in sync. Use when the user wants to capture freeform requirements as issues, flesh out issue descriptions from repo or upstream research, triage Priority/Size/Workflow/Status, add issues or PRs to project 7, or reconcile GitHub state with `.local/work-items.yaml`."
+description: "Manage GitHub issues and the GitHub Project board for the current repository, while keeping the local tracker in sync. Use when the user wants to capture freeform requirements as issues, flesh out issue descriptions from repo or upstream research, triage Priority/Size/Workflow/Status, add issues or PRs to the repo's configured project board, or reconcile GitHub state with `.local/work-items.yaml`."
 ---
 
 # Project Manager
 
-Use this skill for repo-specific project management on [OpenClaw Codex App Server Project](https://github.com/orgs/pwrdrvr/projects/7).
+Use this skill for repo-local project management.
 
 ## Automation Preference
 
@@ -19,14 +19,21 @@ Use this skill for repo-specific project management on [OpenClaw Codex App Serve
 - Treat `.local/work-items.yaml` as a derived repo-local cross-reference map that can be regenerated from the project board.
 - Put temporary issue writeups only in `.local/issue-drafts/`.
 - Do not create parallel scratch directories or alternate tracker files for the same purpose.
+- Read repo-specific values from `.agents/project-manager.config.json` before taking action.
 
-Current repo-specific locations:
+Expected config shape:
 
-- Canonical repo: `pwrdrvr/openclaw-codex-app-server`
-- Project board: `https://github.com/orgs/pwrdrvr/projects/7`
-- Local tracker: `.local/work-items.yaml`
-- Issue drafts: `.local/issue-drafts/`
-- Local id prefix: `ocas-`
+```json
+{
+  "repo": "owner/repo",
+  "projectOwner": "owner",
+  "projectNumber": 7,
+  "projectUrl": "https://github.com/orgs/owner/projects/7",
+  "trackerPath": ".local/work-items.yaml",
+  "issueDraftDir": ".local/issue-drafts",
+  "localIdPrefix": "item-"
+}
+```
 
 Refresh the derived tracker with:
 
@@ -51,9 +58,10 @@ pnpm project:sync
 - Use `gh issue create`, `gh issue edit`, and `gh issue comment`.
 - Keep titles short and imperative, usually starting with `Plugin:`.
 
-4. Add the issue or PR to project `7`.
+4. Add the issue or PR to the configured project board.
 
-- Use `gh project item-add 7 --owner pwrdrvr --url <issue-or-pr-url>`.
+- Read the configured project number and owner from `.agents/project-manager.config.json`.
+- Use `gh project item-add <project-number> --owner <project-owner> --url <issue-or-pr-url>`.
 - For issues, set `Status`, `Priority`, `Size`, and `Workflow`.
 - For PRs, usually set `Status` and `Workflow`; `Priority` and `Size` are issue-planning fields unless there is a specific reason to set them on the PR item.
 
@@ -91,17 +99,17 @@ Start by discovering current project field ids instead of assuming they never ch
 
 ```bash
 gh repo view --json nameWithOwner,url
-gh project view 7 --owner pwrdrvr --format json
-gh project field-list 7 --owner pwrdrvr --format json
+gh project view <project-number> --owner <project-owner> --format json
+gh project field-list <project-number> --owner <project-owner> --format json
 ```
 
 Typical flow:
 
 ```bash
-gh issue create --repo pwrdrvr/openclaw-codex-app-server --title "<title>" --body-file .local/issue-drafts/<file>.md
-gh project item-add 7 --owner pwrdrvr --url <issue-or-pr-url> --format json
+gh issue create --repo <owner/repo> --title "<title>" --body-file .local/issue-drafts/<file>.md
+gh project item-add <project-number> --owner <project-owner> --url <issue-or-pr-url> --format json
 gh project item-edit --project-id <project-id> --id <item-id> --field-id <field-id> --single-select-option-id <option-id>
-gh project item-list 7 --owner pwrdrvr --format json
+gh project item-list <project-number> --owner <project-owner> --format json
 ```
 
 Refresh the local tracker:
@@ -112,10 +120,10 @@ pnpm project:sync
 
 ## Gotchas
 
-- Verify the repo slug before issue commands. The canonical repo is `pwrdrvr/openclaw-codex-app-server`; older shorthand like `pwrdrvr/openclaw-app-server` is wrong and will make `gh issue ...` fail.
+- Verify the repo slug before issue commands. Treat `.agents/project-manager.config.json` as canonical when it is present.
 - `gh project item-edit` needs opaque ids for the project, item, field, and single-select option. Always discover them with `gh project view ...` and `gh project field-list ...` instead of assuming cached ids still match.
 - GitHub Projects custom views are not well-supported by `gh` or GraphQL mutations. Reading views works, but creating/editing/copying views is still better done in the web UI or browser automation. `gh project copy` does not carry over custom views.
-- `.local/work-items.yaml` is currently issue-only. Add PRs to project `7`, but do not expect `pnpm project:sync` to mirror PR items into the local tracker.
+- `.local/work-items.yaml` is currently issue-only. Add PRs to the project board, but do not expect `pnpm project:sync` to mirror PR items into the local tracker.
 - `.local/issue-drafts/<nn>-<slug>.md` filenames are local scratch ids, not GitHub issue numbers. Keep them stable enough to reuse, but do not try to force them to match the eventual GitHub issue number.
 
 ## Tracker Shape
