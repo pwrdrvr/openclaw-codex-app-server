@@ -1470,6 +1470,7 @@ describe("Discord controller flows", () => {
       threadId: "thread-1",
       workspaceDir: "/repo/openclaw",
     });
+    const acknowledge = vi.fn(async () => {});
     const reply = vi.fn(async () => {});
 
     await controller.handleDiscordInteractive({
@@ -1499,7 +1500,7 @@ describe("Discord controller flows", () => {
         },
       })),
       respond: {
-        acknowledge: vi.fn(async () => {}),
+        acknowledge,
         reply,
         followUp: vi.fn(async () => {}),
         editMessage: vi.fn(async () => {}),
@@ -1515,6 +1516,7 @@ describe("Discord controller flows", () => {
       }),
       expect.objectContaining({ accountId: "default" }),
     );
+    expect(acknowledge).toHaveBeenCalledTimes(1);
     expect(reply).not.toHaveBeenCalled();
   });
 

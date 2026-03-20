@@ -900,6 +900,7 @@ export class CodexPluginController {
           }
           const result = await requestConversationBinding(params);
           if (result.status === "pending") {
+            await ctx.respond.acknowledge().catch(() => undefined);
             const buttons = extractReplyButtons(result.reply);
             await this.sendDiscordPicker(conversation, {
               text: result.reply.text ?? "Bind approval requested.",
