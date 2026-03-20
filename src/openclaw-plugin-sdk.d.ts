@@ -277,6 +277,55 @@ declare module "openclaw/plugin-sdk" {
   };
 }
 
+declare module "openclaw/plugin-sdk/discord" {
+  export type DiscordComponentMessageSpec = {
+    text?: string;
+    blocks?: Array<{
+      type: "actions";
+      buttons?: Array<{
+        label: string;
+        style?: "primary" | "secondary" | "success" | "danger" | "link";
+        callbackData?: string;
+      }>;
+    }>;
+  };
+
+  export function resolveDiscordAccount(...args: any[]): any;
+
+  export function buildDiscordComponentMessage(params: {
+    spec: DiscordComponentMessageSpec;
+    fallbackText?: string;
+    sessionKey?: string;
+    agentId?: string;
+    accountId?: string;
+  }): {
+    components: unknown[];
+    entries: unknown[];
+    modals: unknown[];
+  };
+
+  export function editDiscordComponentMessage(
+    to: string,
+    messageId: string,
+    spec: DiscordComponentMessageSpec,
+    opts?: {
+      accountId?: string;
+    },
+  ): Promise<{
+    messageId: string;
+    channelId: string;
+  }>;
+
+  export function registerBuiltDiscordComponentMessage(params: {
+    buildResult: {
+      components: unknown[];
+      entries: unknown[];
+      modals: unknown[];
+    };
+    messageId: string;
+  }): void;
+}
+
 declare module "ws" {
   const WebSocket: any;
   export default WebSocket;

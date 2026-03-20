@@ -6,6 +6,27 @@ import type { OpenClawPluginApi, PluginCommandContext } from "openclaw/plugin-sd
 import { CodexAppServerClient } from "./client.js";
 import { CodexPluginController } from "./controller.js";
 
+const discordSdkState = vi.hoisted(() => ({
+  buildDiscordComponentMessage: vi.fn((params: { spec: { text?: string; blocks?: unknown[] } }) => ({
+    components: [params.spec.text ?? "", ...(params.spec.blocks ?? [])],
+    entries: [{ id: "entry-1", kind: "button", label: "Tap" }],
+    modals: [],
+  })),
+  editDiscordComponentMessage: vi.fn(async () => ({
+    messageId: "message-1",
+    channelId: "channel:chan-1",
+  })),
+  registerBuiltDiscordComponentMessage: vi.fn(),
+  resolveDiscordAccount: vi.fn(() => ({ accountId: "default" })),
+}));
+
+vi.mock("openclaw/plugin-sdk/discord", () => ({
+  buildDiscordComponentMessage: discordSdkState.buildDiscordComponentMessage,
+  editDiscordComponentMessage: discordSdkState.editDiscordComponentMessage,
+  registerBuiltDiscordComponentMessage: discordSdkState.registerBuiltDiscordComponentMessage,
+  resolveDiscordAccount: discordSdkState.resolveDiscordAccount,
+}));
+
 function makeStateDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-app-server-test-"));
 }
@@ -217,6 +238,10 @@ afterEach(() => {
 });
 
 beforeEach(() => {
+  discordSdkState.buildDiscordComponentMessage.mockClear();
+  discordSdkState.editDiscordComponentMessage.mockClear();
+  discordSdkState.registerBuiltDiscordComponentMessage.mockClear();
+  discordSdkState.resolveDiscordAccount.mockClear();
   vi.spyOn(CodexAppServerClient.prototype, "logStartupProbe").mockResolvedValue();
   vi.stubGlobal(
     "fetch",
@@ -340,7 +365,7 @@ describe("Discord controller flows", () => {
     );
   });
 
-  it("refreshes Discord pickers by clearing the old components and sending a new picker", async () => {
+  it("refreshes Discord pickers by editing the original interaction message", async () => {
     const { controller, sendComponentMessage } = await createControllerHarness();
     const callback = await (controller as any).store.putCallback({
       kind: "picker-view",
@@ -355,7 +380,7 @@ describe("Discord controller flows", () => {
         page: 0,
       },
     });
-    const clearComponents = vi.fn(async () => {});
+    const editMessage = vi.fn(async () => {});
 
     await controller.handleDiscordInteractive({
       channel: "discord",
@@ -376,26 +401,28 @@ describe("Discord controller flows", () => {
         acknowledge: vi.fn(async () => {}),
         reply: vi.fn(async () => {}),
         followUp: vi.fn(async () => {}),
-        editMessage: vi.fn(async () => {}),
-        clearComponents,
+        editMessage,
+        clearComponents: vi.fn(async () => {}),
       },
     } as any);
 
-    expect(clearComponents).toHaveBeenCalledWith(
+    expect(editMessage).toHaveBeenCalledWith(
       expect.objectContaining({
-        text: expect.stringContaining("Showing recent Codex sessions"),
+        components: expect.any(Array),
       }),
     );
-    expect(sendComponentMessage).toHaveBeenCalledWith(
-      "channel:chan-1",
-      expect.objectContaining({
-        text: expect.stringContaining("Showing recent Codex sessions"),
+    expect(discordSdkState.registerBuiltDiscordComponentMessage).toHaveBeenCalledWith({
+      buildResult: expect.objectContaining({
+        components: expect.any(Array),
+        entries: expect.any(Array),
       }),
-      expect.objectContaining({ accountId: "default" }),
-    );
+      messageId: "message-1",
+    });
+    expect(discordSdkState.editDiscordComponentMessage).not.toHaveBeenCalled();
+    expect(sendComponentMessage).not.toHaveBeenCalled();
   });
 
-  it("refreshes the Discord project picker without using interactive editMessage components", async () => {
+  it("refreshes the Discord project picker by editing the interaction message", async () => {
     const { controller, sendComponentMessage } = await createControllerHarness();
     const callback = await (controller as any).store.putCallback({
       kind: "picker-view",
@@ -436,14 +463,78 @@ describe("Discord controller flows", () => {
       },
     } as any);
 
-    expect(editMessage).not.toHaveBeenCalled();
-    expect(sendComponentMessage).toHaveBeenCalledWith(
+    expect(editMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        components: expect.any(Array),
+      }),
+    );
+    expect(discordSdkState.registerBuiltDiscordComponentMessage).toHaveBeenCalledWith({
+      buildResult: expect.objectContaining({
+        components: expect.any(Array),
+        entries: expect.any(Array),
+      }),
+      messageId: "message-1",
+    });
+    expect(discordSdkState.editDiscordComponentMessage).not.toHaveBeenCalled();
+    expect(sendComponentMessage).not.toHaveBeenCalled();
+  });
+
+  it("falls back to direct Discord message edit when the interaction was already acknowledged", async () => {
+    const { controller, sendComponentMessage } = await createControllerHarness();
+    const callback = await (controller as any).store.putCallback({
+      kind: "picker-view",
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:chan-1",
+      },
+      view: {
+        mode: "projects",
+        includeAll: true,
+        page: 0,
+      },
+    });
+    const acknowledge = vi.fn(async () => {});
+    const editMessage = vi.fn(async () => {
+      throw new Error("Interaction has already been acknowledged.");
+    });
+
+    await controller.handleDiscordInteractive({
+      channel: "discord",
+      accountId: "default",
+      interactionId: "interaction-1",
+      conversationId: "channel:chan-1",
+      auth: { isAuthorizedSender: true },
+      interaction: {
+        kind: "button",
+        data: `codexapp:${callback.token}`,
+        namespace: "codexapp",
+        payload: callback.token,
+        messageId: "message-1",
+      },
+      senderId: "user-1",
+      senderUsername: "Ada",
+      respond: {
+        acknowledge,
+        reply: vi.fn(async () => {}),
+        followUp: vi.fn(async () => {}),
+        editMessage,
+        clearComponents: vi.fn(async () => {}),
+      },
+    } as any);
+
+    expect(editMessage).toHaveBeenCalled();
+    expect(acknowledge).not.toHaveBeenCalled();
+    expect(discordSdkState.registerBuiltDiscordComponentMessage).not.toHaveBeenCalled();
+    expect(discordSdkState.editDiscordComponentMessage).toHaveBeenCalledWith(
       "channel:chan-1",
+      "message-1",
       expect.objectContaining({
         text: expect.stringContaining("Choose a project to filter recent Codex sessions"),
       }),
       expect.objectContaining({ accountId: "default" }),
     );
+    expect(sendComponentMessage).not.toHaveBeenCalled();
   });
 
   it("normalizes raw Discord callback conversation ids for guild interactions", async () => {
@@ -489,13 +580,7 @@ describe("Discord controller flows", () => {
       },
     } as any);
 
-    expect(sendComponentMessage).toHaveBeenCalledWith(
-      "channel:chan-1",
-      expect.objectContaining({
-        text: expect.stringContaining("Choose a project to filter recent Codex sessions"),
-      }),
-      expect.objectContaining({ accountId: "default" }),
-    );
+    expect(sendComponentMessage).not.toHaveBeenCalled();
   });
 
   it("hydrates a pending approved binding when status is requested after core approval", async () => {
@@ -890,6 +975,116 @@ describe("Discord controller flows", () => {
       "Last Agent Reply in Thread:",
       expect.objectContaining({ accountId: "default" }),
     );
+  });
+
+  it("retries an incomplete codex_resume bind before falling back to the picker", async () => {
+    const { controller } = await createControllerHarness();
+    await (controller as any).store.upsertPendingBind({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123:topic:456",
+        parentConversationId: "123",
+      },
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      threadTitle: "Discord Thread",
+      syncTopic: true,
+      notifyBound: true,
+      updatedAt: Date.now(),
+    });
+    const requestConversationBinding = vi.fn(async () => ({
+      status: "pending" as const,
+      reply: { text: "Plugin bind approval required" },
+    }));
+
+    const reply = await controller.handleCommand(
+      "codex_resume",
+      buildTelegramCommandContext({
+        args: "--sync",
+        commandBody: "/codex_resume --sync",
+        messageThreadId: 456,
+        getCurrentConversationBinding: vi.fn(async () => null),
+        requestConversationBinding,
+      }),
+    );
+
+    expect(reply).toEqual({ text: "Plugin bind approval required" });
+    expect(requestConversationBinding).toHaveBeenCalledWith(
+      expect.objectContaining({
+        summary: "Bind this conversation to Codex thread Discord Thread.",
+      }),
+    );
+  });
+
+  it("rebinds an incomplete codex_resume bind when the retry is approved immediately", async () => {
+    const { controller, renameTopic, sendMessageTelegram } = await createControllerHarness();
+    (controller as any).client.readThreadContext = vi.fn(async () => ({
+      lastUserMessage: "What were we doing here?",
+      lastAssistantMessage: "We were working on the app-server lifetime refactor.",
+    }));
+
+    await (controller as any).store.upsertPendingBind({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123:topic:456",
+        parentConversationId: "123",
+      },
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      threadTitle: "Discord Thread",
+      syncTopic: true,
+      notifyBound: true,
+      updatedAt: Date.now(),
+    });
+
+    const reply = await controller.handleCommand(
+      "codex_resume",
+      buildTelegramCommandContext({
+        args: "--sync",
+        commandBody: "/codex_resume --sync",
+        messageThreadId: 456,
+        getCurrentConversationBinding: vi.fn(async () => null),
+        requestConversationBinding: vi.fn(async () => ({ status: "bound" as const })),
+      }),
+    );
+
+    await flushAsyncWork();
+
+    expect(reply).toEqual({});
+    expect(renameTopic).toHaveBeenCalledWith(
+      "123",
+      456,
+      "Discord Thread (openclaw)",
+      expect.objectContaining({ accountId: "default" }),
+    );
+    expect(sendMessageTelegram).toHaveBeenCalledWith(
+      "123",
+      expect.stringContaining("Thread Name: Discord Thread"),
+      expect.objectContaining({ accountId: "default", messageThreadId: 456 }),
+    );
+    expect(
+      (controller as any).store.getBinding({
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123:topic:456",
+        parentConversationId: "123",
+      }),
+    ).toEqual(
+      expect.objectContaining({
+        threadId: "thread-1",
+        workspaceDir: "/repo/openclaw",
+      }),
+    );
+    expect(
+      (controller as any).store.getPendingBind({
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123:topic:456",
+        parentConversationId: "123",
+      }),
+    ).toBeNull();
   });
 
   it("applies pending bind effects immediately when core reports the bind was approved", async () => {

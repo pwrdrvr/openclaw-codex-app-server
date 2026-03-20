@@ -14,7 +14,13 @@ import type {
   ReplyPayload,
   ConversationRef,
 } from "openclaw/plugin-sdk";
-import { resolveDiscordAccount } from "openclaw/plugin-sdk/discord";
+import {
+  buildDiscordComponentMessage,
+  editDiscordComponentMessage,
+  registerBuiltDiscordComponentMessage,
+  type DiscordComponentMessageSpec,
+  resolveDiscordAccount,
+} from "openclaw/plugin-sdk/discord";
 import { resolvePluginSettings, resolveWorkspaceDir } from "./config.js";
 import { CodexAppServerClient, type ActiveCodexRun, isMissingThreadError } from "./client.js";
 import {
@@ -852,18 +858,39 @@ export class CodexPluginController {
           this.api.logger.debug(
             `codex discord picker refresh conversation=${conversationId} rows=${picker.buttons?.length ?? 0}`,
           );
-          await ctx.respond.clearComponents({ text: picker.text }).catch((error) => {
+          const messageId = ctx.interaction.messageId?.trim();
+          const builtPicker = this.buildDiscordPickerMessage(picker);
+          try {
+            await ctx.respond.editMessage({
+              components: builtPicker.components,
+            });
+            if (messageId) {
+              registerBuiltDiscordComponentMessage({
+                buildResult: builtPicker,
+                messageId,
+              });
+            }
+            return;
+          } catch (error) {
             const detail = String(error);
-            if (detail.includes("already been acknowledged")) {
-              this.api.logger.debug?.(
-                `codex discord picker clear skipped conversation=${conversationId}: ${detail}`,
+            this.api.logger.warn(
+              `codex discord picker edit failed conversation=${conversationId}: ${detail}`,
+            );
+            if (messageId) {
+              if (!detail.includes("already been acknowledged")) {
+                await ctx.respond.acknowledge().catch(() => undefined);
+              }
+              await editDiscordComponentMessage(
+                conversation.conversationId,
+                messageId,
+                this.buildDiscordPickerSpec(picker),
+                {
+                  accountId: conversation.accountId,
+                },
               );
               return;
             }
-            this.api.logger.warn(
-              `codex discord picker clear failed conversation=${conversationId}: ${detail}`,
-            );
-          });
+          }
           await this.sendDiscordPicker(conversation, picker);
         },
         requestConversationBinding: async (params) => {
@@ -904,6 +931,7 @@ export class CodexPluginController {
       conversation && bindingApi.getCurrentConversationBinding
         ? await bindingApi.getCurrentConversationBinding()
         : null;
+    const pendingBind = conversation ? this.store.getPendingBind(conversation) : null;
     const existingBinding =
       conversation && currentBinding ? this.store.getBinding(conversation) : null;
     const hydratedBinding =
@@ -926,6 +954,7 @@ export class CodexPluginController {
           args,
           ctx.channel,
           ctx,
+          pendingBind,
           hydratedBinding?.pendingBind,
         );
       case "codex_detach":
@@ -1009,6 +1038,7 @@ export class CodexPluginController {
     args: string,
     channel: string,
     ctx: PluginCommandContext,
+    pendingBind?: StoredPendingBind | null,
     hydratedPendingBind?: StoredPendingBind,
   ): Promise<ReplyPayload> {
     const bindingApi = asScopedBindingApi(ctx);
@@ -1026,6 +1056,38 @@ export class CodexPluginController {
           title: hydratedPendingBind.threadTitle,
           projectKey: hydratedPendingBind.workspaceDir,
           threadId: hydratedPendingBind.threadId,
+        });
+        if (syncedName) {
+          await this.renameConversationIfSupported(conversation, syncedName);
+        }
+      }
+      await this.sendBoundConversationSummary(conversation);
+      return {};
+    }
+    if (pendingBind && !binding && !parsed.listProjects && !parsed.query) {
+      const syncTopic = parsed.syncTopic || Boolean(pendingBind.syncTopic);
+      const bindResult = await this.requestConversationBinding(
+        conversation,
+        {
+          threadId: pendingBind.threadId,
+          workspaceDir: pendingBind.workspaceDir,
+          threadTitle: pendingBind.threadTitle,
+          syncTopic,
+          notifyBound: true,
+        },
+        bindingApi.requestConversationBinding,
+      );
+      if (bindResult.status === "pending") {
+        return bindResult.reply;
+      }
+      if (bindResult.status === "error") {
+        return { text: bindResult.message };
+      }
+      if (syncTopic) {
+        const syncedName = buildResumeTopicName({
+          title: pendingBind.threadTitle,
+          projectKey: pendingBind.workspaceDir,
+          threadId: pendingBind.threadId,
         });
         if (syncedName) {
           await this.renameConversationIfSupported(conversation, syncedName);
@@ -2682,21 +2744,31 @@ export class CodexPluginController {
     );
     await this.api.runtime.channel.discord.sendComponentMessage(
       conversation.conversationId,
-      {
-        text: picker.text,
-        blocks: (picker.buttons ?? []).map((row) => ({
-          type: "actions" as const,
-          buttons: row.map((button) => ({
-            label: truncateDiscordLabel(button.text),
-            style: "primary" as const,
-            callbackData: button.callback_data,
-          })),
-        })),
-      },
+      this.buildDiscordPickerSpec(picker),
       {
         accountId: conversation.accountId,
       },
     );
+  }
+
+  private buildDiscordPickerSpec(picker: PickerRender): DiscordComponentMessageSpec {
+    return {
+      text: picker.text,
+      blocks: (picker.buttons ?? []).map((row) => ({
+        type: "actions" as const,
+        buttons: row.map((button) => ({
+          label: truncateDiscordLabel(button.text),
+          style: "primary" as const,
+          callbackData: button.callback_data,
+        })),
+      })),
+    };
+  }
+
+  private buildDiscordPickerMessage(picker: PickerRender) {
+    return buildDiscordComponentMessage({
+      spec: this.buildDiscordPickerSpec(picker),
+    });
   }
 
   private async dispatchCallbackAction(
