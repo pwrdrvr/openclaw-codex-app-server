@@ -22,7 +22,12 @@ import {
   resolveDiscordAccount,
 } from "openclaw/plugin-sdk/discord";
 import { resolvePluginSettings, resolveWorkspaceDir } from "./config.js";
-import { CodexAppServerClient, type ActiveCodexRun, isMissingThreadError } from "./client.js";
+import {
+  CodexAppServerClient,
+  type ActiveCodexLogin,
+  type ActiveCodexRun,
+  isMissingThreadError,
+} from "./client.js";
 import {
   formatAccountSummary,
   formatBinding,
@@ -83,6 +88,14 @@ type ActiveRunRecord = {
   workspaceDir: string;
   mode: "default" | "plan" | "review";
   handle: ActiveCodexRun;
+};
+
+type ActiveLoginRecord = {
+  conversation: ConversationTarget;
+  sessionKey?: string;
+  loginId: string;
+  authUrl: string;
+  handle: ActiveCodexLogin;
 };
 
 const execFileAsync = promisify(execFile);
@@ -557,6 +570,7 @@ export class CodexPluginController {
   private readonly settings;
   private readonly client;
   private readonly activeRuns = new Map<string, ActiveRunRecord>();
+  private readonly activeLogins = new Map<string, ActiveLoginRecord>();
   private readonly threadChangesCache = new Map<string, Promise<boolean | undefined>>();
   private readonly store;
   private serviceWorkspaceDir?: string;
@@ -682,6 +696,10 @@ export class CodexPluginController {
       const conversation = toConversationTargetFromInbound(event);
       if (!conversation) {
         return { handled: false };
+      }
+      const loginHandled = await this.handlePendingLoginMessage(conversation, event.content);
+      if (loginHandled) {
+        return { handled: true };
       }
       const activeKey = buildConversationKey(conversation);
       const active = this.activeRuns.get(activeKey);
@@ -1069,6 +1087,8 @@ export class CodexPluginController {
         return await this.handlePromptAlias(conversation, binding, args, "/diff");
       case "codex_rename":
         return await this.handleRenameCommand(conversation, binding, args);
+      case "codex_login":
+        return await this.handleLoginCommand(conversation, binding, args);
       default:
         return { text: "Unknown Codex command." };
     }
@@ -1638,6 +1658,59 @@ export class CodexPluginController {
     return { text: `Sent ${alias} to Codex.` };
   }
 
+  private async handleLoginCommand(
+    conversation: ConversationTarget | null,
+    binding: StoredBinding | null,
+    args: string,
+  ): Promise<ReplyPayload> {
+    if (!conversation || !binding) {
+      return { text: "Bind this conversation to a Codex thread before starting Codex login." };
+    }
+    const key = buildConversationKey(conversation);
+    const existing = this.activeLogins.get(key);
+    if (args.trim().toLowerCase() === "cancel") {
+      if (!existing) {
+        return { text: "No Codex login is currently waiting in this conversation." };
+      }
+      await existing.handle.cancel().catch(() => undefined);
+      this.activeLogins.delete(key);
+      return { text: "Cancelled the pending Codex login flow." };
+    }
+    if (existing) {
+      return {
+        text: this.buildLoginInstructions(existing.authUrl),
+      };
+    }
+    const handle = await this.client.startChatgptLogin({ sessionKey: binding.sessionKey });
+    const record: ActiveLoginRecord = {
+      conversation,
+      sessionKey: binding.sessionKey,
+      loginId: handle.loginId,
+      authUrl: handle.authUrl,
+      handle,
+    };
+    this.activeLogins.set(key, record);
+    void handle.result
+      .then(async () => {
+        if (this.activeLogins.get(key)?.loginId === record.loginId) {
+          this.activeLogins.delete(key);
+        }
+        await this.sendText(conversation, "Codex login completed. You can try your message again.");
+      })
+      .catch(async (error) => {
+        if (this.activeLogins.get(key)?.loginId === record.loginId) {
+          this.activeLogins.delete(key);
+        }
+        const message = error instanceof Error ? error.message : String(error);
+        if (message !== "Codex login cancelled.") {
+          await this.sendText(conversation, `Codex login failed: ${message}`);
+        }
+      });
+    return {
+      text: this.buildLoginInstructions(handle.authUrl),
+    };
+  }
+
   private async handleRenameCommand(
     conversation: ConversationTarget | null,
     binding: StoredBinding | null,
@@ -1959,6 +2032,47 @@ export class CodexPluginController {
 
   private async describeEmptyTurnCompletion(): Promise<string> {
     return "Codex completed without a text reply.";
+  }
+
+  private buildLoginInstructions(authUrl: string): string {
+    return [
+      "Open this Codex login URL in a browser:",
+      authUrl,
+      "",
+      "Finish the login. When the browser redirects to a localhost URL and the page fails to load, copy the full `http://127.0.0.1:...` or `http://localhost:...` URL from the address bar and paste it here.",
+      "Use `/codex_login cancel` to cancel this login flow.",
+    ].join("\n");
+  }
+
+  private async handlePendingLoginMessage(
+    conversation: ConversationTarget,
+    content: string,
+  ): Promise<boolean> {
+    const pending = this.activeLogins.get(buildConversationKey(conversation));
+    if (!pending || content.trim().startsWith("/")) {
+      return false;
+    }
+    const trimmed = content.trim();
+    let url: URL;
+    try {
+      url = new URL(trimmed);
+    } catch {
+      return false;
+    }
+    const host = url.hostname.toLowerCase();
+    if (!["127.0.0.1", "localhost"].includes(host)) {
+      return false;
+    }
+    await this.sendText(conversation, "Completing Codex login now.");
+    try {
+      await pending.handle.submitCallbackUrl(trimmed);
+    } catch (error) {
+      await this.sendText(
+        conversation,
+        error instanceof Error ? error.message : "Unable to submit that Codex login callback URL.",
+      );
+    }
+    return true;
   }
 
   private formatCodexAuthFailureMessage(account: AccountSummary | undefined): string {

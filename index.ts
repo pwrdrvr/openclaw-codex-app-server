@@ -17,6 +17,7 @@ const COMMANDS = [
   ["codex_fast", "Toggle Codex fast mode."],
   ["codex_model", "List or switch the Codex model."],
   ["codex_permissions", "Show Codex permissions and account status."],
+  ["codex_login", "Start or cancel the Codex ChatGPT login flow for this bound conversation."],
   ["codex_init", "Forward /init to Codex."],
   ["codex_diff", "Forward /diff to Codex."],
   ["codex_rename", "Rename the Codex thread and sync the channel name when possible."],

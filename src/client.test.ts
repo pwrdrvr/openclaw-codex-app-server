@@ -147,6 +147,19 @@ describe("buildThreadResumePayloads", () => {
   });
 });
 
+describe("normalizeLoginCallbackReplayUrl", () => {
+  it("rewrites localhost callbacks to 127.0.0.1 for replay", () => {
+    expect(
+      __testing.normalizeLoginCallbackReplayUrl({
+        callbackUrl:
+          "http://localhost:1455/auth/callback?code=abc123&state=xyz789",
+        authUrl:
+          "https://auth.example.test/start?redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback",
+      }),
+    ).toBe("http://127.0.0.1:1455/auth/callback?code=abc123&state=xyz789");
+  });
+});
+
 describe("extractStartupProbeInfo", () => {
   it("extracts server info from initialize responses without losing CLI probe details", () => {
     expect(

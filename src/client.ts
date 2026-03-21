@@ -71,8 +71,17 @@ export type ActiveCodexRun = {
   getThreadId: () => string | undefined;
 };
 
+export type ActiveCodexLogin = {
+  loginId: string;
+  authUrl: string;
+  submitCallbackUrl: (callbackUrl: string) => Promise<void>;
+  cancel: () => Promise<void>;
+  result: Promise<void>;
+};
+
 const DEFAULT_PROTOCOL_VERSION = "1.0";
 const TRAILING_NOTIFICATION_SETTLE_MS = 250;
+const LOGIN_CALLBACK_TIMEOUT_MS = 10_000;
 const TURN_STEER_METHODS = ["turn/steer"] as const;
 const TURN_INTERRUPT_METHODS = ["turn/interrupt"] as const;
 const execFileAsync = promisify(execFile);
@@ -469,6 +478,53 @@ function extractOptionValues(value: unknown): string[] {
       );
     })
     .filter(Boolean);
+}
+
+function extractLoginAccountResponse(value: unknown): {
+  type?: string;
+  loginId?: string;
+  authUrl?: string;
+} {
+  const record = asRecord(value) ?? {};
+  return {
+    type: pickString(record, ["type"]),
+    loginId: pickString(record, ["loginId", "login_id"]),
+    authUrl: pickString(record, ["authUrl", "auth_url"]),
+  };
+}
+
+function normalizeLoginCallbackReplayUrl(params: {
+  callbackUrl: string;
+  authUrl: string;
+}): string {
+  const target = new URL(params.callbackUrl.trim());
+  const redirectUrl = new URL(params.authUrl).searchParams.get("redirect_uri");
+  if (!redirectUrl) {
+    throw new Error("Codex login URL did not include a redirect URI.");
+  }
+  const expected = new URL(redirectUrl);
+  const allowedHosts = new Set(["127.0.0.1", "localhost"]);
+  const targetHost = target.hostname.toLowerCase();
+  const expectedHost = expected.hostname.toLowerCase();
+  if (!allowedHosts.has(targetHost)) {
+    throw new Error("Paste the localhost callback URL from the browser address bar.");
+  }
+  if (
+    target.protocol !== expected.protocol ||
+    (!allowedHosts.has(expectedHost) || !allowedHosts.has(targetHost)) &&
+      targetHost !== expectedHost ||
+    target.port !== expected.port ||
+    target.pathname !== expected.pathname
+  ) {
+    throw new Error("That callback URL does not match the active Codex login request.");
+  }
+  if (!target.searchParams.get("code") || !target.searchParams.get("state")) {
+    throw new Error("That callback URL is missing the OAuth code or state.");
+  }
+  // Codex binds the local login server on 127.0.0.1, even though the browser
+  // redirect uses localhost. Force IPv4 loopback for the replay request.
+  target.hostname = "127.0.0.1";
+  return target.toString();
 }
 
 function isInteractiveServerRequest(method: string): boolean {
@@ -2529,6 +2585,145 @@ export class CodexAppServerClient {
     await connection?.client.close().catch(() => undefined);
   }
 
+  async startChatgptLogin(params: { sessionKey?: string } = {}): Promise<ActiveCodexLogin> {
+    const client = createJsonRpcClient(this.settings);
+    let loginId = "";
+    let authUrl = "";
+    let settled = false;
+    let completeLogin: (() => void) | null = null;
+    let failLogin: ((error: Error) => void) | null = null;
+    const result = new Promise<void>((resolve, reject) => {
+      completeLogin = () => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        resolve();
+      };
+      failLogin = (error) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        reject(error);
+      };
+    }).finally(async () => {
+      await client.close().catch(() => undefined);
+    });
+
+    client.setNotificationHandler((method, notificationParams) => {
+      const methodLower = method.trim().toLowerCase();
+      if (methodLower !== "account/login/completed") {
+        return;
+      }
+      const record = asRecord(notificationParams) ?? {};
+      const completedLoginId = pickString(record, ["loginId", "login_id"]);
+      if (loginId && completedLoginId && completedLoginId !== loginId) {
+        return;
+      }
+      const success = pickBoolean(record, ["success"]) ?? false;
+      const errorMessage =
+        pickString(record, ["error"], { trim: false }) ?? "Codex login failed.";
+      if (success) {
+        this.logger.info(`codex login completed loginId=${loginId || completedLoginId || "<none>"}`);
+        completeLogin?.();
+      } else {
+        failLogin?.(new Error(errorMessage));
+      }
+    });
+    client.setRequestHandler(async () => ({}));
+
+    try {
+      await client.connect();
+      await initializeClient({ client, settings: this.settings, sessionKey: params.sessionKey });
+      const loginResponse = extractLoginAccountResponse(
+        await requestWithFallbacks({
+          client,
+          methods: ["account/login/start"],
+          payloads: [{ type: "chatgpt" }],
+          timeoutMs: this.settings.requestTimeoutMs,
+        }),
+      );
+      if (loginResponse.type !== "chatgpt" || !loginResponse.loginId || !loginResponse.authUrl) {
+        throw new Error("Codex App Server did not return a ChatGPT login URL.");
+      }
+      loginId = loginResponse.loginId;
+      authUrl = loginResponse.authUrl;
+      this.logger.info(`codex login started loginId=${loginId}`);
+    } catch (error) {
+      await client.close().catch(() => undefined);
+      throw error;
+    }
+
+    const submitCallbackUrl = async (callbackUrl: string): Promise<void> => {
+      const replayUrl = normalizeLoginCallbackReplayUrl({
+        callbackUrl,
+        authUrl,
+      });
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), LOGIN_CALLBACK_TIMEOUT_MS);
+      this.logger.info(
+        `codex login callback replay start loginId=${loginId || "<none>"} url=${replayUrl}`,
+      );
+      let response: Response;
+      try {
+        response = await fetch(replayUrl, {
+          method: "GET",
+          redirect: "manual",
+          signal: controller.signal,
+        });
+      } catch (error) {
+        this.logger.warn(
+          `codex login callback replay failed loginId=${loginId || "<none>"}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        if (error instanceof Error && error.name === "AbortError") {
+          throw new Error(
+            "Codex login callback timed out contacting the local Codex login server. Paste the localhost URL again or run `/codex_login cancel` and retry.",
+          );
+        }
+        throw error;
+      } finally {
+        clearTimeout(timeout);
+      }
+      this.logger.info(
+        `codex login callback replay response loginId=${loginId || "<none>"} status=${response.status}`,
+      );
+      if (!response.ok && response.status !== 302) {
+        throw new Error(`Codex login callback failed with HTTP ${response.status}.`);
+      }
+      if (response.status === 302) {
+        this.logger.info(
+          `codex login callback accepted loginId=${loginId || "<none>"}; treating redirect as success`,
+        );
+        completeLogin?.();
+      }
+    };
+
+    const cancel = async (): Promise<void> => {
+      if (settled) {
+        return;
+      }
+      try {
+        await requestWithFallbacks({
+          client,
+          methods: ["account/login/cancel"],
+          payloads: [{ loginId }],
+          timeoutMs: this.settings.requestTimeoutMs,
+        }).catch(() => undefined);
+      } finally {
+        failLogin?.(new Error("Codex login cancelled."));
+      }
+    };
+
+    return {
+      loginId,
+      authUrl,
+      submitCallbackUrl,
+      cancel,
+      result,
+    };
+  }
+
   async listThreads(params: {
     sessionKey?: string;
     workspaceDir?: string;
@@ -3615,6 +3810,7 @@ export const __testing = {
   extractTurnTerminalState,
   extractFileEditSummariesFromNotification,
   extractFileChangePathsFromReadResult,
+  normalizeLoginCallbackReplayUrl,
   extractStartupProbeInfo,
   formatFileEditNotice,
   extractThreadTokenUsageSnapshot,

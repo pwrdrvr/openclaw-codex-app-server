@@ -161,6 +161,7 @@ async function createControllerHarness() {
       type: "chatgpt",
     })),
     readRateLimits: vi.fn(async () => []),
+    startChatgptLogin: vi.fn(),
   };
   (controller as any).client = clientMock;
   (controller as any).readThreadHasChanges = vi.fn(async () => false);
@@ -2520,5 +2521,155 @@ describe("Discord controller flows", () => {
       expect.anything(),
     );
     expect(clientMock.readAccount).not.toHaveBeenCalled();
+  });
+
+  it("starts a bound codex_login flow and returns the browser URL", async () => {
+    const { controller, clientMock } = await createControllerHarness();
+    const loginHandle = {
+      loginId: "login-123",
+      authUrl: "https://auth.example.test/start?redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback",
+      submitCallbackUrl: vi.fn(async () => {}),
+      cancel: vi.fn(async () => {}),
+      result: new Promise<void>(() => undefined),
+    };
+    clientMock.startChatgptLogin.mockResolvedValue(loginHandle);
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "8460800771",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+
+    const reply = await controller.handleCommand(
+      "codex_login",
+      buildTelegramCommandContext({
+        commandBody: "/codex_login",
+        args: "",
+        getCurrentConversationBinding: vi.fn(async () => ({ pluginId: "openclaw-codex-app-server" })),
+        from: "telegram:8460800771",
+        to: "telegram:8460800771",
+      }),
+    );
+
+    expect(clientMock.startChatgptLogin).toHaveBeenCalledWith({ sessionKey: "session-1" });
+    expect(reply.text).toContain(loginHandle.authUrl);
+    expect(reply.text).toContain("copy the full");
+  });
+
+  it("replays a pasted localhost callback URL into the pending codex_login flow", async () => {
+    const { controller, clientMock, sendMessageTelegram } = await createControllerHarness();
+    let resolveLogin: (() => void) | undefined;
+    const loginResult = new Promise<void>((resolve) => {
+      resolveLogin = resolve;
+    });
+    const submitCallbackUrl = vi.fn(async () => {
+      resolveLogin?.();
+    });
+    clientMock.startChatgptLogin.mockResolvedValue({
+      loginId: "login-123",
+      authUrl: "https://auth.example.test/start?redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback",
+      submitCallbackUrl,
+      cancel: vi.fn(async () => {}),
+      result: loginResult,
+    });
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "8460800771",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+
+    await controller.handleCommand(
+      "codex_login",
+      buildTelegramCommandContext({
+        commandBody: "/codex_login",
+        args: "",
+        getCurrentConversationBinding: vi.fn(async () => ({ pluginId: "openclaw-codex-app-server" })),
+        from: "telegram:8460800771",
+        to: "telegram:8460800771",
+      }),
+    );
+
+    const result = await controller.handleInboundClaim({
+      content: "http://127.0.0.1:1455/auth/callback?code=abc&state=xyz",
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "8460800771",
+    });
+
+    expect(result).toEqual({ handled: true });
+    expect(submitCallbackUrl).toHaveBeenCalledWith(
+      "http://127.0.0.1:1455/auth/callback?code=abc&state=xyz",
+    );
+    await flushAsyncWork();
+    expect(sendMessageTelegram).toHaveBeenCalledWith(
+      "8460800771",
+      "Completing Codex login now.",
+      expect.anything(),
+    );
+    expect(sendMessageTelegram).toHaveBeenCalledWith(
+      "8460800771",
+      "Codex login completed. You can try your message again.",
+      expect.anything(),
+    );
+  });
+
+  it("does not hijack normal inbound text while a codex_login flow is pending", async () => {
+    const { controller, clientMock, sendMessageTelegram } = await createControllerHarness();
+    const startTurn = vi.spyOn(controller as any, "startTurn").mockResolvedValue(undefined);
+    clientMock.startChatgptLogin.mockResolvedValue({
+      loginId: "login-123",
+      authUrl: "https://auth.example.test/start?redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback",
+      submitCallbackUrl: vi.fn(async () => {}),
+      cancel: vi.fn(async () => {}),
+      result: new Promise<void>(() => undefined),
+    });
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "8460800771",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+
+    await controller.handleCommand(
+      "codex_login",
+      buildTelegramCommandContext({
+        commandBody: "/codex_login",
+        args: "",
+        getCurrentConversationBinding: vi.fn(async () => ({ pluginId: "openclaw-codex-app-server" })),
+        from: "telegram:8460800771",
+        to: "telegram:8460800771",
+      }),
+    );
+
+    const result = await controller.handleInboundClaim({
+      content: "who are you?",
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "8460800771",
+    });
+
+    expect(result).toEqual({ handled: true });
+    expect(startTurn).toHaveBeenCalled();
+    expect(sendMessageTelegram).not.toHaveBeenCalledWith(
+      "8460800771",
+      expect.stringContaining("Codex login is waiting for the localhost callback URL"),
+      expect.anything(),
+    );
   });
 });
