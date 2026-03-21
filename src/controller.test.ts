@@ -838,7 +838,7 @@ describe("Discord controller flows", () => {
     );
   });
 
-  it("shows codex_status as none when no core binding exists", async () => {
+  it("shows cas_status as none when no core binding exists", async () => {
     const { controller } = await createControllerHarness();
     await (controller as any).store.upsertBinding({
       conversation: {
@@ -868,7 +868,7 @@ describe("Discord controller flows", () => {
     expect(reply.text).not.toContain("Session: session-1");
   });
 
-  it("does not hydrate a denied pending bind into codex_status", async () => {
+  it("does not hydrate a denied pending bind into cas_status", async () => {
     const { controller } = await createControllerHarness();
     await (controller as any).store.upsertPendingBind({
       conversation: {
@@ -899,7 +899,7 @@ describe("Discord controller flows", () => {
     })).toBeNull();
   });
 
-  it("shows plan mode on in codex_status when the bound conversation has an active plan run", async () => {
+  it("shows plan mode on in cas_status when the bound conversation has an active plan run", async () => {
     const { controller } = await createControllerHarness();
     await (controller as any).store.upsertBinding({
       conversation: {
@@ -941,7 +941,7 @@ describe("Discord controller flows", () => {
     expect(reply.text).toContain("Plan mode: on");
   });
 
-  it("parses unicode em dash --sync for codex_rename and renames the Telegram topic", async () => {
+  it("parses unicode em dash --sync for cas_rename and renames the Telegram topic", async () => {
     const { controller, clientMock, renameTopic } = await createControllerHarness();
     await (controller as any).store.upsertBinding({
       conversation: {
@@ -985,7 +985,7 @@ describe("Discord controller flows", () => {
     expect(reply).toEqual({ text: 'Renamed the Codex thread to "New Topic Name".' });
   });
 
-  it("parses unicode em dash --sync for codex_resume and renames the Telegram topic", async () => {
+  it("parses unicode em dash --sync for cas_resume and renames the Telegram topic", async () => {
     const { controller, renameTopic, sendMessageTelegram } = await createControllerHarness();
 
     const reply = await controller.handleCommand(
@@ -1127,7 +1127,7 @@ describe("Discord controller flows", () => {
     );
   });
 
-  it("replays pending codex_resume --sync effects after approval hydrates on the next resume command", async () => {
+  it("replays pending cas_resume --sync effects after approval hydrates on the next resume command", async () => {
     const { controller, clientMock, renameTopic, sendMessageTelegram } = await createControllerHarness();
     (controller as any).client.readThreadContext = vi.fn(async () => ({
       lastUserMessage: "What were we doing here?",
@@ -1200,7 +1200,7 @@ describe("Discord controller flows", () => {
     );
   });
 
-  it("retries an incomplete codex_resume bind before falling back to the picker", async () => {
+  it("retries an incomplete cas_resume bind before falling back to the picker", async () => {
     const { controller } = await createControllerHarness();
     await (controller as any).store.upsertPendingBind({
       conversation: {
@@ -1240,7 +1240,7 @@ describe("Discord controller flows", () => {
     );
   });
 
-  it("rebinds an incomplete codex_resume bind when the retry is approved immediately", async () => {
+  it("rebinds an incomplete cas_resume bind when the retry is approved immediately", async () => {
     const { controller, renameTopic, sendMessageTelegram } = await createControllerHarness();
     (controller as any).client.readThreadContext = vi.fn(async () => ({
       lastUserMessage: "What were we doing here?",
@@ -1592,7 +1592,7 @@ describe("Discord controller flows", () => {
     });
   });
 
-  it("offers compact rename style buttons for codex_rename --sync without a name", async () => {
+  it("offers compact rename style buttons for cas_rename --sync without a name", async () => {
     const { controller } = await createControllerHarness();
     await (controller as any).store.upsertBinding({
       conversation: {
@@ -2007,7 +2007,7 @@ describe("Discord controller flows", () => {
     );
   });
 
-  it("supports codex_plan off to interrupt an active plan run", async () => {
+  it("supports cas_plan off to interrupt an active plan run", async () => {
     const { controller } = await createControllerHarness();
     const interrupt = vi.fn(async () => {});
     (controller as any).activeRuns.set("discord::default::channel:chan-1::", {
