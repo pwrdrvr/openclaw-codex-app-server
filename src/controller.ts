@@ -855,25 +855,29 @@ export class CodexPluginController {
         conversation,
         clear: async () => {
           const messageId = ctx.interaction.messageId?.trim();
-          if (callback.kind === "pending-input" && messageId) {
+          if ((callback.kind === "pending-input" || callback.kind === "pending-questionnaire") && messageId) {
             await ctx.respond
               .acknowledge()
               .then(() => {
                 interactionSettled = true;
               })
               .catch(() => undefined);
+            const completionText =
+              callback.kind === "pending-questionnaire"
+                ? "Recorded your answers and sent them to Codex."
+                : "Sent to Codex.";
             await editDiscordComponentMessage(
               conversation.conversationId,
               messageId,
               {
-                text: "Sent to Codex.",
+                text: completionText,
               },
               {
                 accountId: conversation.accountId,
               },
             ).catch((error) => {
               this.api.logger.warn(
-                `codex discord pending-input clear failed conversation=${conversationId}: ${String(error)}`,
+                `codex discord ${callback.kind} clear failed conversation=${conversationId}: ${String(error)}`,
               );
             });
             return;
@@ -3001,7 +3005,9 @@ export class CodexPluginController {
         }
         await responders.clear().catch(() => undefined);
         await this.store.removePendingRequest(pending.requestId);
-        await responders.reply("Recorded your answers and sent them to Codex.");
+        if (callback.conversation.channel !== "discord") {
+          await responders.reply("Recorded your answers and sent them to Codex.");
+        }
         return;
       }
       await this.sendPendingQuestionnaire(callback.conversation, pending.state, {
