@@ -36,6 +36,25 @@ describe("plugin registration", () => {
     expect(api.on).toHaveBeenCalledWith("inbound_claim", expect.any(Function));
     expect(api.registerInteractiveHandler).toHaveBeenCalledTimes(2);
     expect(api.registerCommand).toHaveBeenCalled();
+    expect(api.registerCommand.mock.calls.map(([params]) => params.name)).toEqual([
+      "cas_resume",
+      "cas_detach",
+      "cas_status",
+      "cas_stop",
+      "cas_steer",
+      "cas_plan",
+      "cas_review",
+      "cas_compact",
+      "cas_skills",
+      "cas_experimental",
+      "cas_mcp",
+      "cas_fast",
+      "cas_model",
+      "cas_permissions",
+      "cas_init",
+      "cas_diff",
+      "cas_rename",
+    ]);
   });
 
   it("registers the binding resolved hook when available", () => {

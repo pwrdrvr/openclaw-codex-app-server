@@ -1,7 +1,7 @@
 {
   "name": "openclaw-codex-app-server",
   "version": "0.0.0",
-  "description": "Independent OpenClaw bridge for Codex App Server conversations",
+  "description": "Independent OpenClaw plugin for the Codex App Server protocol",
   "author": "PwrDrvr LLC",
   "license": "MIT",
   "packageManager": "pnpm@10.29.3",

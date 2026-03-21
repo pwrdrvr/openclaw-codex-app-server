@@ -394,7 +394,13 @@ function parseFastAction(
   if (normalized === "on" || normalized === "off" || normalized === "status") {
     return normalized;
   }
-  return { error: "Usage: /codex_fast [on|off|status]" };
+  return { error: "Usage: /cas_fast [on|off|status]" };
+}
+
+function normalizeRegisteredCommandName(commandName: string): string {
+  return commandName.startsWith("cas_")
+    ? `codex_${commandName.slice("cas_".length)}`
+    : commandName;
 }
 
 function normalizeServiceTier(value: string | undefined | null): string | undefined {
@@ -956,13 +962,14 @@ export class CodexPluginController {
         : null;
     const binding = existingBinding ?? hydratedBinding?.binding ?? null;
     const args = ctx.args?.trim() ?? "";
+    const normalizedCommandName = normalizeRegisteredCommandName(commandName);
     if (isDiscordChannel(ctx.channel)) {
       this.api.logger.debug(
         `codex discord command /${commandName} from=${ctx.from ?? "<none>"} to=${ctx.to ?? "<none>"} conversation=${conversation?.conversationId ?? "<none>"}`,
       );
     }
 
-    switch (commandName) {
+    switch (normalizedCommandName) {
       case "codex_resume":
         return await this.handleJoinCommand(
           conversation,
@@ -1212,7 +1219,7 @@ export class CodexPluginController {
     }
     const prompt = args.trim();
     if (!prompt) {
-      return { text: "Usage: /codex_steer <message>" };
+      return { text: "Usage: /cas_steer <message>" };
     }
     const active = this.activeRuns.get(buildConversationKey(conversation));
     if (!active) {
@@ -1245,7 +1252,7 @@ export class CodexPluginController {
     }
     const prompt = parsed.prompt.trim();
     if (!prompt) {
-      return { text: "Usage: /codex_plan <goal> or /codex_plan off" };
+      return { text: "Usage: /cas_plan <goal> or /cas_plan off" };
     }
     const workspaceDir = resolveWorkspaceDir({
       bindingWorkspaceDir: binding?.workspaceDir,
@@ -1666,7 +1673,7 @@ export class CodexPluginController {
       ]);
     }
     if (buttons.length === 0) {
-      return { text: "Usage: /codex_rename [--sync] <new name>", buttons: [] };
+      return { text: "Usage: /cas_rename [--sync] <new name>", buttons: [] };
     }
     return {
       text: syncTopic
