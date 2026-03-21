@@ -1471,7 +1471,19 @@ describe("Discord controller flows", () => {
       workspaceDir: "/repo/openclaw",
     });
     const acknowledge = vi.fn(async () => {});
+    const clearComponents = vi.fn(async () => {});
     const reply = vi.fn(async () => {});
+    const requestConversationBinding = vi.fn(async () => ({
+      status: "pending" as const,
+      reply: {
+        text: "Plugin bind approval required",
+        channelData: {
+          telegram: {
+            buttons: [[{ text: "Allow once", callback_data: "pluginbind:approval:o" }]],
+          },
+        },
+      },
+    }));
 
     await controller.handleDiscordInteractive({
       channel: "discord",
@@ -1488,23 +1500,13 @@ describe("Discord controller flows", () => {
       },
       senderId: "user-1",
       senderUsername: "Ada",
-      requestConversationBinding: vi.fn(async () => ({
-        status: "pending" as const,
-        reply: {
-          text: "Plugin bind approval required",
-          channelData: {
-            telegram: {
-              buttons: [[{ text: "Allow once", callback_data: "pluginbind:approval:o" }]],
-            },
-          },
-        },
-      })),
+      requestConversationBinding,
       respond: {
         acknowledge,
         reply,
         followUp: vi.fn(async () => {}),
         editMessage: vi.fn(async () => {}),
-        clearComponents: vi.fn(async () => {}),
+        clearComponents,
       },
     } as any);
 
@@ -1517,6 +1519,10 @@ describe("Discord controller flows", () => {
       expect.objectContaining({ accountId: "default" }),
     );
     expect(acknowledge).toHaveBeenCalledTimes(1);
+    expect(acknowledge.mock.invocationCallOrder[0]).toBeLessThan(
+      requestConversationBinding.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
+    expect(clearComponents).not.toHaveBeenCalled();
     expect(reply).not.toHaveBeenCalled();
   });
 

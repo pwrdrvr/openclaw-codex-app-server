@@ -842,6 +842,9 @@ export class CodexPluginController {
       parentConversationId: callback.conversation.parentConversationId ?? ctx.parentConversationId,
     };
     try {
+      if (callback.kind === "resume-thread") {
+        await ctx.respond.acknowledge().catch(() => undefined);
+      }
       await this.dispatchCallbackAction(callback, {
         conversation,
         clear: async () => {
@@ -900,7 +903,6 @@ export class CodexPluginController {
           }
           const result = await requestConversationBinding(params);
           if (result.status === "pending") {
-            await ctx.respond.acknowledge().catch(() => undefined);
             const buttons = extractReplyButtons(result.reply);
             await this.sendDiscordPicker(conversation, {
               text: result.reply.text ?? "Bind approval requested.",
@@ -2777,7 +2779,9 @@ export class CodexPluginController {
     responders: PickerResponders,
   ): Promise<void> {
     if (callback.kind === "resume-thread") {
-      await responders.clear().catch(() => undefined);
+      if (responders.conversation.channel !== "discord") {
+        await responders.clear().catch(() => undefined);
+      }
       const threadState = await this.client
         .readThreadState({
           sessionKey: buildPluginSessionKey(callback.threadId),
