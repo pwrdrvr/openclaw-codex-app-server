@@ -257,11 +257,6 @@ beforeEach(() => {
   );
 });
 
-async function flushAsyncWork(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await new Promise((resolve) => setTimeout(resolve, 0));
-}
-
 describe("Discord controller flows", () => {
   it("starts cleanly without the legacy runtime.channel.bindings surface", async () => {
     const { controller } = await createControllerHarnessWithoutLegacyBindings();
@@ -1310,7 +1305,14 @@ describe("Discord controller flows", () => {
       }),
     );
 
-    await flushAsyncWork();
+    await vi.waitFor(() =>
+      expect(renameTopic).toHaveBeenCalledWith(
+        "123",
+        456,
+        "Discord Thread (openclaw)",
+        expect.objectContaining({ accountId: "default" }),
+      ),
+    );
 
     expect(renameTopic).toHaveBeenCalledWith(
       "123",
@@ -1409,7 +1411,14 @@ describe("Discord controller flows", () => {
       }),
     );
 
-    await flushAsyncWork();
+    await vi.waitFor(() =>
+      expect(renameTopic).toHaveBeenCalledWith(
+        "123",
+        456,
+        "Discord Thread (openclaw)",
+        expect.objectContaining({ accountId: "default" }),
+      ),
+    );
 
     expect(reply).toEqual({});
     expect(renameTopic).toHaveBeenCalledWith(
@@ -2466,7 +2475,13 @@ describe("Discord controller flows", () => {
       reason: "inbound",
     });
 
-    await flushAsyncWork();
+    await vi.waitFor(() =>
+      expect(sendMessageTelegram).toHaveBeenCalledWith(
+        "8460800771",
+        "Codex authentication failed on this machine. Run `codex logout` and `codex login`, then try again.",
+        expect.anything(),
+      ),
+    );
     expect(sendMessageTelegram).toHaveBeenCalledWith(
       "8460800771",
       "Codex authentication failed on this machine. Run `codex logout` and `codex login`, then try again.",
@@ -2503,7 +2518,13 @@ describe("Discord controller flows", () => {
       reason: "inbound",
     });
 
-    await flushAsyncWork();
+    await vi.waitFor(() =>
+      expect(sendMessageTelegram).toHaveBeenCalledWith(
+        "8460800771",
+        "Codex authentication failed on this machine. Run `codex logout` and `codex login`, then try again.",
+        expect.anything(),
+      ),
+    );
     expect(sendMessageTelegram).toHaveBeenCalledWith(
       "8460800771",
       "Codex authentication failed on this machine. Run `codex logout` and `codex login`, then try again.",
@@ -2553,7 +2574,13 @@ describe("Discord controller flows", () => {
       reason: "inbound",
     });
 
-    await flushAsyncWork();
+    await vi.waitFor(() =>
+      expect(sendMessageTelegram).toHaveBeenCalledWith(
+        "8460800771",
+        "Codex authentication failed on this machine. Run `codex logout` and `codex login`, then try again.",
+        expect.anything(),
+      ),
+    );
     expect(sendMessageTelegram).toHaveBeenCalledWith(
       "8460800771",
       "Codex authentication failed on this machine. Run `codex logout` and `codex login`, then try again.",
@@ -2603,7 +2630,13 @@ describe("Discord controller flows", () => {
       reason: "inbound",
     });
 
-    await flushAsyncWork();
+    await vi.waitFor(() =>
+      expect(sendMessageTelegram).toHaveBeenCalledWith(
+        "8460800771",
+        "Codex completed without a text reply.",
+        expect.anything(),
+      ),
+    );
     expect(sendMessageTelegram).toHaveBeenCalledWith(
       "8460800771",
       "Codex completed without a text reply.",
@@ -2649,7 +2682,13 @@ describe("Discord controller flows", () => {
       reason: "inbound",
     });
 
-    await flushAsyncWork();
+    await vi.waitFor(() =>
+      expect(sendMessageTelegram).toHaveBeenCalledWith(
+        "8460800771",
+        "Cancelled the Codex approval request.",
+        expect.anything(),
+      ),
+    );
     expect(sendMessageTelegram).toHaveBeenCalledWith(
       "8460800771",
       "Cancelled the Codex approval request.",
