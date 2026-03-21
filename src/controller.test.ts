@@ -1518,6 +1518,14 @@ describe("Discord controller flows", () => {
       }),
       expect.objectContaining({ accountId: "default" }),
     );
+    expect(discordSdkState.editDiscordComponentMessage).toHaveBeenCalledWith(
+      "channel:chan-1",
+      "message-1",
+      {
+        text: "Binding approval requested below.",
+      },
+      expect.objectContaining({ accountId: "default" }),
+    );
     expect(acknowledge).toHaveBeenCalledTimes(1);
     expect(acknowledge.mock.invocationCallOrder[0]).toBeLessThan(
       requestConversationBinding.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,

@@ -908,6 +908,19 @@ export class CodexPluginController {
               text: result.reply.text ?? "Bind approval requested.",
               buttons,
             });
+            const originalMessageId = ctx.interaction.messageId?.trim();
+            if (callback.kind === "resume-thread" && originalMessageId) {
+              await editDiscordComponentMessage(
+                conversation.conversationId,
+                originalMessageId,
+                {
+                  text: "Binding approval requested below.",
+                },
+                {
+                  accountId: conversation.accountId,
+                },
+              ).catch(() => undefined);
+            }
             return { status: "pending", reply: result.reply } as const;
           }
           return result;
