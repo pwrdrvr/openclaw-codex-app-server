@@ -397,12 +397,6 @@ function parseFastAction(
   return { error: "Usage: /cas_fast [on|off|status]" };
 }
 
-function normalizeRegisteredCommandName(commandName: string): string {
-  return commandName.startsWith("cas_")
-    ? `codex_${commandName.slice("cas_".length)}`
-    : commandName;
-}
-
 function normalizeServiceTier(value: string | undefined | null): string | undefined {
   const normalized = value?.trim().toLowerCase();
   return normalized ? normalized : undefined;
@@ -1013,15 +1007,14 @@ export class CodexPluginController {
         : null;
     const binding = existingBinding ?? hydratedBinding?.binding ?? null;
     const args = ctx.args?.trim() ?? "";
-    const normalizedCommandName = normalizeRegisteredCommandName(commandName);
     if (isDiscordChannel(ctx.channel)) {
       this.api.logger.debug(
         `codex discord command /${commandName} from=${ctx.from ?? "<none>"} to=${ctx.to ?? "<none>"} conversation=${conversation?.conversationId ?? "<none>"}`,
       );
     }
 
-    switch (normalizedCommandName) {
-      case "codex_resume":
+    switch (commandName) {
+      case "cas_resume":
         return await this.handleJoinCommand(
           conversation,
           binding,
@@ -1031,7 +1024,7 @@ export class CodexPluginController {
           pendingBind,
           hydratedBinding?.pendingBind,
         );
-      case "codex_detach":
+      case "cas_detach":
         if (!conversation) {
           return { text: "This command needs a Telegram or Discord conversation." };
         }
@@ -1042,39 +1035,39 @@ export class CodexPluginController {
             ? "Detached this conversation from Codex."
             : "This conversation is not currently bound to Codex.",
         };
-      case "codex_status":
+      case "cas_status":
         return await this.handleStatusCommand(
           conversation,
           binding,
           Boolean(currentBinding || binding),
         );
-      case "codex_stop":
+      case "cas_stop":
         return await this.handleStopCommand(conversation);
-      case "codex_steer":
+      case "cas_steer":
         return await this.handleSteerCommand(conversation, args);
-      case "codex_plan":
+      case "cas_plan":
         return await this.handlePlanCommand(conversation, binding, args);
-      case "codex_review":
+      case "cas_review":
         return await this.handleReviewCommand(conversation, binding, args);
-      case "codex_compact":
+      case "cas_compact":
         return await this.handleCompactCommand(conversation, binding);
-      case "codex_skills":
+      case "cas_skills":
         return await this.handleSkillsCommand(conversation, binding, args);
-      case "codex_experimental":
+      case "cas_experimental":
         return await this.handleExperimentalCommand(binding);
-      case "codex_mcp":
+      case "cas_mcp":
         return await this.handleMcpCommand(binding, args);
-      case "codex_fast":
+      case "cas_fast":
         return await this.handleFastCommand(binding, args);
-      case "codex_model":
+      case "cas_model":
         return await this.handleModelCommand(conversation, binding, args);
-      case "codex_permissions":
+      case "cas_permissions":
         return await this.handlePermissionsCommand(binding);
-      case "codex_init":
+      case "cas_init":
         return await this.handlePromptAlias(conversation, binding, args, "/init");
-      case "codex_diff":
+      case "cas_diff":
         return await this.handlePromptAlias(conversation, binding, args, "/diff");
-      case "codex_rename":
+      case "cas_rename":
         return await this.handleRenameCommand(conversation, binding, args);
       default:
         return { text: "Unknown Codex command." };
