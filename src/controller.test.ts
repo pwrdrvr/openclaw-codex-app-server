@@ -537,6 +537,97 @@ describe("Discord controller flows", () => {
     expect(sendComponentMessage).not.toHaveBeenCalled();
   });
 
+  it("acknowledges and clears Discord pending-input buttons by message id", async () => {
+    const { controller } = await createControllerHarness();
+    await (controller as any).store.upsertPendingRequest({
+      requestId: "pending-1",
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:chan-1",
+      },
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      state: {
+        requestId: "pending-1",
+        options: ["Approve Once", "Cancel"],
+        expiresAt: Date.now() + 60_000,
+      },
+      updatedAt: Date.now(),
+    });
+    const callback = await (controller as any).store.putCallback({
+      kind: "pending-input",
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:chan-1",
+      },
+      requestId: "pending-1",
+      actionIndex: 0,
+    });
+    const acknowledge = vi.fn(async () => {});
+    const clearComponents = vi.fn(async () => {});
+    const reply = vi.fn(async () => {});
+    const followUp = vi.fn(async () => {});
+    const submitPendingInput = vi.fn(async () => true);
+    (controller as any).activeRuns.set("discord::default::channel:chan-1::", {
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:chan-1",
+      },
+      workspaceDir: "/repo/openclaw",
+      mode: "default",
+      handle: {
+        result: Promise.resolve({ threadId: "thread-1", text: "done" }),
+        queueMessage: vi.fn(async () => false),
+        submitPendingInput,
+        submitPendingInputPayload: vi.fn(async () => false),
+        interrupt: vi.fn(async () => {}),
+        isAwaitingInput: vi.fn(() => true),
+        getThreadId: vi.fn(() => "thread-1"),
+      },
+    });
+
+    await controller.handleDiscordInteractive({
+      channel: "discord",
+      accountId: "default",
+      interactionId: "interaction-1",
+      conversationId: "channel:chan-1",
+      auth: { isAuthorizedSender: true },
+      interaction: {
+        kind: "button",
+        data: `codexapp:${callback.token}`,
+        namespace: "codexapp",
+        payload: callback.token,
+        messageId: "message-1",
+      },
+      senderId: "user-1",
+      senderUsername: "Ada",
+      respond: {
+        acknowledge,
+        reply,
+        followUp,
+        editMessage: vi.fn(async () => {}),
+        clearComponents,
+      },
+    } as any);
+
+    expect(submitPendingInput).toHaveBeenCalledWith(0);
+    expect(acknowledge).toHaveBeenCalledTimes(1);
+    expect(clearComponents).not.toHaveBeenCalled();
+    expect(discordSdkState.editDiscordComponentMessage).toHaveBeenCalledWith(
+      "channel:chan-1",
+      "message-1",
+      {
+        text: "Sent to Codex.",
+      },
+      expect.objectContaining({ accountId: "default" }),
+    );
+    expect(reply).not.toHaveBeenCalled();
+    expect(followUp).not.toHaveBeenCalled();
+  });
+
   it("normalizes raw Discord callback conversation ids for guild interactions", async () => {
     const { controller, sendComponentMessage } = await createControllerHarness();
     const callback = await (controller as any).store.putCallback({
@@ -1742,6 +1833,7 @@ describe("Discord controller flows", () => {
     }));
     (controller as any).client.startTurn = startTurn;
     const reply = vi.fn(async () => {});
+    const followUp = vi.fn(async () => {});
 
     await controller.handleDiscordInteractive({
       channel: "discord",
@@ -1761,13 +1853,14 @@ describe("Discord controller flows", () => {
       respond: {
         acknowledge: vi.fn(async () => {}),
         reply,
-        followUp: vi.fn(async () => {}),
+        followUp,
         editMessage: vi.fn(async () => {}),
         clearComponents: vi.fn(async () => {}),
       },
     } as any);
 
-    expect(reply).toHaveBeenCalledWith({ text: "Sent the plan to Codex.", ephemeral: true });
+    expect(reply).not.toHaveBeenCalled();
+    expect(followUp).toHaveBeenCalledWith({ text: "Sent the plan to Codex.", ephemeral: true });
     expect(startTurn).toHaveBeenCalledWith(
       expect.objectContaining({
         prompt: "Implement the plan.",
