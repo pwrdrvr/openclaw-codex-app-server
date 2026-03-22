@@ -1,4 +1,5 @@
 import os from "node:os";
+import { createRequire } from "node:module";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildCodexPlanMarkdownPreview,
@@ -17,6 +18,10 @@ import {
   formatThreadButtonLabel,
   parseCodexReviewOutput,
 } from "./format.js";
+
+const require = createRequire(import.meta.url);
+const packageJson = require("../package.json") as { version?: string };
+const TEST_PLUGIN_VERSION = packageJson.version ?? "unknown";
 
 function shortenHomePathForTest(value: string): string {
   const home = os.homedir();
@@ -97,6 +102,7 @@ describe("formatBoundThreadSummary", () => {
 describe("formatCodexStatusText", () => {
   it("matches the old operational Codex status shape", () => {
     const text = formatCodexStatusText({
+      pluginVersion: TEST_PLUGIN_VERSION,
       bindingActive: true,
       threadState: {
         threadId: "019cc00d-6cf4-7c11-afcd-2673db349a21",
@@ -134,6 +140,7 @@ describe("formatCodexStatusText", () => {
     });
 
     expect(text).toContain("Binding: active");
+    expect(text).toContain(`Plugin version: ${TEST_PLUGIN_VERSION}`);
     expect(text).toContain("Thread: Fix Telegram approval flow");
     expect(text).toContain("Model: openai/gpt-5.4 · reasoning high");
     expect(text).toContain(

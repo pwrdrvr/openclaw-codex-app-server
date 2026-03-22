@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -86,6 +87,17 @@ type ActiveRunRecord = {
 };
 
 const execFileAsync = promisify(execFile);
+const require = createRequire(import.meta.url);
+const PLUGIN_VERSION = (() => {
+  try {
+    const packageJson = require("../package.json") as { version?: unknown };
+    return typeof packageJson.version === "string" && packageJson.version.trim()
+      ? packageJson.version.trim()
+      : "unknown";
+  } catch {
+    return "unknown";
+  }
+})();
 
 type PickerRender = {
   text: string;
@@ -3392,6 +3404,7 @@ export class CodexPluginController {
     );
 
     return formatCodexStatusText({
+      pluginVersion: PLUGIN_VERSION,
       threadState,
       account,
       rateLimits: limits,

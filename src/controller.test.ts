@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawPluginApi, PluginCommandContext } from "openclaw/plugin-sdk";
 import { CodexAppServerClient } from "./client.js";
@@ -189,6 +190,10 @@ async function createControllerHarnessWithoutLegacyBindings() {
     api: harness.api,
   };
 }
+
+const require = createRequire(import.meta.url);
+const packageJson = require("../package.json") as { version?: string };
+const TEST_PLUGIN_VERSION = packageJson.version ?? "unknown";
 
 function buildDiscordCommandContext(
   overrides: Partial<PluginCommandContext> & Record<string, unknown> = {},
@@ -864,6 +869,7 @@ describe("Discord controller flows", () => {
     );
 
     expect(reply.text).toContain("Binding: none");
+    expect(reply.text).toContain(`Plugin version: ${TEST_PLUGIN_VERSION}`);
     expect(reply.text).not.toContain("Project folder: /repo/discrawl");
     expect(reply.text).not.toContain("Session: session-1");
   });

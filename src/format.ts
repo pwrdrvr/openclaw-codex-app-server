@@ -480,6 +480,7 @@ export function formatCodexContextUsageSnapshot(
 }
 
 export function formatCodexStatusText(params: {
+  pluginVersion?: string;
   threadState?: ThreadState;
   account?: AccountSummary | null;
   rateLimits: RateLimitSummary[];
@@ -491,6 +492,9 @@ export function formatCodexStatusText(params: {
 }): string {
   const lines = [];
   lines.push(`Binding: ${params.bindingActive ? "active" : "none"}`);
+  if (params.pluginVersion?.trim()) {
+    lines.push(`Plugin version: ${params.pluginVersion.trim()}`);
+  }
   if (params.threadState?.threadName?.trim()) {
     lines.push(`Thread: ${params.threadState.threadName.trim()}`);
   }
