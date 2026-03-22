@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { promises as fs } from "node:fs";
+import { existsSync, promises as fs } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -3226,6 +3226,12 @@ export class CodexPluginController {
       return {
         status: "error",
         message: "This action can only bind from a live command or interactive context.",
+      };
+    }
+    if (params.workspaceDir && this.isWorktreePath(params.workspaceDir) && !existsSync(params.workspaceDir)) {
+      return {
+        status: "error",
+        message: `Cannot resume: workspace path no longer exists on disk.\n\`${params.workspaceDir}\`\n\nThe worktree may have been removed. Check your local paths or start a new session.`,
       };
     }
     const approval = await requestBinding({

@@ -320,6 +320,39 @@ describe("Discord controller flows", () => {
     );
   });
 
+  it("rejects resume when the thread worktree path no longer exists on disk", async () => {
+    const { controller, clientMock } = await createControllerHarness();
+    const missingWorktreePath = "/tmp/worktrees/bold-bartik/repo-name";
+    clientMock.listThreads.mockResolvedValue([
+      {
+        threadId: "thread-stale",
+        title: "Stale Worktree Thread",
+        projectKey: missingWorktreePath,
+        createdAt: Date.now() - 60_000,
+        updatedAt: Date.now() - 30_000,
+      },
+    ]);
+    clientMock.readThreadState.mockResolvedValue({
+      threadId: "thread-stale",
+      threadName: "Stale Worktree Thread",
+      model: "openai/gpt-5.4",
+      cwd: missingWorktreePath,
+      serviceTier: "default",
+    });
+
+    const reply = await controller.handleCommand(
+      "cas_resume",
+      buildTelegramCommandContext({
+        args: "thread-stale",
+        commandBody: "/cas_resume thread-stale",
+      }),
+    );
+
+    expect(reply.text).toContain("Cannot resume");
+    expect(reply.text).toContain(missingWorktreePath);
+    expect(reply.text).toContain("no longer exists on disk");
+  });
+
   it("sends Discord model pickers directly instead of returning Telegram buttons", async () => {
     const { controller, sendComponentMessage } = await createControllerHarness();
     await (controller as any).store.upsertBinding({
