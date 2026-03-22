@@ -271,7 +271,12 @@ function toConversationTargetFromCommand(ctx: PluginCommandContext): Conversatio
     };
   }
   if (isDiscordChannel(ctx.channel)) {
-    const conversationId = normalizeDiscordConversationId(ctx.from ?? ctx.to);
+    // In brand-new Discord threads, the slash interaction may place the slash
+    // user identity in ctx.from (e.g. "slash:user-id") while ctx.to holds the
+    // real channel target. Prefer ctx.to when ctx.from is a slash identity so
+    // /cas_resume resolves to the correct channel from the first attempt.
+    const sourceId = ctx.from?.startsWith("slash:") ? ctx.to : (ctx.from ?? ctx.to);
+    const conversationId = normalizeDiscordConversationId(sourceId);
     if (!conversationId) {
       return null;
     }

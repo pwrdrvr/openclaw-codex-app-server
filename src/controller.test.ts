@@ -353,6 +353,33 @@ describe("Discord controller flows", () => {
     expect(reply.text).toContain("no longer exists on disk");
   });
 
+  it("resolves channel identity from ctx.to when ctx.from is a slash identity in a new Discord thread", async () => {
+    // Regression test for brand-new Discord threads where the slash interaction
+    // places the slash user identity in ctx.from and the channel target in ctx.to.
+    const { controller, sendComponentMessage } = await createControllerHarness();
+
+    const reply = await controller.handleCommand(
+      "cas_resume",
+      buildDiscordCommandContext({
+        from: "slash:user-1",
+        to: "discord:channel:chan-1",
+      }),
+    );
+
+    expect(reply).toEqual({
+      text: "Sent a Codex thread picker to this Discord conversation.",
+    });
+    expect(sendComponentMessage).toHaveBeenCalledWith(
+      "channel:chan-1",
+      expect.objectContaining({
+        text: expect.stringContaining("Showing recent Codex sessions"),
+      }),
+      expect.objectContaining({
+        accountId: "default",
+      }),
+    );
+  });
+
   it("sends Discord model pickers directly instead of returning Telegram buttons", async () => {
     const { controller, sendComponentMessage } = await createControllerHarness();
     await (controller as any).store.upsertBinding({
