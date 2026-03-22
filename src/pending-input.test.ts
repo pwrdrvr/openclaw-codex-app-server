@@ -10,6 +10,7 @@ import {
   questionnaireCurrentQuestionHasAnswer,
   questionnaireIsComplete,
   requestToken,
+  stripShellLauncher,
 } from "./pending-input.js";
 
 describe("pending-input helpers", () => {
@@ -268,6 +269,19 @@ Guidance:
     };
 
     expect(questionnaireCurrentQuestionHasAnswer(questionnaire)).toBe(true);
+  });
+
+  it("strips shell launcher wrappers from commands for display", () => {
+    expect(stripShellLauncher("/bin/zsh -lc 'git status'")).toBe("git status");
+    expect(stripShellLauncher("/bin/bash -lc 'npm install'")).toBe("npm install");
+    expect(stripShellLauncher("bash -lc 'make build'")).toBe("make build");
+    expect(
+      stripShellLauncher('zsh -lc \'git add README.md && git commit -m "docs: update"\''),
+    ).toBe('git add README.md && git commit -m "docs: update"');
+    expect(stripShellLauncher("/usr/bin/zsh -lc 'cargo test'")).toBe("cargo test");
+    // Non-launcher commands pass through unchanged
+    expect(stripShellLauncher("git status")).toBe("git status");
+    expect(stripShellLauncher("npm install")).toBe("npm install");
   });
 
   it("parses structured request_user_input questions into questionnaire state", () => {

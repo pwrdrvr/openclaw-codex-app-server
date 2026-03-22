@@ -645,6 +645,24 @@ function buildMarkdownCodeBlock(text: string, language = ""): string {
   return `${fence}${languageTag}\n${normalized}\n${fence}`;
 }
 
+/**
+ * Strips common shell launcher wrappers from a command string for display.
+ * For example: `/bin/zsh -lc 'git status'` → `git status`
+ *
+ * Matches upstream Codex Desktop behavior (strip_bash_lc_and_escape in
+ * codex-rs/tui/src/exec_command.rs). The raw command is preserved for
+ * approval transport; only the displayed form is simplified.
+ */
+export function stripShellLauncher(command: string): string {
+  const match = command.match(
+    /^(?:\/[/\w]*\/)?(?:bash|zsh|sh|dash|ksh|tcsh|fish)\s+-lc\s+(['"])([\s\S]*)\1\s*$/,
+  );
+  if (match) {
+    return match[2];
+  }
+  return command;
+}
+
 export function buildPendingPromptText(params: {
   method: string;
   requestId: string;
@@ -682,7 +700,7 @@ export function buildPendingPromptText(params: {
       "shellCommand",
     ]) ?? "";
   if (command) {
-    lines.push("", "Command:", "", buildMarkdownCodeBlock(command, "sh"));
+    lines.push("", "Command:", "", buildMarkdownCodeBlock(stripShellLauncher(command), "sh"));
   }
   const grantRoot = findFirstStringByKeys(params.requestParams, ["grantRoot", "grant_root"]);
   if (grantRoot) {
