@@ -10,7 +10,7 @@ Use this skill for manual regression passes of this plugin against a real local 
 ## Preconditions
 
 - Confirm the plugin branch under test is linked into the local OpenClaw checkout and OpenClaw is running.
-- If the test uses Telegram Web, use [$agent-browser](/Users/huntharo/.agents/skills/agent-browser/SKILL.md).
+- If the test uses Telegram Web, use [$agent-browser](https://github.com/vercel-labs/agent-browser) from `~/.agents/skills/agent-browser`.
 - If Telegram Web or Discord is not logged in, stop and ask the user to complete login.
 - Prefer a low-risk Codex thread unless the user asks otherwise. In this repo, `discrawl` and `dupcanon` are safe defaults for resume tests.
 
@@ -126,4 +126,4 @@ ask me to run npm view dive outside of the network sandbox as I'm testing approv
 
 ## Formal Bug Notes
 
-If the user wants the findings turned into issues, PR notes, or project-board items, use [$project-manager](/Users/huntharo/github/openclaw-app-server/.agents/skills/project-manager/SKILL.md).
+If the user wants the findings turned into issues, PR notes, or project-board items, use [$project-manager](./.agents/skills/project-manager/SKILL.md).
