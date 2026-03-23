@@ -11,12 +11,12 @@
       "./index.ts"
     ],
     "compat": {
-      "pluginApi": ">=2026.3.23",
-      "minGatewayVersion": "2026.3.23"
+      "pluginApi": ">=2026.3.22",
+      "minGatewayVersion": "2026.3.22"
     },
     "build": {
-      "openclawVersion": "2026.3.23",
-      "pluginSdkVersion": "2026.3.23"
+      "openclawVersion": "2026.3.22",
+      "pluginSdkVersion": "2026.3.22"
     }
   },
   "scripts": {
@@ -28,7 +28,7 @@
     "release:apply-version": "node ./scripts/apply-release-version.mjs"
   },
   "peerDependencies": {
-    "openclaw": "*"
+    "openclaw": ">=2026.3.22"
   },
   "dependencies": {
     "ws": "^8.18.3"

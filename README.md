@@ -18,7 +18,7 @@ Buttons are presented for project and thread selection, model switching, and ski
 
 ## Install In OpenClaw
 
-These are the intended install commands for OpenClaw `2026.3.23` and newer, which include the binding and plugin interface this package requires.
+These are the intended install commands for OpenClaw `2026.3.22` and newer, which include the binding and plugin interface this package requires.
 
 Install:
 
@@ -32,7 +32,7 @@ Uninstall:
 openclaw plugins uninstall openclaw-codex-app-server
 ```
 
-OpenClaw `2026.3.23` and newer include the required binding and plugin interface changes. If you are testing before that release, use the local developer workflow at the bottom of this document.
+OpenClaw `2026.3.22` and newer include the required binding and plugin interface changes. If you are testing before that release, use the local developer workflow at the bottom of this document.
 
 Pre-release packages are published on matching npm dist-tags instead of `latest`. For example, a tag such as `v0.3.0-beta.1` publishes to `openclaw-codex-app-server@beta`, so `npm install openclaw-codex-app-server@latest` stays on the newest stable release.
 
