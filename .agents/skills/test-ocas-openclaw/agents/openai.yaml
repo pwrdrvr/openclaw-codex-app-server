@@ -1,0 +1,4 @@
+interface:
+  display_name: "Test OCAS"
+  short_description: "Run OCAS integration regression checks"
+  default_prompt: "Use $test-ocas-openclaw to regression test OCAS against local OpenClaw chat integrations."
