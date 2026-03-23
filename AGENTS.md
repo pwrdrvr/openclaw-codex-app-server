@@ -17,6 +17,7 @@ Use the repo-local [`project-manager`](./.agents/skills/project-manager/SKILL.md
 ## Build, Test, and Development Commands
 Use `pnpm` for local work.
 
+- After committed `package.json` changes, run `pnpm install` so `pnpm-lock.yaml` stays in sync. If a peer range points past the newest npm release, do not commit that unresolved peer bump yet; keep registry-facing compatibility in `openclaw.compat` / `openclaw.build` until the matching package version exists.
 - `pnpm test`: run the Vitest suite once.
 - `pnpm typecheck`: run strict TypeScript checking with `tsc --noEmit`.
 - `pnpm openclaw plugins install --link /path/to/openclaw-codex-app-server`: link this package into a local OpenClaw checkout for manual integration testing.

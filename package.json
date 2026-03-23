@@ -28,7 +28,7 @@
     "release:apply-version": "node ./scripts/apply-release-version.mjs"
   },
   "peerDependencies": {
-    "openclaw": ">=2026.3.23"
+    "openclaw": "*"
   },
   "dependencies": {
     "ws": "^8.18.3"
