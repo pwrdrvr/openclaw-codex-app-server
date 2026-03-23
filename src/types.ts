@@ -377,6 +377,13 @@ export type CallbackAction =
       syncTopic: boolean;
       createdAt: number;
       expiresAt: number;
+    }
+  | {
+      token: string;
+      kind: "cancel-picker";
+      conversation: ConversationRef;
+      createdAt: number;
+      expiresAt: number;
     };
 
 export type StoreSnapshot = {

@@ -77,6 +77,12 @@ type PutCallbackInput =
       text: string;
       token?: string;
       ttlMs?: number;
+    }
+  | {
+      kind: "cancel-picker";
+      conversation: ConversationTarget;
+      token?: string;
+      ttlMs?: number;
     };
 
 function toConversationKey(target: ConversationTarget): string {
@@ -319,14 +325,22 @@ export class PluginStateStore {
                   createdAt: now,
                   expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
                   }
-                : {
-                    kind: "reply-text",
-                    conversation: callback.conversation,
-                    text: callback.text,
-                    token: callback.token ?? this.createCallbackToken(),
-                    createdAt: now,
-                    expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
-                };
+                : callback.kind === "reply-text"
+                  ? {
+                      kind: "reply-text",
+                      conversation: callback.conversation,
+                      text: callback.text,
+                      token: callback.token ?? this.createCallbackToken(),
+                      createdAt: now,
+                      expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
+                    }
+                  : {
+                      kind: "cancel-picker",
+                      conversation: callback.conversation,
+                      token: callback.token ?? this.createCallbackToken(),
+                      createdAt: now,
+                      expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
+                    };
     this.snapshot.callbacks = this.snapshot.callbacks.filter(
       (current) => current.token !== entry.token,
     );
