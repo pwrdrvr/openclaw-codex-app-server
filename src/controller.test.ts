@@ -2587,4 +2587,55 @@ describe("Discord controller flows", () => {
     );
     expect(clientMock.readAccount).not.toHaveBeenCalled();
   });
+
+  it("dismisses the picker when cancel-picker callback is pressed", async () => {
+    const { controller } = await createControllerHarness();
+    const callback = await (controller as any).store.putCallback({
+      kind: "cancel-picker",
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:chan-1",
+      },
+    });
+    const acknowledge = vi.fn(async () => {});
+    const editMessage = vi.fn(async () => {});
+
+    await controller.handleDiscordInteractive({
+      channel: "discord",
+      accountId: "default",
+      interactionId: "interaction-1",
+      conversationId: "channel:chan-1",
+      auth: { isAuthorizedSender: true },
+      interaction: {
+        kind: "button",
+        data: `codexapp:${callback.token}`,
+        namespace: "codexapp",
+        payload: callback.token,
+        messageId: "message-1",
+      },
+      senderId: "user-1",
+      senderUsername: "Ada",
+      respond: {
+        acknowledge,
+        reply: vi.fn(async () => {}),
+        followUp: vi.fn(async () => {}),
+        editMessage,
+        clearComponents: vi.fn(async () => {}),
+      },
+    } as any);
+
+    // editPicker uses ctx.respond.editMessage first; when that succeeds it calls
+    // registerBuiltDiscordComponentMessage instead of editDiscordComponentMessage
+    expect(editMessage).toHaveBeenCalledTimes(1);
+    expect(discordSdkState.registerBuiltDiscordComponentMessage).toHaveBeenCalledWith({
+      buildResult: expect.objectContaining({
+        components: expect.any(Array),
+        entries: expect.any(Array),
+      }),
+      messageId: "message-1",
+    });
+    // The callback should be removed from the store
+    expect((controller as any).store.getCallback(callback.token)).toBeNull();
+  });
 });

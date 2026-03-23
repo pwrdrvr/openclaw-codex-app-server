@@ -2665,10 +2665,18 @@ export class CodexPluginController {
         page: 0,
       },
     });
+    const cancel = await this.store.putCallback({
+      kind: "cancel-picker",
+      conversation: params.conversation,
+    });
     params.buttons.push([
       {
         text: params.projectName ? "Projects" : "Browse Projects",
         callback_data: `${INTERACTIVE_NAMESPACE}:${projects.token}`,
+      },
+      {
+        text: "Cancel",
+        callback_data: `${INTERACTIVE_NAMESPACE}:${cancel.token}`,
       },
     ]);
     return params.buttons;
@@ -2817,10 +2825,18 @@ export class CodexPluginController {
         page: 0,
       },
     });
+    const cancel = await this.store.putCallback({
+      kind: "cancel-picker",
+      conversation,
+    });
     buttons.push([
       {
         text: "Recent Sessions",
         callback_data: `${INTERACTIVE_NAMESPACE}:${recent.token}`,
+      },
+      {
+        text: "Cancel",
+        callback_data: `${INTERACTIVE_NAMESPACE}:${cancel.token}`,
       },
     ]);
 
@@ -3129,6 +3145,11 @@ export class CodexPluginController {
           error instanceof Error ? error.message : "Unable to derive a Codex thread name.",
         );
       }
+      return;
+    }
+    if (callback.kind === "cancel-picker") {
+      await this.store.removeCallback(callback.token);
+      await responders.editPicker({ text: "Picker dismissed.", buttons: [] });
       return;
     }
     const binding = this.store.getBinding(callback.conversation);
