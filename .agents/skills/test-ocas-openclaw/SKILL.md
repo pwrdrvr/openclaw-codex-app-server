@@ -62,11 +62,14 @@ Treat the state files as diagnostic evidence, not as a thing to hand-edit.
 - Send this exact prompt as plain text in the bound conversation:
 
 ```text
-ask me to run npm view dive outside of the network sandbox as I'm testing approval
+I want you to run `npm view dive` and make sure to ask to exit the sandbox as it needs network access.
 ```
 
-- Expect an approval prompt in chat.
-- Verify the approval text is cleaned for display and does not leak a shell-launcher wrapper like `/bin/zsh -lc ...`.
+- Expect a real execution approval dialog, not a plain text question about whether the user wants approval.
+- Expect approval buttons such as `Approve` or the platform-equivalent action controls.
+- Expect a code-formatted command area that shows `npm view dive`.
+- Verify the displayed command is trimmed for presentation and does not leak a shell-launcher wrapper like `/bin/zsh -lc ...`.
+- If the model only asks a conversational question like "Do you want to allow..." without rendering execution approval controls, treat that test as invalid and rerun with the exact prompt above.
 
 5. Verify plan mode.
 
