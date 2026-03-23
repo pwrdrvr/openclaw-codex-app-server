@@ -11,6 +11,7 @@ import {
   questionnaireIsComplete,
   requestToken,
   stripShellLauncher,
+  extractCommandFromActions,
 } from "./pending-input.js";
 
 describe("pending-input helpers", () => {
@@ -282,6 +283,56 @@ Guidance:
     // Non-launcher commands pass through unchanged
     expect(stripShellLauncher("git status")).toBe("git status");
     expect(stripShellLauncher("npm install")).toBe("npm install");
+  });
+
+  it("extracts display command from commandActions array", () => {
+    // Single action with type "unknown"
+    expect(
+      extractCommandFromActions({
+        commandActions: [{ type: "unknown", command: "git status" }],
+      }),
+    ).toBe("git status");
+
+    // Single action with type "read"
+    expect(
+      extractCommandFromActions({
+        commandActions: [{ type: "read", command: "cat README.md", name: "README.md", path: "README.md" }],
+      }),
+    ).toBe("cat README.md");
+
+    // Multiple actions joined with &&
+    expect(
+      extractCommandFromActions({
+        commandActions: [
+          { type: "unknown", command: "git add README.md" },
+          { type: "unknown", command: 'git commit -m "docs: update"' },
+        ],
+      }),
+    ).toBe('git add README.md && git commit -m "docs: update"');
+
+    // Empty array returns undefined
+    expect(extractCommandFromActions({ commandActions: [] })).toBeUndefined();
+
+    // Missing commandActions returns undefined
+    expect(extractCommandFromActions({ command: "/bin/zsh -lc 'git status'" })).toBeUndefined();
+
+    // null/undefined params
+    expect(extractCommandFromActions(null)).toBeUndefined();
+    expect(extractCommandFromActions(undefined)).toBeUndefined();
+
+    // Actions with missing command field are filtered out
+    expect(
+      extractCommandFromActions({
+        commandActions: [{ type: "unknown" }, { type: "read", command: "cat foo.txt", name: "foo.txt", path: "foo.txt" }],
+      }),
+    ).toBe("cat foo.txt");
+
+    // All actions missing command field returns undefined
+    expect(
+      extractCommandFromActions({
+        commandActions: [{ type: "unknown" }],
+      }),
+    ).toBeUndefined();
   });
 
   it("parses structured request_user_input questions into questionnaire state", () => {
