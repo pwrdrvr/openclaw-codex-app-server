@@ -9,7 +9,15 @@
   "openclaw": {
     "extensions": [
       "./index.ts"
-    ]
+    ],
+    "compat": {
+      "pluginApi": ">=2026.3.23",
+      "minGatewayVersion": "2026.3.23"
+    },
+    "build": {
+      "openclawVersion": "2026.3.23",
+      "pluginSdkVersion": "2026.3.23"
+    }
   },
   "scripts": {
     "project:sync": "node ./.agents/skills/project-manager/scripts/sync-work-items.mjs",
@@ -20,7 +28,7 @@
     "release:apply-version": "node ./scripts/apply-release-version.mjs"
   },
   "peerDependencies": {
-    "openclaw": "*"
+    "openclaw": ">=2026.3.23"
   },
   "dependencies": {
     "ws": "^8.18.3"
