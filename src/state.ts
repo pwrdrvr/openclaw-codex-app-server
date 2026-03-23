@@ -6,10 +6,12 @@ import type {
   CallbackAction,
   CollaborationMode,
   ConversationTarget,
+  StoredMonitorBinding,
   StoreSnapshot,
   StoredBinding,
   StoredPendingBind,
   StoredPendingRequest,
+  StoredThreadSeenState,
 } from "./types.js";
 
 type PutCallbackInput =
@@ -93,8 +95,10 @@ function cloneSnapshot(value?: Partial<StoreSnapshot>): StoreSnapshot {
   return {
     version: STORE_VERSION,
     bindings: value?.bindings ?? [],
+    monitorBindings: value?.monitorBindings ?? [],
     pendingBinds: value?.pendingBinds ?? [],
     pendingRequests: value?.pendingRequests ?? [],
+    threadSeenStates: value?.threadSeenStates ?? [],
     callbacks: value?.callbacks ?? [],
   };
 }
@@ -148,9 +152,21 @@ export class PluginStateStore {
     return [...this.snapshot.bindings];
   }
 
+  listMonitorBindings(): StoredMonitorBinding[] {
+    return [...this.snapshot.monitorBindings];
+  }
+
   getBinding(target: ConversationTarget): StoredBinding | null {
     const key = toConversationKey(target);
     return this.snapshot.bindings.find((entry) => toConversationKey(entry.conversation) === key) ?? null;
+  }
+
+  getMonitorBinding(target: ConversationTarget): StoredMonitorBinding | null {
+    const key = toConversationKey(target);
+    return (
+      this.snapshot.monitorBindings.find((entry) => toConversationKey(entry.conversation) === key) ??
+      null
+    );
   }
 
   async upsertBinding(binding: StoredBinding): Promise<void> {
@@ -177,6 +193,23 @@ export class PluginStateStore {
       (entry) => toConversationKey(entry.conversation) !== key,
     );
     this.snapshot.callbacks = this.snapshot.callbacks.filter(
+      (entry) => toConversationKey(entry.conversation) !== key,
+    );
+    await this.save();
+  }
+
+  async upsertMonitorBinding(binding: StoredMonitorBinding): Promise<void> {
+    const key = toConversationKey(binding.conversation);
+    this.snapshot.monitorBindings = this.snapshot.monitorBindings.filter(
+      (entry) => toConversationKey(entry.conversation) !== key,
+    );
+    this.snapshot.monitorBindings.push(binding);
+    await this.save();
+  }
+
+  async removeMonitorBinding(target: ConversationTarget): Promise<void> {
+    const key = toConversationKey(target);
+    this.snapshot.monitorBindings = this.snapshot.monitorBindings.filter(
       (entry) => toConversationKey(entry.conversation) !== key,
     );
     await this.save();
@@ -341,6 +374,26 @@ export class PluginStateStore {
 
   async removeCallback(token: string): Promise<void> {
     this.snapshot.callbacks = this.snapshot.callbacks.filter((entry) => entry.token !== token);
+    await this.save();
+  }
+
+  getThreadSeenState(threadId: string): StoredThreadSeenState | null {
+    const normalized = threadId.trim();
+    if (!normalized) {
+      return null;
+    }
+    return this.snapshot.threadSeenStates.find((entry) => entry.threadId === normalized) ?? null;
+  }
+
+  async upsertThreadSeenState(entry: StoredThreadSeenState): Promise<void> {
+    const normalized = entry.threadId.trim();
+    this.snapshot.threadSeenStates = this.snapshot.threadSeenStates.filter(
+      (current) => current.threadId !== normalized,
+    );
+    this.snapshot.threadSeenStates.push({
+      ...entry,
+      threadId: normalized,
+    });
     await this.save();
   }
 }

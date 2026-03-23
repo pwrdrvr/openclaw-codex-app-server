@@ -38,6 +38,7 @@ describe("plugin registration", () => {
     expect(api.registerCommand).toHaveBeenCalled();
     expect(api.registerCommand.mock.calls.map(([params]) => params.name)).toEqual([
       "cas_resume",
+      "cas_monitor",
       "cas_detach",
       "cas_status",
       "cas_stop",

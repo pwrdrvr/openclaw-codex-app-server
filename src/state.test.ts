@@ -46,6 +46,23 @@ describe("state store", () => {
       },
       updatedAt: Date.now(),
     });
+    await store.upsertMonitorBinding({
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:monitor-1",
+      },
+      workspaceDir: "/tmp/work",
+      lastSummarySignature: "Monitor: active",
+      updatedAt: Date.now(),
+    });
+    await store.upsertThreadSeenState({
+      threadId: "thread-1",
+      lastSeenUpdatedAt: Date.now(),
+      threadTitle: "Pending thread",
+      workspaceDir: "/tmp/work",
+      updatedAt: Date.now(),
+    });
     const callback = await store.putCallback({
       kind: "resume-thread",
       conversation: {
@@ -95,7 +112,10 @@ describe("state store", () => {
     const reloaded = await makeStore(dir);
 
     expect(reloaded.listBindings()).toHaveLength(1);
+    expect(reloaded.listMonitorBindings()).toHaveLength(1);
     expect(reloaded.listBindings()[0]?.contextUsage?.totalTokens).toBe(9_800);
+    expect(reloaded.listMonitorBindings()[0]?.workspaceDir).toBe("/tmp/work");
+    expect(reloaded.getThreadSeenState("thread-1")?.threadTitle).toBe("Pending thread");
     expect(reloaded.getPendingBind({
       channel: "telegram",
       accountId: "default",
@@ -222,6 +242,33 @@ describe("state store", () => {
         channel: "telegram",
         accountId: "default",
         conversationId: "123",
+      }),
+    ).toBeNull();
+  });
+
+  it("removes monitor bindings independently", async () => {
+    const store = await makeStore();
+    await store.upsertMonitorBinding({
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:monitor-1",
+      },
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+
+    await store.removeMonitorBinding({
+      channel: "discord",
+      accountId: "default",
+      conversationId: "channel:monitor-1",
+    });
+
+    expect(
+      store.getMonitorBinding({
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:monitor-1",
       }),
     ).toBeNull();
   });

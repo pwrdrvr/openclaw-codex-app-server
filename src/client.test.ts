@@ -261,6 +261,39 @@ describe("extractThreadTokenUsageSnapshot", () => {
       remainingPercent: 80,
     });
   });
+
+  it("extracts thread status and active flags from thread list payloads", () => {
+    expect(
+      __testing.extractThreadsFromValue({
+        threads: [
+          {
+            id: "thread-1",
+            name: "Needs approval",
+            cwd: "/repo/openclaw",
+            updatedAt: 1_710_000_000,
+            status: {
+              type: "active",
+              activeFlags: ["waitingOnApproval", "waitingOnUserInput"],
+            },
+          },
+        ],
+      }),
+    ).toEqual([
+      {
+        threadId: "thread-1",
+        title: "Needs approval",
+        summary: "",
+        projectKey: "/repo/openclaw",
+        createdAt: undefined,
+        updatedAt: 1_710_000_000_000,
+        gitBranch: undefined,
+        status: {
+          type: "active",
+          activeFlags: ["waitingOnApproval", "waitingOnUserInput"],
+        },
+      },
+    ]);
+  });
 });
 
 describe("extractFileChangePathsFromReadResult", () => {

@@ -173,6 +173,55 @@ export function formatThreadPickerIntro(params: {
     .join("\n");
 }
 
+function formatMonitorAlertLabel(thread: ThreadSummary): string {
+  const title = thread.title?.trim() || thread.threadId;
+  const projectName = getProjectName(thread.projectKey);
+  const age = formatDateAge(thread.updatedAt ?? thread.createdAt);
+  return [title, projectName ? `(${projectName})` : "", age ? `updated ${age}` : "", thread.threadId]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+export function formatMonitorStatusText(params: {
+  workspaceDir?: string;
+  approvals: ThreadSummary[];
+  questions: ThreadSummary[];
+  unread: ThreadSummary[];
+}): string {
+  const scopeLabel = params.workspaceDir
+    ? `Scope: ${getProjectName(params.workspaceDir) ?? params.workspaceDir}`
+    : "Scope: all projects";
+  const sections = [
+    "Monitor: active",
+    scopeLabel,
+  ];
+  if (
+    params.approvals.length === 0 &&
+    params.questions.length === 0 &&
+    params.unread.length === 0
+  ) {
+    sections.push("No pending approvals, pending questions, or unread thread activity.");
+    return sections.join("\n");
+  }
+  if (params.approvals.length > 0) {
+    sections.push(
+      `Pending approvals:\n${params.approvals.map((thread, index) => `${index + 1}. ${formatMonitorAlertLabel(thread)}`).join("\n")}`,
+    );
+  }
+  if (params.questions.length > 0) {
+    sections.push(
+      `Waiting for user input:\n${params.questions.map((thread, index) => `${index + 1}. ${formatMonitorAlertLabel(thread)}`).join("\n")}`,
+    );
+  }
+  if (params.unread.length > 0) {
+    sections.push(
+      `Unread activity:\n${params.unread.map((thread, index) => `${index + 1}. ${formatMonitorAlertLabel(thread)}`).join("\n")}`,
+    );
+  }
+  sections.push("Use `/cas_resume <thread-id>` in a work channel to open a session.");
+  return sections.join("\n");
+}
+
 export function formatProjectPickerIntro(params: {
   page: number;
   totalPages: number;

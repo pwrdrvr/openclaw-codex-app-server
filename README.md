@@ -40,7 +40,7 @@ Pre-release packages are published on matching npm dist-tags instead of `latest`
 
 - Uses your existing local Codex CLI setup instead of a separate hosted bridge.
 - Feels natural in chat: bind once with `/cas_resume`, then just talk.
-- Keeps useful controls close at hand with `/cas_status`, `/cas_plan`, `/cas_review`, `/cas_model`, and more.
+- Keeps useful controls close at hand with `/cas_status`, `/cas_monitor`, `/cas_plan`, `/cas_review`, `/cas_model`, and more.
 - Works well for Telegram and Discord conversations that you want tied to a real Codex thread.
 
 ## Typical Workflow
@@ -62,6 +62,9 @@ Pre-release packages are published on matching npm dist-tags instead of `latest`
 | `/cas_resume --sync` | Resume and try to sync the chat/topic name to the Codex thread. | You can combine this with other flags. |
 | `/cas_resume release-fix` | Resume a matching thread by title or id. | If more than one thread matches, you get buttons to choose. |
 | `/cas_status` | Show the current binding and thread state. | Includes thread id, model, workspace, sandbox, and permissions when available. |
+| `/cas_monitor` | Bind this conversation as a cross-thread monitor surface. | Shows pending approvals, pending questions, and unread thread activity across sessions. |
+| `/cas_monitor --cwd ~/github/openclaw` | Limit monitor mode to one workspace. | Uses the same `--cwd` path handling as `/cas_resume`. |
+| `/cas_monitor status|off` | Inspect or disable monitor mode. | `off` is also compatible with `/cas_detach`. |
 | `/cas_detach` | Unbind this conversation from Codex. | Stops routing plain text from this conversation into the bound thread. |
 | `/cas_stop` | Interrupt the active Codex run. | Only applies when a turn is currently in progress. |
 | `/cas_steer <message>` | Send follow-up steer text to an active run. | Example: `/cas_steer focus on the failing tests first` |

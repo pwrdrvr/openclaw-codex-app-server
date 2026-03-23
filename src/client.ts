@@ -21,8 +21,10 @@ import type {
   ReviewResult,
   ReviewTarget,
   SkillSummary,
+  ThreadActiveFlag,
   ThreadReplay,
   ThreadState,
+  ThreadStatusSummary,
   ThreadSummary,
   TurnTerminalError,
   TurnResult,
@@ -1217,11 +1219,49 @@ function extractThreadsFromValue(value: unknown): ThreadSummary[] {
         pickString(asRecord(record.git_info) ?? {}, ["branch"]) ??
         pickString(asRecord(sessionRecord?.gitInfo) ?? {}, ["branch"]) ??
         pickString(asRecord(sessionRecord?.git_info) ?? {}, ["branch"]),
+      status: extractThreadStatus(record) ?? extractThreadStatus(sessionRecord),
     });
   }
   return [...summaries.values()].sort(
     (left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0),
   );
+}
+
+function normalizeThreadActiveFlag(value: unknown): ThreadActiveFlag | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = value.trim();
+  return normalized === "waitingOnApproval" || normalized === "waitingOnUserInput"
+    ? normalized
+    : undefined;
+}
+
+function extractThreadStatus(value: unknown): ThreadStatusSummary | undefined {
+  const record = asRecord(asRecord(value)?.status ?? value);
+  if (!record) {
+    const statusType = typeof value === "string" ? value.trim() : "";
+    if (
+      statusType === "notLoaded" ||
+      statusType === "idle" ||
+      statusType === "systemError"
+    ) {
+      return { type: statusType };
+    }
+    return undefined;
+  }
+  const type = pickString(record, ["type", "status", "kind"]);
+  if (type === "notLoaded" || type === "idle" || type === "systemError") {
+    return { type };
+  }
+  if (type === "active") {
+    const rawFlags = findFirstArrayByKeys(record, ["activeFlags", "active_flags"]) ?? [];
+    const activeFlags = rawFlags
+      .map((entry) => normalizeThreadActiveFlag(entry))
+      .filter((entry): entry is ThreadActiveFlag => Boolean(entry));
+    return { type, activeFlags };
+  }
+  return undefined;
 }
 
 function normalizeConversationRole(value: string | undefined): "user" | "assistant" | undefined {
@@ -2529,6 +2569,10 @@ export class CodexAppServerClient {
     await connection?.client.close().catch(() => undefined);
   }
 
+  onNotification(listener: (method: string, params: unknown) => Promise<void> | void): () => void {
+    return this.addNotificationListener(listener);
+  }
+
   async listThreads(params: {
     sessionKey?: string;
     workspaceDir?: string;
@@ -3618,6 +3662,7 @@ export const __testing = {
   extractStartupProbeInfo,
   formatFileEditNotice,
   extractThreadTokenUsageSnapshot,
+  extractThreadsFromValue,
   extractRateLimitSummaries,
   formatStdioProcessLog,
   resolveTurnStoppedReason,

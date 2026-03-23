@@ -2,7 +2,7 @@ import type { ConversationRef, PluginInteractiveButtons } from "openclaw/plugin-
 
 export const PLUGIN_ID = "openclaw-codex-app-server";
 export const INTERACTIVE_NAMESPACE = "codexapp";
-export const STORE_VERSION = 1;
+export const STORE_VERSION = 2;
 export const CALLBACK_TOKEN_BYTES = 9;
 export const CALLBACK_TTL_MS = 30 * 60_000;
 export const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
@@ -114,7 +114,14 @@ export type ThreadSummary = {
   createdAt?: number;
   updatedAt?: number;
   gitBranch?: string;
+  status?: ThreadStatusSummary;
 };
+
+export type ThreadActiveFlag = "waitingOnApproval" | "waitingOnUserInput";
+
+export type ThreadStatusSummary =
+  | { type: "notLoaded" | "idle" | "systemError" }
+  | { type: "active"; activeFlags: ThreadActiveFlag[] };
 
 export type ModelSummary = {
   id: string;
@@ -268,6 +275,33 @@ export type StoredBinding = {
   updatedAt: number;
 };
 
+export type StoredMonitorBinding = {
+  conversation: ConversationRef;
+  messageThreadId?: number;
+  workspaceDir?: string;
+  pinnedBindingMessage?:
+    | {
+        provider: "telegram";
+        messageId: string;
+        chatId: string;
+      }
+    | {
+        provider: "discord";
+        messageId: string;
+        channelId: string;
+      };
+  lastSummarySignature?: string;
+  updatedAt: number;
+};
+
+export type StoredThreadSeenState = {
+  threadId: string;
+  lastSeenUpdatedAt?: number;
+  threadTitle?: string;
+  workspaceDir?: string;
+  updatedAt: number;
+};
+
 export type StoredPendingBind = {
   conversation: ConversationRef;
   threadId: string;
@@ -382,8 +416,10 @@ export type CallbackAction =
 export type StoreSnapshot = {
   version: number;
   bindings: StoredBinding[];
+  monitorBindings: StoredMonitorBinding[];
   pendingBinds: StoredPendingBind[];
   pendingRequests: StoredPendingRequest[];
+  threadSeenStates: StoredThreadSeenState[];
   callbacks: CallbackAction[];
 };
 

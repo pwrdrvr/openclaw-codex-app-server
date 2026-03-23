@@ -4,6 +4,7 @@ import { INTERACTIVE_NAMESPACE } from "./src/types.js";
 
 const COMMANDS = [
   ["cas_resume", "Resume or bind an existing Codex thread."],
+  ["cas_monitor", "Monitor cross-thread approvals, prompts, and unread activity."],
   ["cas_detach", "Detach this conversation from the current Codex thread."],
   ["cas_status", "Show the current Codex binding and thread state."],
   ["cas_stop", "Stop the active Codex turn."],

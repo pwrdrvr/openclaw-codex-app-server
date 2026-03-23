@@ -12,6 +12,7 @@ import {
   formatCodexStatusText,
   getCodexStatusTimeZoneLabel,
   formatMcpServers,
+  formatMonitorStatusText,
   formatModels,
   formatSkills,
   formatThreadPickerIntro,
@@ -96,6 +97,44 @@ describe("formatBoundThreadSummary", () => {
         "Worktree Path: /Users/huntharo/.codex/worktrees/41fb/openclaw",
       ].join("\n"),
     );
+  });
+});
+
+describe("formatMonitorStatusText", () => {
+  it("renders approvals, questions, and unread activity with thread context", () => {
+    const text = formatMonitorStatusText({
+      approvals: [
+        {
+          threadId: "thread-approval",
+          title: "Approve deployment",
+          projectKey: "/repo/openclaw",
+          updatedAt: Date.now() - 60_000,
+        },
+      ],
+      questions: [
+        {
+          threadId: "thread-question",
+          title: "Need release window",
+          projectKey: "/repo/openclaw",
+          updatedAt: Date.now() - 120_000,
+        },
+      ],
+      unread: [
+        {
+          threadId: "thread-unread",
+          title: "Review patch output",
+          projectKey: "/repo/openclaw",
+          updatedAt: Date.now() - 180_000,
+        },
+      ],
+    });
+
+    expect(text).toContain("Monitor: active");
+    expect(text).toContain("Pending approvals:");
+    expect(text).toContain("Approve deployment");
+    expect(text).toContain("Waiting for user input:");
+    expect(text).toContain("Unread activity:");
+    expect(text).toContain("Use `/cas_resume <thread-id>`");
   });
 });
 

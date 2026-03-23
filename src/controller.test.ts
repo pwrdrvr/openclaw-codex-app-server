@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawPluginApi, PluginCommandContext } from "openclaw/plugin-sdk";
 import { CodexAppServerClient } from "./client.js";
 import { CodexPluginController } from "./controller.js";
+import type { ThreadSummary } from "./types.js";
 
 const discordSdkState = vi.hoisted(() => ({
   buildDiscordComponentMessage: vi.fn((params: { spec: { text?: string; blocks?: unknown[] } }) => ({
@@ -124,13 +125,16 @@ async function createControllerHarness() {
   const controller = new CodexPluginController(api);
   await controller.start();
   const clientMock = {
-    listThreads: vi.fn(async () => [
+    listThreads: vi.fn(async (): Promise<ThreadSummary[]> => [
       {
         threadId: "thread-1",
         title: "Discord Thread",
         projectKey: "/repo/openclaw",
         createdAt: Date.now() - 60_000,
         updatedAt: Date.now() - 30_000,
+        status: {
+          type: "idle",
+        },
       },
     ]),
     listModels: vi.fn(async () => [
@@ -257,11 +261,6 @@ beforeEach(() => {
     })),
   );
 });
-
-async function flushAsyncWork(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await new Promise((resolve) => setTimeout(resolve, 0));
-}
 
 describe("Discord controller flows", () => {
   it("starts cleanly without the legacy runtime.channel.bindings surface", async () => {
@@ -905,6 +904,187 @@ describe("Discord controller flows", () => {
     })).toBeNull();
   });
 
+  it("enables cas_monitor and reports cross-thread activity", async () => {
+    const { controller, clientMock } = await createControllerHarness();
+    clientMock.listThreads.mockResolvedValue([
+      {
+        threadId: "thread-approval",
+        title: "Approve deploy",
+        projectKey: "/repo/openclaw",
+        updatedAt: Date.now() - 60_000,
+        status: {
+          type: "active",
+          activeFlags: ["waitingOnApproval"],
+        },
+      },
+      {
+        threadId: "thread-unread",
+        title: "Fresh output",
+        projectKey: "/repo/openclaw",
+        updatedAt: Date.now() - 30_000,
+        status: {
+          type: "idle",
+        },
+      },
+    ]);
+
+    const reply = await controller.handleCommand(
+      "cas_monitor",
+      buildDiscordCommandContext({
+        commandBody: "/cas_monitor",
+      }),
+    );
+
+    expect(reply.text).toContain("Monitor: active");
+    expect(reply.text).toContain("Pending approvals:");
+    expect(reply.text).toContain("Unread activity:");
+    expect((controller as any).store.getMonitorBinding({
+      channel: "discord",
+      accountId: "default",
+      conversationId: "channel:chan-1",
+    })).toEqual(
+      expect.objectContaining({
+        workspaceDir: undefined,
+      }),
+    );
+  });
+
+  it("keeps Telegram monitor refreshes in the original topic", async () => {
+    const { controller, clientMock, sendMessageTelegram } = await createControllerHarness();
+    clientMock.listThreads.mockResolvedValue([
+      {
+        threadId: "thread-unread",
+        title: "Fresh output",
+        projectKey: "/repo/openclaw",
+        updatedAt: 1_000,
+        status: {
+          type: "idle",
+        },
+      },
+    ]);
+
+    const reply = await controller.handleCommand(
+      "cas_monitor",
+      buildTelegramCommandContext({
+        commandBody: "/cas_monitor",
+        messageThreadId: 456,
+      }),
+    );
+
+    expect(reply.text).toContain("Monitor: active");
+    expect((controller as any).store.getMonitorBinding({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123:topic:456",
+      parentConversationId: "123",
+    })).toEqual(
+      expect.objectContaining({
+        messageThreadId: 456,
+      }),
+    );
+
+    await (controller as any).refreshMonitorBindings({ force: true });
+
+    expect(sendMessageTelegram).toHaveBeenCalledWith(
+      "123",
+      expect.stringContaining("Unread activity:"),
+      expect.objectContaining({
+        accountId: "default",
+        messageThreadId: 456,
+      }),
+    );
+  });
+
+  it("detaches monitor bindings with cas_detach", async () => {
+    const { controller } = await createControllerHarness();
+    await (controller as any).store.upsertMonitorBinding({
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:chan-1",
+      },
+      updatedAt: Date.now(),
+    });
+
+    const reply = await controller.handleCommand(
+      "cas_detach",
+      buildDiscordCommandContext({
+        commandBody: "/cas_detach",
+      }),
+    );
+
+    expect(reply).toEqual({
+      text: "Detached this conversation from Codex.",
+    });
+    expect((controller as any).store.getMonitorBinding({
+      channel: "discord",
+      accountId: "default",
+      conversationId: "channel:chan-1",
+    })).toBeNull();
+  });
+
+  it("does not claim inbound messages for monitor-only conversations", async () => {
+    const { controller } = await createControllerHarness();
+    await (controller as any).store.upsertMonitorBinding({
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:chan-1",
+      },
+      updatedAt: Date.now(),
+    });
+
+    const result = await controller.handleInboundClaim({
+      content: "hello",
+      channel: "discord",
+      accountId: "default",
+      conversationId: "discord:channel:chan-1",
+      metadata: { guildId: "guild-1" },
+    });
+
+    expect(result).toEqual({ handled: false });
+  });
+
+  it("dedupes unchanged monitor refresh summaries", async () => {
+    const { controller, clientMock, sendMessageDiscord } = await createControllerHarness();
+    const now = vi.spyOn(Date, "now");
+    now.mockReturnValue(120_000);
+    await (controller as any).store.upsertMonitorBinding({
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:chan-1",
+      },
+      updatedAt: Date.now(),
+    });
+    clientMock.listThreads.mockResolvedValue([
+      {
+        threadId: "thread-unread",
+        title: "Fresh output",
+        projectKey: "/repo/openclaw",
+        updatedAt: 90_000,
+        status: {
+          type: "idle",
+        },
+      },
+    ]);
+
+    await (controller as any).refreshMonitorBindings({ force: true });
+    now.mockReturnValue(181_000);
+    await (controller as any).refreshMonitorBindings();
+
+    expect(sendMessageDiscord).toHaveBeenCalledTimes(1);
+    expect((controller as any).store.getMonitorBinding({
+      channel: "discord",
+      accountId: "default",
+      conversationId: "channel:chan-1",
+    })).toEqual(
+      expect.objectContaining({
+        lastSummarySignature: expect.stringContaining("\"threadId\":\"thread-unread\""),
+      }),
+    );
+  });
+
   it("shows plan mode on in cas_status when the bound conversation has an active plan run", async () => {
     const { controller } = await createControllerHarness();
     await (controller as any).store.upsertBinding({
@@ -1180,7 +1360,14 @@ describe("Discord controller flows", () => {
       }),
     );
 
-    await flushAsyncWork();
+    await vi.waitFor(() =>
+      expect(renameTopic).toHaveBeenCalledWith(
+        "123",
+        456,
+        "Discord Thread (openclaw)",
+        expect.objectContaining({ accountId: "default" }),
+      ),
+    );
 
     expect(renameTopic).toHaveBeenCalledWith(
       "123",
@@ -1279,7 +1466,14 @@ describe("Discord controller flows", () => {
       }),
     );
 
-    await flushAsyncWork();
+    await vi.waitFor(() =>
+      expect(renameTopic).toHaveBeenCalledWith(
+        "123",
+        456,
+        "Discord Thread (openclaw)",
+        expect.objectContaining({ accountId: "default" }),
+      ),
+    );
 
     expect(reply).toEqual({});
     expect(renameTopic).toHaveBeenCalledWith(
@@ -2336,7 +2530,13 @@ describe("Discord controller flows", () => {
       reason: "inbound",
     });
 
-    await flushAsyncWork();
+    await vi.waitFor(() =>
+      expect(sendMessageTelegram).toHaveBeenCalledWith(
+        "8460800771",
+        "Codex authentication failed on this machine. Run `codex logout` and `codex login`, then try again.",
+        expect.anything(),
+      ),
+    );
     expect(sendMessageTelegram).toHaveBeenCalledWith(
       "8460800771",
       "Codex authentication failed on this machine. Run `codex logout` and `codex login`, then try again.",
@@ -2373,7 +2573,13 @@ describe("Discord controller flows", () => {
       reason: "inbound",
     });
 
-    await flushAsyncWork();
+    await vi.waitFor(() =>
+      expect(sendMessageTelegram).toHaveBeenCalledWith(
+        "8460800771",
+        "Codex authentication failed on this machine. Run `codex logout` and `codex login`, then try again.",
+        expect.anything(),
+      ),
+    );
     expect(sendMessageTelegram).toHaveBeenCalledWith(
       "8460800771",
       "Codex authentication failed on this machine. Run `codex logout` and `codex login`, then try again.",
@@ -2423,7 +2629,13 @@ describe("Discord controller flows", () => {
       reason: "inbound",
     });
 
-    await flushAsyncWork();
+    await vi.waitFor(() =>
+      expect(sendMessageTelegram).toHaveBeenCalledWith(
+        "8460800771",
+        "Codex authentication failed on this machine. Run `codex logout` and `codex login`, then try again.",
+        expect.anything(),
+      ),
+    );
     expect(sendMessageTelegram).toHaveBeenCalledWith(
       "8460800771",
       "Codex authentication failed on this machine. Run `codex logout` and `codex login`, then try again.",
@@ -2473,7 +2685,13 @@ describe("Discord controller flows", () => {
       reason: "inbound",
     });
 
-    await flushAsyncWork();
+    await vi.waitFor(() =>
+      expect(sendMessageTelegram).toHaveBeenCalledWith(
+        "8460800771",
+        "Codex completed without a text reply.",
+        expect.anything(),
+      ),
+    );
     expect(sendMessageTelegram).toHaveBeenCalledWith(
       "8460800771",
       "Codex completed without a text reply.",
@@ -2519,7 +2737,13 @@ describe("Discord controller flows", () => {
       reason: "inbound",
     });
 
-    await flushAsyncWork();
+    await vi.waitFor(() =>
+      expect(sendMessageTelegram).toHaveBeenCalledWith(
+        "8460800771",
+        "Cancelled the Codex approval request.",
+        expect.anything(),
+      ),
+    );
     expect(sendMessageTelegram).toHaveBeenCalledWith(
       "8460800771",
       "Cancelled the Codex approval request.",
