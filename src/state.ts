@@ -14,6 +14,14 @@ import type {
 
 type PutCallbackInput =
   | {
+      kind: "start-new-thread";
+      conversation: ConversationTarget;
+      workspaceDir: string;
+      syncTopic?: boolean;
+      token?: string;
+      ttlMs?: number;
+    }
+  | {
       kind: "resume-thread";
       conversation: ConversationTarget;
       threadId: string;
@@ -253,7 +261,17 @@ export class PluginStateStore {
   async putCallback(callback: PutCallbackInput): Promise<CallbackAction> {
     const now = Date.now();
     const entry: CallbackAction =
-      callback.kind === "resume-thread"
+      callback.kind === "start-new-thread"
+        ? {
+            kind: "start-new-thread",
+            conversation: callback.conversation,
+            workspaceDir: callback.workspaceDir,
+            syncTopic: callback.syncTopic,
+            token: callback.token ?? this.createCallbackToken(),
+            createdAt: now,
+            expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
+          }
+      : callback.kind === "resume-thread"
         ? {
             kind: "resume-thread",
             conversation: callback.conversation,

@@ -290,6 +290,15 @@ export type StoredPendingRequest = {
 export type CallbackAction =
   | {
       token: string;
+      kind: "start-new-thread";
+      conversation: ConversationRef;
+      workspaceDir: string;
+      syncTopic?: boolean;
+      createdAt: number;
+      expiresAt: number;
+    }
+  | {
+      token: string;
       kind: "resume-thread";
       conversation: ConversationRef;
       threadId: string;
@@ -334,6 +343,7 @@ export type CallbackAction =
           }
         | {
             mode: "projects";
+            action?: "resume-thread" | "start-new-thread";
             includeAll: boolean;
             page: number;
             syncTopic?: boolean;

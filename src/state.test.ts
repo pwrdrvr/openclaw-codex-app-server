@@ -57,6 +57,16 @@ describe("state store", () => {
       workspaceDir: "/tmp/work",
       syncTopic: true,
     });
+    const startThreadCallback = await store.putCallback({
+      kind: "start-new-thread",
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      workspaceDir: "/tmp/new-work",
+      syncTopic: true,
+    });
     const promptCallback = await store.putCallback({
       kind: "run-prompt",
       conversation: {
@@ -102,9 +112,17 @@ describe("state store", () => {
       conversationId: "124",
     })?.threadId).toBe("thread-pending");
     expect(reloaded.getCallback(callback.token)?.kind).toBe("resume-thread");
+    expect(reloaded.getCallback(startThreadCallback.token)?.kind).toBe("start-new-thread");
     const resumeCallback = reloaded.getCallback(callback.token);
     expect(resumeCallback?.kind).toBe("resume-thread");
     expect(resumeCallback && resumeCallback.kind === "resume-thread" ? resumeCallback.syncTopic : undefined).toBe(true);
+    const newThreadCallback = reloaded.getCallback(startThreadCallback.token);
+    expect(newThreadCallback?.kind).toBe("start-new-thread");
+    expect(
+      newThreadCallback && newThreadCallback.kind === "start-new-thread"
+        ? newThreadCallback.workspaceDir
+        : undefined,
+    ).toBe("/tmp/new-work");
     expect(reloaded.getCallback(promptCallback.token)?.kind).toBe("run-prompt");
     const runPrompt = reloaded.getCallback(promptCallback.token);
     expect(runPrompt && runPrompt.kind === "run-prompt" ? runPrompt.collaborationMode : undefined).toEqual({

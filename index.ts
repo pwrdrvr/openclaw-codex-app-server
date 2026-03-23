@@ -3,6 +3,7 @@ import { CodexPluginController } from "./src/controller.js";
 import { INTERACTIVE_NAMESPACE } from "./src/types.js";
 
 const COMMANDS = [
+  ["cas_new", "Start a new Codex thread in a project."],
   ["cas_resume", "Resume or bind an existing Codex thread."],
   ["cas_detach", "Detach this conversation from the current Codex thread."],
   ["cas_status", "Show the current Codex binding and thread state."],

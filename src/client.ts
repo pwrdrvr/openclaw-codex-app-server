@@ -2526,6 +2526,38 @@ export class CodexAppServerClient {
     );
   }
 
+  async startThread(params: {
+    sessionKey?: string;
+    workspaceDir: string;
+    model?: string;
+  }): Promise<ThreadState> {
+    return await this.withClient(
+      { sessionKey: params.sessionKey },
+      async ({ client, settings }) => {
+        const result = await requestWithFallbacks({
+          client,
+          methods: ["thread/start", "thread/new"],
+          payloads: [
+            { cwd: params.workspaceDir, model: params.model },
+            { cwd: params.workspaceDir },
+            {},
+          ],
+          timeoutMs: settings.requestTimeoutMs,
+        });
+        const state = extractThreadState(result);
+        const threadId = extractIds(result).threadId ?? state.threadId;
+        if (!threadId?.trim()) {
+          throw new Error("Codex App Server did not return a thread id.");
+        }
+        return {
+          ...state,
+          threadId,
+          cwd: state.cwd?.trim() || params.workspaceDir,
+        };
+      },
+    );
+  }
+
   async listModels(params: { sessionKey?: string }): Promise<ModelSummary[]> {
     return await this.withClient(
       { sessionKey: params.sessionKey },

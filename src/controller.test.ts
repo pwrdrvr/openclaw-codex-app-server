@@ -133,6 +133,13 @@ async function createControllerHarness() {
         updatedAt: Date.now() - 30_000,
       },
     ]),
+    startThread: vi.fn(async () => ({
+      threadId: "thread-new",
+      threadName: "New Thread",
+      model: "openai/gpt-5.4",
+      cwd: "/repo/openclaw",
+      serviceTier: "default",
+    })),
     listModels: vi.fn(async () => [
       { id: "openai/gpt-5.4", current: true },
       { id: "openai/gpt-5.3" },
@@ -316,6 +323,51 @@ describe("Discord controller flows", () => {
       }),
       expect.objectContaining({
         accountId: "default",
+      }),
+    );
+  });
+
+  it("shows a project picker for /cas_new without args", async () => {
+    const { controller } = await createControllerHarness();
+
+    const reply = await controller.handleCommand(
+      "cas_new",
+      buildTelegramCommandContext({
+        commandBody: "/cas_new",
+      }),
+    );
+
+    expect(reply.text).toContain("Choose a project");
+    const buttons = (reply.channelData as any)?.telegram?.buttons;
+    expect(buttons?.[0]?.[0]?.text).toContain("openclaw");
+    const callbackData = buttons?.[0]?.[0]?.callback_data as string;
+    const token = callbackData.split(":").pop() ?? "";
+    const callback = (controller as any).store.getCallback(token);
+    expect(callback?.kind).toBe("start-new-thread");
+  });
+
+  it("starts a new thread directly for /cas_new <project>", async () => {
+    const { controller, clientMock } = await createControllerHarness();
+    const requestConversationBinding = vi.fn(async () => ({ status: "bound" as const }));
+
+    const reply = await controller.handleCommand(
+      "cas_new",
+      buildTelegramCommandContext({
+        args: "openclaw",
+        commandBody: "/cas_new openclaw",
+        requestConversationBinding,
+      }),
+    );
+
+    expect(reply).toEqual({});
+    expect(clientMock.startThread).toHaveBeenCalledWith({
+      sessionKey: undefined,
+      workspaceDir: "/repo/openclaw",
+      model: undefined,
+    });
+    expect(requestConversationBinding).toHaveBeenCalledWith(
+      expect.objectContaining({
+        summary: expect.stringContaining("Bind this conversation to Codex thread"),
       }),
     );
   });
@@ -1672,6 +1724,49 @@ describe("Discord controller flows", () => {
       456,
       "Discord Thread (openclaw)",
       expect.objectContaining({ accountId: "default" }),
+    );
+  });
+
+  it("dispatches start-new-thread callbacks through thread creation and binding", async () => {
+    const { controller, clientMock } = await createControllerHarness();
+    const callback = await (controller as any).store.putCallback({
+      kind: "start-new-thread",
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123:topic:456",
+        parentConversationId: "123",
+      },
+      workspaceDir: "/repo/openclaw",
+    });
+    const requestConversationBinding = vi.fn(async () => ({ status: "bound" as const }));
+
+    await controller.handleTelegramInteractive({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123:topic:456",
+      parentConversationId: "123",
+      threadId: 456,
+      requestConversationBinding,
+      callback: {
+        payload: callback.token,
+      },
+      respond: {
+        clearButtons: vi.fn(async () => {}),
+        reply: vi.fn(async () => {}),
+        editMessage: vi.fn(async () => {}),
+      },
+    } as any);
+
+    expect(clientMock.startThread).toHaveBeenCalledWith({
+      sessionKey: undefined,
+      workspaceDir: "/repo/openclaw",
+      model: undefined,
+    });
+    expect(requestConversationBinding).toHaveBeenCalledWith(
+      expect.objectContaining({
+        summary: expect.stringContaining("Bind this conversation to Codex thread"),
+      }),
     );
   });
 
