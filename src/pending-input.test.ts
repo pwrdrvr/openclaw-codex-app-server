@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  addQuestionnaireResponseNote,
   buildPendingQuestionnaireResponse,
   buildPendingPromptText,
   buildPendingUserInputActions,
@@ -248,6 +249,36 @@ Guidance:
     expect(buildPendingQuestionnaireResponse(questionnaire)).toBe(
       "1A 2: Balanced, but only if we keep the migration simple.",
     );
+  });
+
+  it("adds a user note to the first structured questionnaire answer", () => {
+    const response = addQuestionnaireResponseNote(
+      {
+        answers: {
+          runtime: { answers: ["Long-lived service (Recommended)"] },
+          db: { answers: ["Postgres (Recommended)"] },
+        },
+      },
+      "This answer was selected by the user in chat after 52 minutes; it was not auto-selected.",
+    );
+
+    expect(response).toEqual({
+      answers: {
+        runtime: {
+          answers: [
+            "Long-lived service (Recommended)",
+            "user_note: This answer was selected by the user in chat after 52 minutes; it was not auto-selected.",
+          ],
+        },
+        db: { answers: ["Postgres (Recommended)"] },
+      },
+    });
+  });
+
+  it("leaves compact questionnaire replies unchanged when adding a note", () => {
+    expect(
+      addQuestionnaireResponseNote("1A 2B", "This answer was selected by the user in chat."),
+    ).toBe("1A 2B");
   });
 
   it("requires an answer before advancing to the next questionnaire question", () => {

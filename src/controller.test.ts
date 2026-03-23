@@ -825,6 +825,146 @@ describe("Discord controller flows", () => {
     expect(followUp).not.toHaveBeenCalled();
   });
 
+  it("annotates delayed questionnaire replies so Codex can distinguish them from defaults", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-23T12:31:00-04:00"));
+    try {
+      const { controller } = await createControllerHarness();
+      const createdAt = Date.now() - 52 * 60_000;
+      await (controller as any).store.upsertPendingRequest({
+        requestId: "questionnaire-2",
+        conversation: {
+          channel: "discord",
+          accountId: "default",
+          conversationId: "channel:chan-1",
+        },
+        threadId: "thread-1",
+        workspaceDir: "/repo/openclaw",
+        state: {
+          requestId: "questionnaire-2",
+          options: [],
+          expiresAt: Date.now() + 7 * 24 * 60 * 60_000,
+          questionnaire: {
+            currentIndex: 1,
+            awaitingFreeform: false,
+            questions: [
+              {
+                index: 0,
+                id: "milk",
+                header: "Milk",
+                prompt: "Do you like milk on cereal?",
+                options: [
+                  { key: "A", label: "Cereal (Recommended)", description: "Default-looking choice." },
+                  { key: "B", label: "Bagels", description: "Alternate choice." },
+                ],
+                guidance: [],
+              },
+              {
+                index: 1,
+                id: "type",
+                header: "Type",
+                prompt: "What kind of milk?",
+                options: [
+                  { key: "A", label: "Whole", description: "Richer." },
+                  { key: "B", label: "2%", description: "Lighter." },
+                ],
+                guidance: [],
+              },
+            ],
+            answers: [
+              {
+                kind: "option",
+                optionKey: "A",
+                optionLabel: "Cereal (Recommended)",
+              },
+              null,
+            ],
+            responseMode: "structured",
+          },
+        },
+        createdAt,
+        updatedAt: createdAt,
+      });
+      const callback = await (controller as any).store.putCallback({
+        kind: "pending-questionnaire",
+        conversation: {
+          channel: "discord",
+          accountId: "default",
+          conversationId: "channel:chan-1",
+        },
+        requestId: "questionnaire-2",
+        questionIndex: 1,
+        action: "select",
+        optionIndex: 0,
+      });
+      const acknowledge = vi.fn(async () => {});
+      const clearComponents = vi.fn(async () => {});
+      const reply = vi.fn(async () => {});
+      const followUp = vi.fn(async () => {});
+      const submitPendingInputPayload = vi.fn(async () => true);
+      (controller as any).activeRuns.set("discord::default::channel:chan-1::", {
+        conversation: {
+          channel: "discord",
+          accountId: "default",
+          conversationId: "channel:chan-1",
+        },
+        workspaceDir: "/repo/openclaw",
+        mode: "plan",
+        handle: {
+          result: Promise.resolve({ threadId: "thread-1", text: "done" }),
+          queueMessage: vi.fn(async () => false),
+          submitPendingInput: vi.fn(async () => false),
+          submitPendingInputPayload,
+          interrupt: vi.fn(async () => {}),
+          isAwaitingInput: vi.fn(() => true),
+          getThreadId: vi.fn(() => "thread-1"),
+        },
+      });
+
+      await controller.handleDiscordInteractive({
+        channel: "discord",
+        accountId: "default",
+        interactionId: "interaction-2",
+        conversationId: "channel:chan-1",
+        auth: { isAuthorizedSender: true },
+        interaction: {
+          kind: "button",
+          data: `codexapp:${callback.token}`,
+          namespace: "codexapp",
+          payload: callback.token,
+          messageId: "message-2",
+        },
+        senderId: "user-1",
+        senderUsername: "Ada",
+        respond: {
+          acknowledge,
+          reply,
+          followUp,
+          editMessage: vi.fn(async () => {}),
+          clearComponents,
+        },
+      } as any);
+
+      expect(submitPendingInputPayload).toHaveBeenCalledWith({
+        answers: {
+          milk: {
+            answers: [
+              "Cereal (Recommended)",
+              "user_note: This answer was selected by the user in chat after 52 minutes; it was not auto-selected.",
+            ],
+          },
+          type: { answers: ["Whole"] },
+        },
+      });
+      expect(acknowledge).toHaveBeenCalledTimes(1);
+      expect(clearComponents).not.toHaveBeenCalled();
+      expect(reply).not.toHaveBeenCalled();
+      expect(followUp).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("normalizes raw Discord callback conversation ids for guild interactions", async () => {
     const { controller, sendComponentMessage } = await createControllerHarness();
     const callback = await (controller as any).store.putCallback({

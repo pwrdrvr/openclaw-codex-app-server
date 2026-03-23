@@ -7,6 +7,7 @@ import type { PluginLogger } from "openclaw/plugin-sdk";
 import { createPendingInputState, parseCodexUserInput } from "./pending-input.js";
 import {
   CALLBACK_TTL_MS,
+  PENDING_INPUT_TTL_MS,
   type AccountSummary,
   type CollaborationMode,
   type CompactProgress,
@@ -2958,7 +2959,7 @@ export class CodexAppServerClient {
       turnId ||= ids.runId ?? "";
       const options = extractOptionValues(requestParams);
       const requestId = ids.requestId ?? `${params.runId}-${Date.now().toString(36)}`;
-      const expiresAt = Date.now() + CALLBACK_TTL_MS;
+      const expiresAt = Date.now() + PENDING_INPUT_TTL_MS;
       const client = await getClient();
       const enrichedRequestParams =
         methodLower.includes("filechange/requestapproval") && ids.threadId && ids.itemId
@@ -3268,7 +3269,7 @@ export class CodexAppServerClient {
       turnId ||= ids.runId ?? "";
       const options = extractOptionValues(requestParams);
       const requestId = ids.requestId ?? `${params.runId}-${Date.now().toString(36)}`;
-      const expiresAt = Date.now() + CALLBACK_TTL_MS;
+      const expiresAt = Date.now() + PENDING_INPUT_TTL_MS;
       const client = await getClient();
       await fileEditNoticeBatcher.flush();
       const enrichedRequestParams =

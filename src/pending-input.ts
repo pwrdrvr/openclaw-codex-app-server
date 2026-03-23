@@ -584,6 +584,29 @@ export function buildPendingQuestionnaireResponse(
   };
 }
 
+export function addQuestionnaireResponseNote(
+  response: { answers: Record<string, { answers: string[] }> } | string,
+  note: string,
+): { answers: Record<string, { answers: string[] }> } | string {
+  const trimmed = note.trim();
+  if (!trimmed || typeof response === "string") {
+    return response;
+  }
+  const entries = Object.entries(response.answers);
+  if (entries.length === 0) {
+    return response;
+  }
+  const [firstId, firstAnswer] = entries[0];
+  return {
+    answers: {
+      ...response.answers,
+      [firstId]: {
+        answers: [...firstAnswer.answers, `user_note: ${trimmed}`],
+      },
+    },
+  };
+}
+
 export function questionnaireIsComplete(questionnaire: PendingQuestionnaireState): boolean {
   return questionnaire.answers.every(
     (answer) =>
