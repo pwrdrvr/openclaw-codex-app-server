@@ -457,7 +457,6 @@ describe("createPendingInputCoordinator", () => {
   it("surfaces only one pending approval at a time", async () => {
     const surfaced: Array<string | null> = [];
     const coordinator = __testing.createPendingInputCoordinator({
-      inputTimeoutMs: 60_000,
       onPendingInput: async (state) => {
         surfaced.push(state?.requestId ?? null);
       },

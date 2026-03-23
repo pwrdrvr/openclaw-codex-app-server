@@ -2939,9 +2939,9 @@ export class CodexPluginController {
     if (callback.kind === "pending-input") {
       await responders.clear().catch(() => undefined);
       const pending = this.store.getPendingRequestById(callback.requestId);
-      if (!pending || pending.state.expiresAt <= Date.now()) {
+      if (!pending) {
         await this.store.removeCallback(callback.token);
-        await responders.reply("That Codex request expired. Please retry.");
+        await responders.reply("That Codex request is no longer available. Please retry.");
         return;
       }
       const active = this.activeRuns.get(buildConversationKey(callback.conversation));
@@ -2962,9 +2962,9 @@ export class CodexPluginController {
     }
     if (callback.kind === "pending-questionnaire") {
       const pending = this.store.getPendingRequestById(callback.requestId);
-      if (!pending || pending.state.expiresAt <= Date.now() || !pending.state.questionnaire) {
+      if (!pending || !pending.state.questionnaire) {
         await this.store.removeCallback(callback.token);
-        await responders.reply("That Codex questionnaire expired. Please retry.");
+        await responders.reply("That Codex questionnaire is no longer available. Please retry.");
         return;
       }
       const active = this.activeRuns.get(buildConversationKey(callback.conversation));

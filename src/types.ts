@@ -6,7 +6,6 @@ export const STORE_VERSION = 1;
 export const CALLBACK_TOKEN_BYTES = 9;
 export const CALLBACK_TTL_MS = 30 * 60_000;
 export const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
-export const DEFAULT_INPUT_TIMEOUT_MS = 15 * 60_000;
 
 export type CodexTransport = "stdio" | "websocket";
 
@@ -18,7 +17,6 @@ export type PluginSettings = {
   url?: string;
   headers?: Record<string, string>;
   requestTimeoutMs: number;
-  inputTimeoutMs: number;
   defaultWorkspaceDir?: string;
   defaultModel?: string;
   defaultServiceTier?: string;

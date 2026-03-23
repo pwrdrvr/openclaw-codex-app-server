@@ -5,27 +5,28 @@ import { promisify } from "node:util";
 import WebSocket from "ws";
 import type { PluginLogger } from "openclaw/plugin-sdk";
 import { createPendingInputState, parseCodexUserInput } from "./pending-input.js";
-import type {
-  AccountSummary,
-  CollaborationMode,
-  CompactProgress,
-  CompactResult,
-  ContextUsageSnapshot,
-  ExperimentalFeatureSummary,
-  McpServerSummary,
-  ModelSummary,
-  PendingInputAction,
-  PendingInputState,
-  PluginSettings,
-  RateLimitSummary,
-  ReviewResult,
-  ReviewTarget,
-  SkillSummary,
-  ThreadReplay,
-  ThreadState,
-  ThreadSummary,
-  TurnTerminalError,
-  TurnResult,
+import {
+  CALLBACK_TTL_MS,
+  type AccountSummary,
+  type CollaborationMode,
+  type CompactProgress,
+  type CompactResult,
+  type ContextUsageSnapshot,
+  type ExperimentalFeatureSummary,
+  type McpServerSummary,
+  type ModelSummary,
+  type PendingInputAction,
+  type PendingInputState,
+  type PluginSettings,
+  type RateLimitSummary,
+  type ReviewResult,
+  type ReviewTarget,
+  type SkillSummary,
+  type ThreadReplay,
+  type ThreadState,
+  type ThreadSummary,
+  type TurnTerminalError,
+  type TurnResult,
 } from "./types.js";
 
 type JsonRpcId = string | number;
@@ -2195,13 +2196,9 @@ function mapPendingInputResponse(params: {
   response: unknown;
   options: string[];
   actions: PendingInputAction[];
-  timedOut: boolean;
 }): unknown {
-  const { methodLower, response, options, actions, timedOut } = params;
+  const { methodLower, response, options, actions } = params;
   if (methodLower.includes("requestapproval")) {
-    if (timedOut) {
-      return { decision: "cancel" };
-    }
     const record = asRecord(response);
     const index = typeof record?.index === "number" ? record.index : undefined;
     const action = index != null ? actions[index] : undefined;
@@ -2221,9 +2218,6 @@ function mapPendingInputResponse(params: {
         : undefined) ??
       pickString(record ?? {}, ["option", "text", "value", "label"]);
     return { decision: selected || "decline" };
-  }
-  if (timedOut) {
-    return { cancelled: true, reason: "timeout" };
   }
   return response;
 }
@@ -2257,14 +2251,11 @@ type PendingInputQueueEntry = {
   options: string[];
   actions: PendingInputAction[];
   methodLower: string;
-  timedOut: boolean;
-  timeoutHandle?: ReturnType<typeof setTimeout>;
   response: Promise<unknown>;
   resolveResponse: (value: unknown) => void;
 };
 
 function createPendingInputCoordinator(params: {
-  inputTimeoutMs: number;
   onPendingInput?: (state: PendingInputState | null) => Promise<void> | void;
   onActivated?: () => void;
   onCleared?: () => void;
@@ -2283,13 +2274,6 @@ function createPendingInputCoordinator(params: {
     current = next;
     params.onActivated?.();
     await params.onPendingInput?.(next.state);
-    next.timeoutHandle = setTimeout(() => {
-      if (current?.state.requestId !== next.state.requestId) {
-        return;
-      }
-      next.timedOut = true;
-      void settleCurrent({ text: "" });
-    }, params.inputTimeoutMs);
   };
 
   const clearCurrent = async () => {
@@ -2298,9 +2282,6 @@ function createPendingInputCoordinator(params: {
       return;
     }
     current = null;
-    if (active.timeoutHandle) {
-      clearTimeout(active.timeoutHandle);
-    }
     params.onCleared?.();
     await params.onPendingInput?.(null);
     await presentNext();
@@ -2312,9 +2293,6 @@ function createPendingInputCoordinator(params: {
       return false;
     }
     current = null;
-    if (active.timeoutHandle) {
-      clearTimeout(active.timeoutHandle);
-    }
     params.onCleared?.();
     await params.onPendingInput?.(null);
     active.resolveResponse(value);
@@ -2326,13 +2304,12 @@ function createPendingInputCoordinator(params: {
     enqueue(
       entry: Omit<
         PendingInputQueueEntry,
-        "timedOut" | "timeoutHandle" | "response" | "resolveResponse"
+        "response" | "resolveResponse"
       >,
     ) {
       let resolveResponse: (value: unknown) => void = () => undefined;
       const queuedEntry: PendingInputQueueEntry = {
         ...entry,
-        timedOut: false,
         response: new Promise<unknown>((resolve) => {
           resolveResponse = resolve;
         }),
@@ -2875,7 +2852,6 @@ export class CodexAppServerClient {
     let completed = false;
     let notificationQueue = Promise.resolve();
     const pendingInputCoordinator = createPendingInputCoordinator({
-      inputTimeoutMs: this.settings.inputTimeoutMs,
       onPendingInput: params.onPendingInput,
       onActivated: () => {
         awaitingInput = true;
@@ -2982,7 +2958,7 @@ export class CodexAppServerClient {
       turnId ||= ids.runId ?? "";
       const options = extractOptionValues(requestParams);
       const requestId = ids.requestId ?? `${params.runId}-${Date.now().toString(36)}`;
-      const expiresAt = Date.now() + this.settings.inputTimeoutMs;
+      const expiresAt = Date.now() + CALLBACK_TTL_MS;
       const client = await getClient();
       const enrichedRequestParams =
         methodLower.includes("filechange/requestapproval") && ids.threadId && ids.itemId
@@ -3020,7 +2996,6 @@ export class CodexAppServerClient {
         response,
         options,
         actions: state.actions ?? [],
-        timedOut: pendingEntry.timedOut,
       });
       const responseRecord = asRecord(response);
       const steerText =
@@ -3151,7 +3126,6 @@ export class CodexAppServerClient {
     let approvalCancelled = false;
     let notificationQueue = Promise.resolve();
     const pendingInputCoordinator = createPendingInputCoordinator({
-      inputTimeoutMs: this.settings.inputTimeoutMs,
       onPendingInput: params.onPendingInput,
       onActivated: () => {
         awaitingInput = true;
@@ -3294,7 +3268,7 @@ export class CodexAppServerClient {
       turnId ||= ids.runId ?? "";
       const options = extractOptionValues(requestParams);
       const requestId = ids.requestId ?? `${params.runId}-${Date.now().toString(36)}`;
-      const expiresAt = Date.now() + this.settings.inputTimeoutMs;
+      const expiresAt = Date.now() + CALLBACK_TTL_MS;
       const client = await getClient();
       await fileEditNoticeBatcher.flush();
       const enrichedRequestParams =
@@ -3333,7 +3307,6 @@ export class CodexAppServerClient {
         response,
         options,
         actions: state.actions ?? [],
-        timedOut: pendingEntry.timedOut,
       });
       const approvalDecision = extractApprovalDecision(mappedResponse)?.toLowerCase();
       if (approvalDecision === "cancel") {

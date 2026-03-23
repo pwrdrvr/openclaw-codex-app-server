@@ -1,6 +1,5 @@
 import type { PluginSettings } from "./types.js";
 import {
-  DEFAULT_INPUT_TIMEOUT_MS,
   DEFAULT_REQUEST_TIMEOUT_MS,
 } from "./types.js";
 
@@ -80,7 +79,6 @@ export function resolvePluginSettings(rawConfig: unknown): PluginSettings {
       DEFAULT_REQUEST_TIMEOUT_MS,
       100,
     ),
-    inputTimeoutMs: readNumber(record, "inputTimeoutMs", DEFAULT_INPUT_TIMEOUT_MS, 1_000),
     defaultWorkspaceDir: readString(record, "defaultWorkspaceDir"),
     defaultModel: readString(record, "defaultModel"),
     defaultServiceTier: readString(record, "defaultServiceTier"),
