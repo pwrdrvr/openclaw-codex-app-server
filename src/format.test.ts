@@ -426,6 +426,30 @@ describe("formatThreadPickerIntro", () => {
 
     expect(text).toContain("sync the current channel/topic name");
   });
+
+  it("shows fallback message when workspace threads fell back to global", () => {
+    const text = formatThreadPickerIntro({
+      page: 0,
+      totalPages: 1,
+      totalItems: 5,
+      includeAll: true,
+      fallbackToGlobal: true,
+    });
+
+    expect(text).toContain("No threads in this workspace. Showing recent sessions from all projects.");
+  });
+
+  it("does not show fallback message for normal global listing", () => {
+    const text = formatThreadPickerIntro({
+      page: 0,
+      totalPages: 1,
+      totalItems: 5,
+      includeAll: true,
+    });
+
+    expect(text).not.toContain("No threads in this workspace");
+    expect(text).toContain("Showing recent Codex sessions across all projects.");
+  });
 });
 
 describe("formatSkills", () => {

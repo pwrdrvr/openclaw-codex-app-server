@@ -2681,10 +2681,22 @@ export class CodexPluginController {
     page: number,
     projectName?: string,
   ): Promise<PickerRender> {
-    const { workspaceDir, threads } = await this.listPickerThreads(binding, {
+    let { workspaceDir, threads } = await this.listPickerThreads(binding, {
       parsed,
       projectName,
     });
+    let fallbackToGlobal = false;
+    if (threads.length === 0 && workspaceDir != null && !projectName) {
+      const globalResult = await this.client.listThreads({
+        sessionKey: binding?.sessionKey,
+        workspaceDir: undefined,
+        filter: parsed.query || undefined,
+      });
+      if (globalResult.length > 0) {
+        threads = globalResult;
+        fallbackToGlobal = true;
+      }
+    }
     const pageResult = paginateItems(threads, page);
     const distinctProjects = new Set(
       threads.map((thread) => getProjectName(thread.projectKey)).filter(Boolean),
@@ -2694,17 +2706,18 @@ export class CodexPluginController {
       conversation,
       syncTopic: parsed.syncTopic,
       threads: pageResult.items,
-      showProjectName: !projectName && distinctProjects.size > 1,
+      showProjectName: !projectName && (fallbackToGlobal || distinctProjects.size > 1),
       })) ?? [];
     return {
       text: formatThreadPickerIntro({
         page: pageResult.page,
         totalPages: pageResult.totalPages,
         totalItems: pageResult.totalItems,
-        includeAll: workspaceDir == null,
+        includeAll: workspaceDir == null || fallbackToGlobal,
         syncTopic: parsed.syncTopic,
-        workspaceDir,
+        workspaceDir: fallbackToGlobal ? undefined : workspaceDir,
         projectName,
+        fallbackToGlobal,
       }),
       buttons: await this.appendThreadPickerControls({
             conversation,

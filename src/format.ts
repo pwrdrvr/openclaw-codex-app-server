@@ -151,15 +151,18 @@ export function formatThreadPickerIntro(params: {
   syncTopic?: boolean;
   projectName?: string;
   workspaceDir?: string;
+  fallbackToGlobal?: boolean;
 }): string {
   const pageLabel = `Page ${params.page + 1}/${params.totalPages}`;
-  const scopeLabel = params.projectName
-    ? `Showing recent Codex sessions for ${params.projectName}.`
-    : params.includeAll
-      ? "Showing recent Codex sessions across all projects."
-      : params.workspaceDir
-        ? `Showing recent Codex sessions for ${getProjectName(params.workspaceDir) ?? "this project"}.`
-        : "Showing recent Codex sessions.";
+  const scopeLabel = params.fallbackToGlobal
+    ? "No threads in this workspace. Showing recent sessions from all projects."
+    : params.projectName
+      ? `Showing recent Codex sessions for ${params.projectName}.`
+      : params.includeAll
+        ? "Showing recent Codex sessions across all projects."
+        : params.workspaceDir
+          ? `Showing recent Codex sessions for ${getProjectName(params.workspaceDir) ?? "this project"}.`
+          : "Showing recent Codex sessions.";
   return [
     `${scopeLabel} ${pageLabel}.`,
     "Legend: 🌿 worktree, ✏️ uncommitted changes, U updated, C created.",
