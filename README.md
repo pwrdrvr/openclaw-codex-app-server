@@ -1,5 +1,10 @@
 # OpenClaw Plugin For Codex App Server
 
+[![CI](https://github.com/pwrdrvr/openclaw-codex-app-server/actions/workflows/ci.yml/badge.svg)](https://github.com/pwrdrvr/openclaw-codex-app-server/actions/workflows/ci.yml)
+[![npm version](https://img.shields.io/npm/v/openclaw-codex-app-server)](https://www.npmjs.com/package/openclaw-codex-app-server)
+[![npm downloads](https://img.shields.io/npm/dm/openclaw-codex-app-server)](https://www.npmjs.com/package/openclaw-codex-app-server)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
+
 This project has no product name. It is just an OpenClaw plugin that connects OpenClaw to the Codex App Server protocol so you can interact with your existing threads from Codex Desktop and Codex TUI through Telegram and Discord conversations.
 
 `Codex` is mentioned here only to describe the protocol and toolchain this plugin connects to. This repository is independent and is not official, provided, sponsored, endorsed, or affiliated with OpenAI or Codex.
@@ -76,7 +81,7 @@ Pre-release packages are published on matching npm dist-tags instead of `latest`
 | `/cas_mcp` | List configured MCP servers. | Shows auth state and counts for tools/resources/templates. |
 | `/cas_mcp github` | Filter MCP servers. | Matches name and auth status. |
 | `/cas_fast` | Toggle fast mode for the bound thread. | Equivalent to switching the service tier between default and fast. |
-| `/cas_fast on|off|status` | Set or inspect fast mode explicitly. | Example: `/cas_fast status` |
+| `/cas_fast on`, `/cas_fast off`, `/cas_fast status` | Set or inspect fast mode explicitly. | Example: `/cas_fast status` |
 | `/cas_model` | List models and show model-selection buttons. | If the conversation is not bound yet, it lists models only. |
 | `/cas_model gpt-5.4` | Set the model for the bound thread. | Requires an existing binding. |
 | `/cas_permissions` | Show account, rate-limit, and thread permission information. | Works with or without a current binding. |
