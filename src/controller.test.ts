@@ -2498,6 +2498,93 @@ describe("Discord controller flows", () => {
     );
   });
 
+  it("does not send the plan keepalive after a questionnaire is already visible", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-23T13:10:00-04:00"));
+    try {
+      const harness = await createControllerHarness();
+      const { controller } = harness;
+      const { sendMessageTelegram } = harness;
+      let resolveResult: ((value: unknown) => void) | undefined;
+      const result = new Promise((resolve) => {
+        resolveResult = resolve;
+      });
+      (controller as any).client.startTurn = vi.fn((params: any) => {
+        void Promise.resolve().then(() =>
+          params.onPendingInput?.({
+            requestId: "req-plan-1",
+            options: [],
+            expiresAt: Date.now() + 7 * 24 * 60 * 60_000,
+            method: "item/tool/requestUserInput",
+            questionnaire: {
+              currentIndex: 0,
+              questions: [
+                {
+                  index: 0,
+                  id: "breakfast",
+                  header: "Breakfast",
+                  prompt: "Do you like cereal or bagels?",
+                  options: [
+                    { key: "A", label: "Cereal (Recommended)", description: "Choose cereal." },
+                    { key: "B", label: "Bagels", description: "Choose bagels." },
+                  ],
+                  guidance: [],
+                  allowFreeform: true,
+                },
+              ],
+              answers: [null],
+              responseMode: "structured",
+            },
+          }),
+        );
+        return {
+          result,
+          getThreadId: () => "thread-1",
+          queueMessage: vi.fn(async () => false),
+          interrupt: vi.fn(async () => {}),
+          isAwaitingInput: () => true,
+          submitPendingInput: vi.fn(async () => false),
+          submitPendingInputPayload: vi.fn(async () => false),
+        };
+      });
+
+      await (controller as any).startPlan({
+        conversation: {
+          channel: "telegram",
+          accountId: "default",
+          conversationId: "8460800771",
+        },
+        binding: null,
+        workspaceDir: "/repo/openclaw",
+        prompt: "Ask the breakfast question.",
+      });
+
+      await Promise.resolve();
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(12_500);
+
+      const sentTexts = sendMessageTelegram.mock.calls.flatMap((call) => {
+        const [, text] = call as unknown as [unknown, unknown];
+        return typeof text === "string" ? [text] : [];
+      });
+      expect(sentTexts).toContain(
+        "Starting Codex plan mode. I’ll relay the questions and final plan as they arrive.",
+      );
+      expect((controller as any).store.getPendingRequestById("req-plan-1")).not.toBeNull();
+      expect(sentTexts).not.toContain("Codex is still planning...");
+
+      resolveResult?.({
+        threadId: "thread-1",
+        aborted: true,
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("tells the user to log back in when Codex reports OpenAI auth is required", async () => {
     const { controller, clientMock, sendMessageTelegram } = await createControllerHarness();
     clientMock.readAccount.mockResolvedValue({

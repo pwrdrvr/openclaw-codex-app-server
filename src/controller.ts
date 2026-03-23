@@ -2061,7 +2061,7 @@ export class CodexPluginController {
             .catch(() => null)
         : null;
     let keepaliveSent = false;
-    const progressTimer = setTimeout(() => {
+    let progressTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
       void (async () => {
         if (keepaliveSent) {
           return;
@@ -2070,6 +2070,13 @@ export class CodexPluginController {
         await this.sendText(params.conversation, "Codex is still planning...");
       })();
     }, PLAN_PROGRESS_DELAY_MS);
+    const stopProgressTimer = () => {
+      if (!progressTimer) {
+        return;
+      }
+      clearTimeout(progressTimer);
+      progressTimer = null;
+    };
     const run = this.client.startTurn({
       sessionKey: params.binding?.sessionKey,
       workspaceDir: params.workspaceDir,
@@ -2086,6 +2093,9 @@ export class CodexPluginController {
         },
       },
       onPendingInput: async (state) => {
+        if (state) {
+          stopProgressTimer();
+        }
         this.api.logger.debug(
           `codex plan pending input ${state ? `received (questionnaire=${state.questionnaire ? "yes" : "no"})` : "cleared"}`,
         );
@@ -2185,7 +2195,7 @@ export class CodexPluginController {
         await this.sendText(params.conversation, formatFailureText("plan", error));
       })
       .finally(async () => {
-        clearTimeout(progressTimer);
+        stopProgressTimer();
         typing?.stop();
         this.activeRuns.delete(key);
         const pending = this.store.getPendingRequestByConversation(params.conversation);
@@ -2217,7 +2227,7 @@ export class CodexPluginController {
     }
     const typing = await this.startTypingLease(params.conversation);
     let keepaliveSent = false;
-    const progressTimer = setTimeout(() => {
+    let progressTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
       void (async () => {
         if (keepaliveSent) {
           return;
@@ -2226,6 +2236,13 @@ export class CodexPluginController {
         await this.sendText(params.conversation, "Codex is still reviewing...");
       })();
     }, REVIEW_PROGRESS_DELAY_MS);
+    const stopProgressTimer = () => {
+      if (!progressTimer) {
+        return;
+      }
+      clearTimeout(progressTimer);
+      progressTimer = null;
+    };
     const run = this.client.startReview({
       sessionKey: params.binding.sessionKey,
       workspaceDir: params.workspaceDir,
@@ -2233,6 +2250,9 @@ export class CodexPluginController {
       runId: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
       target: params.target,
       onPendingInput: async (state) => {
+        if (state) {
+          stopProgressTimer();
+        }
         await this.handlePendingInputState(params.conversation, params.workspaceDir, state, run);
       },
       onInterrupted: async () => {
@@ -2317,7 +2337,7 @@ export class CodexPluginController {
         await this.sendText(params.conversation, formatFailureText("review", error));
       })
       .finally(async () => {
-        clearTimeout(progressTimer);
+        stopProgressTimer();
         typing?.stop();
         this.activeRuns.delete(key);
         const pending = this.store.getPendingRequestByConversation(params.conversation);
