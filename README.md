@@ -5,6 +5,12 @@
 [![npm downloads](https://img.shields.io/npm/dm/openclaw-codex-app-server)](https://www.npmjs.com/package/openclaw-codex-app-server)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 
+<p align="center">
+  <a href="https://youtu.be/GKkipfNEJJQ">
+    <img src="https://img.youtube.com/vi/GKkipfNEJJQ/maxresdefault.jpg" alt="Watch the OpenClaw Codex App Server demo on YouTube" width="100%" />
+  </a>
+</p>
+
 This project has no product name. It is just an OpenClaw plugin that connects OpenClaw to the Codex App Server protocol so you can interact with your existing threads from Codex Desktop and Codex TUI through Telegram and Discord conversations.
 
 `Codex` is mentioned here only to describe the protocol and toolchain this plugin connects to. This repository is independent and is not official, provided, sponsored, endorsed, or affiliated with OpenAI or Codex.
