@@ -447,6 +447,18 @@ function formatFastModeValue(value: string | undefined): string {
   return normalized;
 }
 
+function normalizePreferenceServiceTier(value: string | undefined | null): string | null {
+  const normalized = normalizeServiceTier(value);
+  if (!normalized || normalized === "default" || normalized === "auto") {
+    return null;
+  }
+  return normalized;
+}
+
+function isFullAutoPermissions(approvalPolicy?: string, sandbox?: string): boolean {
+  return approvalPolicy?.trim() === "never" && sandbox?.trim() === "danger-full-access";
+}
+
 const PLAN_PROGRESS_DELAY_MS = 12_000;
 const REVIEW_PROGRESS_DELAY_MS = 12_000;
 const COMPACT_PROGRESS_DELAY_MS = 12_000;
@@ -1384,8 +1396,78 @@ export class CodexPluginController {
     binding: StoredBinding | null,
     bindingActive: boolean,
   ): Promise<ReplyPayload> {
+    const text = await this.buildStatusText(conversation, binding, bindingActive);
+    if (!conversation || !binding || !bindingActive) {
+      return { text };
+    }
+    return buildReplyWithButtons(text, await this.buildStatusControlButtons(conversation));
+  }
+
+  private async buildStatusControlButtons(
+    conversation: ConversationTarget,
+  ): Promise<PluginInteractiveButtons> {
+    const [showModelPicker, toggleFast, togglePermissions] = await Promise.all([
+      this.store.putCallback({
+        kind: "show-model-picker",
+        conversation,
+      }),
+      this.store.putCallback({
+        kind: "toggle-fast",
+        conversation,
+      }),
+      this.store.putCallback({
+        kind: "toggle-permissions",
+        conversation,
+      }),
+    ]);
+    return [
+      [
+        {
+          text: "Select Model",
+          callback_data: `${INTERACTIVE_NAMESPACE}:${showModelPicker.token}`,
+        },
+      ],
+      [
+        {
+          text: "Fast: toggle",
+          callback_data: `${INTERACTIVE_NAMESPACE}:${toggleFast.token}`,
+        },
+        {
+          text: "Permissions: toggle",
+          callback_data: `${INTERACTIVE_NAMESPACE}:${togglePermissions.token}`,
+        },
+      ],
+    ];
+  }
+
+  private async buildModelPicker(
+    conversation: ConversationTarget,
+    binding: StoredBinding,
+  ): Promise<PickerRender> {
+    const [models, state] = await Promise.all([
+      this.client.listModels({ sessionKey: binding.sessionKey }),
+      this.client.readThreadState({
+        sessionKey: binding.sessionKey,
+        threadId: binding.threadId,
+      }),
+    ]);
+    const buttons: PluginInteractiveButtons = [];
+    for (const model of models.slice(0, 8)) {
+      const callback = await this.store.putCallback({
+        kind: "set-model",
+        conversation,
+        model: model.id,
+      });
+      buttons.push([
+        {
+          text: `${model.id}${model.current || model.id === state.model ? " (current)" : ""}`,
+          callback_data: `${INTERACTIVE_NAMESPACE}:${callback.token}`,
+        },
+      ]);
+    }
     return {
-      text: await this.buildStatusText(conversation, binding, bindingActive),
+      text: formatModels(models, state),
+      buttons,
     };
   }
 
@@ -1677,6 +1759,18 @@ export class CodexPluginController {
       threadId: binding.threadId,
       serviceTier: nextTier,
     });
+    await this.store.upsertBinding({
+      ...binding,
+      preferences: {
+        ...(binding.preferences ?? {
+          preferredServiceTier: null,
+          updatedAt: Date.now(),
+        }),
+        preferredServiceTier: normalizePreferenceServiceTier(updated.serviceTier),
+        updatedAt: Date.now(),
+      },
+      updatedAt: Date.now(),
+    });
     return {
       text: `Fast mode set to ${formatFastModeValue(updated.serviceTier)}.`,
     };
@@ -1692,43 +1786,30 @@ export class CodexPluginController {
       return { text: formatModels(models) };
     }
     if (!args.trim()) {
-      const [models, state] = await Promise.all([
-        this.client.listModels({ sessionKey: binding.sessionKey }),
-        this.client.readThreadState({
-          sessionKey: binding.sessionKey,
-          threadId: binding.threadId,
-        }),
-      ]);
       if (!conversation) {
+        const [models, state] = await Promise.all([
+          this.client.listModels({ sessionKey: binding.sessionKey }),
+          this.client.readThreadState({
+            sessionKey: binding.sessionKey,
+            threadId: binding.threadId,
+          }),
+        ]);
         return { text: formatModels(models, state) };
       }
-      const buttons: PluginInteractiveButtons = [];
-      for (const model of models.slice(0, 8)) {
-        const callback = await this.store.putCallback({
-          kind: "set-model",
-          conversation,
-          model: model.id,
-        });
-        buttons.push([
-          {
-            text: `${model.id}${model.current || model.id === state.model ? " (current)" : ""}`,
-            callback_data: `${INTERACTIVE_NAMESPACE}:${callback.token}`,
-          },
-        ]);
-      }
-      if (isDiscordChannel(conversation.channel) && buttons.length > 0) {
+      const picker = await this.buildModelPicker(conversation, binding);
+      if (isDiscordChannel(conversation.channel) && (picker.buttons?.length ?? 0) > 0) {
         try {
           await this.sendReply(conversation, {
-            text: formatModels(models, state),
-            buttons,
+            text: picker.text,
+            buttons: picker.buttons,
           });
           return { text: "Sent Codex model choices to this Discord conversation." };
         } catch (error) {
           this.api.logger.warn(`codex discord model picker send failed: ${String(error)}`);
-          return { text: formatModels(models, state) };
+          return { text: picker.text };
         }
       }
-      return buildReplyWithButtons(formatModels(models, state), buttons);
+      return buildReplyWithButtons(picker.text, picker.buttons);
     }
     const state = await this.client.setThreadModel({
       sessionKey: binding.sessionKey,
@@ -3516,6 +3597,116 @@ export class CodexPluginController {
       await responders.reply(ackText);
       return;
     }
+    if (callback.kind === "toggle-fast") {
+      const binding = this.store.getBinding(callback.conversation);
+      await this.store.removeCallback(callback.token);
+      if (!binding) {
+        await responders.reply("No Codex binding for this conversation.");
+        return;
+      }
+      const threadState = await this.client.readThreadState({
+        sessionKey: binding.sessionKey,
+        threadId: binding.threadId,
+      });
+      const currentTier = normalizeServiceTier(threadState.serviceTier);
+      const nextTier = currentTier === "fast" || currentTier === "priority" ? null : "fast";
+      const updatedState = await this.client.setThreadServiceTier({
+        sessionKey: binding.sessionKey,
+        threadId: binding.threadId,
+        serviceTier: nextTier,
+      });
+      const updatedBinding: StoredBinding = {
+        ...binding,
+        preferences: {
+          ...(binding.preferences ?? {
+            preferredServiceTier: null,
+            updatedAt: Date.now(),
+          }),
+          preferredServiceTier: normalizePreferenceServiceTier(updatedState.serviceTier),
+          updatedAt: Date.now(),
+        },
+        updatedAt: Date.now(),
+      };
+      await this.store.upsertBinding(updatedBinding);
+      const statusReply = await this.handleStatusCommand(
+        {
+          ...callback.conversation,
+          threadId: responders.conversation.threadId,
+        },
+        updatedBinding,
+        true,
+      );
+      await responders.editPicker({
+        text: statusReply.text ?? "Updated Codex status.",
+        buttons: extractReplyButtons(statusReply),
+      });
+      return;
+    }
+    if (callback.kind === "toggle-permissions") {
+      const binding = this.store.getBinding(callback.conversation);
+      await this.store.removeCallback(callback.token);
+      if (!binding) {
+        await responders.reply("No Codex binding for this conversation.");
+        return;
+      }
+      const threadState = await this.client.readThreadState({
+        sessionKey: binding.sessionKey,
+        threadId: binding.threadId,
+      });
+      const currentApproval =
+        binding.preferences?.preferredApprovalPolicy?.trim() ||
+        threadState.approvalPolicy?.trim() ||
+        "on-request";
+      const currentSandbox =
+        binding.preferences?.preferredSandbox?.trim() ||
+        threadState.sandbox?.trim() ||
+        "workspace-write";
+      const nextIsFullAuto = !isFullAutoPermissions(currentApproval, currentSandbox);
+      const updatedBinding: StoredBinding = {
+        ...binding,
+        preferences: {
+          ...(binding.preferences ?? {
+            preferredServiceTier: null,
+            updatedAt: Date.now(),
+          }),
+          preferredApprovalPolicy: nextIsFullAuto ? "never" : "on-request",
+          preferredSandbox: nextIsFullAuto ? "danger-full-access" : "workspace-write",
+          updatedAt: Date.now(),
+        },
+        updatedAt: Date.now(),
+      };
+      await this.store.upsertBinding(updatedBinding);
+      const statusReply = await this.handleStatusCommand(
+        {
+          ...callback.conversation,
+          threadId: responders.conversation.threadId,
+        },
+        updatedBinding,
+        true,
+      );
+      await responders.editPicker({
+        text: statusReply.text ?? "Updated Codex status.",
+        buttons: extractReplyButtons(statusReply),
+      });
+      return;
+    }
+    if (callback.kind === "show-model-picker") {
+      const binding = this.store.getBinding(callback.conversation);
+      await this.store.removeCallback(callback.token);
+      if (!binding) {
+        await responders.reply("No Codex binding for this conversation.");
+        return;
+      }
+      const picker = await this.buildModelPicker(
+        {
+          ...callback.conversation,
+          threadId: responders.conversation.threadId,
+        },
+        binding,
+      );
+      await responders.editPicker(picker);
+      return;
+    }
     if (callback.kind === "set-model") {
       await responders.clear().catch(() => undefined);
       const binding = this.store.getBinding(callback.conversation);
@@ -3528,6 +3719,18 @@ export class CodexPluginController {
         sessionKey: binding.sessionKey,
         threadId: binding.threadId,
         model: callback.model,
+      });
+      await this.store.upsertBinding({
+        ...binding,
+        preferences: {
+          ...(binding.preferences ?? {
+            preferredServiceTier: null,
+            updatedAt: Date.now(),
+          }),
+          preferredModel: state.model || callback.model,
+          updatedAt: Date.now(),
+        },
+        updatedAt: Date.now(),
       });
       await responders.reply(`Codex model set to ${state.model || callback.model}.`);
       return;
@@ -3696,6 +3899,7 @@ export class CodexPluginController {
       threadTitle: params.threadTitle,
       pinnedBindingMessage: existing?.pinnedBindingMessage,
       contextUsage: existing?.contextUsage,
+      preferences: existing?.preferences,
       updatedAt: Date.now(),
     };
     await this.store.upsertBinding(record);
@@ -3826,7 +4030,7 @@ export class CodexPluginController {
       return ["No Codex binding for this conversation."];
     }
 
-    const [state, replay] = await Promise.all([
+    const [initialState, replay] = await Promise.all([
       this.client.readThreadState({
         sessionKey: binding.sessionKey,
         threadId: binding.threadId,
@@ -3836,6 +4040,34 @@ export class CodexPluginController {
         threadId: binding.threadId,
       }).catch(() => ({ lastUserMessage: undefined, lastAssistantMessage: undefined })),
     ]);
+    let state = initialState;
+    const preferredModel = binding.preferences?.preferredModel?.trim();
+    if (preferredModel && preferredModel !== state.model?.trim()) {
+      try {
+        state = await this.client.setThreadModel({
+          sessionKey: binding.sessionKey,
+          threadId: binding.threadId,
+          model: preferredModel,
+        });
+      } catch (error) {
+        this.api.logger.warn(`codex failed to restore preferred model: ${String(error)}`);
+      }
+    }
+    const preferredServiceTier = normalizePreferenceServiceTier(
+      binding.preferences?.preferredServiceTier,
+    );
+    const currentServiceTier = normalizePreferenceServiceTier(state.serviceTier);
+    if (preferredServiceTier !== currentServiceTier) {
+      try {
+        state = await this.client.setThreadServiceTier({
+          sessionKey: binding.sessionKey,
+          threadId: binding.threadId,
+          serviceTier: preferredServiceTier,
+        });
+      } catch (error) {
+        this.api.logger.warn(`codex failed to restore preferred service tier: ${String(error)}`);
+      }
+    }
 
     const nextBinding =
       (state.threadName && state.threadName !== binding.threadTitle) ||
@@ -3929,9 +4161,25 @@ export class CodexPluginController {
       `codex status snapshot bindingActive=${bindingActive ? "yes" : "no"} activeRun=${activeRun?.mode ?? "none"} boundThread=${binding?.threadId ?? "<none>"} threadModel=${threadState?.model?.trim() || "<none>"} threadCwd=${threadState?.cwd?.trim() || "<none>"}`,
     );
 
+    const preferredApprovalPolicy = binding?.preferences?.preferredApprovalPolicy?.trim();
+    const preferredSandbox = binding?.preferences?.preferredSandbox?.trim();
+    const statusThreadState = threadState
+      ? {
+          ...threadState,
+          approvalPolicy: preferredApprovalPolicy || threadState.approvalPolicy,
+          sandbox: preferredSandbox || threadState.sandbox,
+        }
+      : binding
+        ? {
+            threadId: binding.threadId,
+            approvalPolicy: preferredApprovalPolicy,
+            sandbox: preferredSandbox,
+          }
+        : undefined;
+
     return formatCodexStatusText({
       pluginVersion: PLUGIN_VERSION,
-      threadState,
+      threadState: statusThreadState,
       account,
       rateLimits: limits,
       bindingActive,

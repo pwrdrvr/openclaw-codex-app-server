@@ -73,6 +73,24 @@ type PutCallbackInput =
       ttlMs?: number;
     }
   | {
+      kind: "toggle-fast";
+      conversation: ConversationTarget;
+      token?: string;
+      ttlMs?: number;
+    }
+  | {
+      kind: "toggle-permissions";
+      conversation: ConversationTarget;
+      token?: string;
+      ttlMs?: number;
+    }
+  | {
+      kind: "show-model-picker";
+      conversation: ConversationTarget;
+      token?: string;
+      ttlMs?: number;
+    }
+  | {
       kind: "set-model";
       conversation: ConversationTarget;
       model: string;
@@ -343,6 +361,30 @@ export class PluginStateStore {
                   createdAt: now,
                   expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
                   }
+                : callback.kind === "toggle-fast"
+                  ? {
+                      kind: "toggle-fast",
+                      conversation: callback.conversation,
+                      token: callback.token ?? this.createCallbackToken(),
+                      createdAt: now,
+                      expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
+                    }
+                  : callback.kind === "toggle-permissions"
+                    ? {
+                        kind: "toggle-permissions",
+                        conversation: callback.conversation,
+                        token: callback.token ?? this.createCallbackToken(),
+                        createdAt: now,
+                        expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
+                      }
+                    : callback.kind === "show-model-picker"
+                      ? {
+                          kind: "show-model-picker",
+                          conversation: callback.conversation,
+                          token: callback.token ?? this.createCallbackToken(),
+                          createdAt: now,
+                          expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
+                        }
                 : callback.kind === "reply-text"
                   ? {
                       kind: "reply-text",

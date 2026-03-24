@@ -193,6 +193,14 @@ export type ContextUsageSnapshot = {
   remainingPercent?: number;
 };
 
+export type ConversationPreferences = {
+  preferredModel?: string;
+  preferredServiceTier: string | null;
+  preferredApprovalPolicy?: string;
+  preferredSandbox?: string;
+  updatedAt: number;
+};
+
 export type CompactProgress =
   | {
       phase: "started" | "completed";
@@ -264,6 +272,7 @@ export type StoredBinding = {
         channelId: string;
       };
   contextUsage?: ContextUsageSnapshot;
+  preferences?: ConversationPreferences;
   updatedAt: number;
 };
 
@@ -370,6 +379,27 @@ export type CallbackAction =
       prompt: string;
       workspaceDir?: string;
       collaborationMode?: CollaborationMode;
+      createdAt: number;
+      expiresAt: number;
+    }
+  | {
+      token: string;
+      kind: "toggle-fast";
+      conversation: ConversationRef;
+      createdAt: number;
+      expiresAt: number;
+    }
+  | {
+      token: string;
+      kind: "toggle-permissions";
+      conversation: ConversationRef;
+      createdAt: number;
+      expiresAt: number;
+    }
+  | {
+      token: string;
+      kind: "show-model-picker";
+      conversation: ConversationRef;
       createdAt: number;
       expiresAt: number;
     }

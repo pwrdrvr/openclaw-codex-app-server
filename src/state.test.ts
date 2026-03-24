@@ -243,4 +243,43 @@ describe("state store", () => {
       }),
     ).toBeNull();
   });
+
+  it("persists conversation preferences in bindings across reload", async () => {
+    const dir = await makeStoreDir();
+    const store = await makeStore(dir);
+    const updatedAt = Date.now();
+    await store.upsertBinding({
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:chan-1",
+      },
+      sessionKey: buildPluginSessionKey("thread-1"),
+      threadId: "thread-1",
+      workspaceDir: "/tmp/work",
+      preferences: {
+        preferredModel: "openai/gpt-5.3",
+        preferredServiceTier: "fast",
+        preferredApprovalPolicy: "never",
+        preferredSandbox: "danger-full-access",
+        updatedAt,
+      },
+      updatedAt,
+    });
+
+    const reloaded = await makeStore(dir);
+    const binding = reloaded.getBinding({
+      channel: "discord",
+      accountId: "default",
+      conversationId: "channel:chan-1",
+    });
+
+    expect(binding?.preferences).toEqual({
+      preferredModel: "openai/gpt-5.3",
+      preferredServiceTier: "fast",
+      preferredApprovalPolicy: "never",
+      preferredSandbox: "danger-full-access",
+      updatedAt,
+    });
+  });
 });
