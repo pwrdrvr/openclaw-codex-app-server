@@ -372,6 +372,45 @@ describe("Discord controller flows", () => {
     );
   });
 
+  it("forces workspace disambiguation when /cas_new matches duplicate project basenames", async () => {
+    const { controller, clientMock } = await createControllerHarness();
+    clientMock.listThreads.mockResolvedValue([
+      {
+        threadId: "thread-a",
+        title: "Customer A",
+        projectKey: "/work/customer-a/app",
+        createdAt: Date.now() - 60_000,
+        updatedAt: Date.now() - 30_000,
+      },
+      {
+        threadId: "thread-b",
+        title: "Customer B",
+        projectKey: "/work/customer-b/app",
+        createdAt: Date.now() - 50_000,
+        updatedAt: Date.now() - 20_000,
+      },
+    ]);
+
+    const reply = await controller.handleCommand(
+      "cas_new",
+      buildTelegramCommandContext({
+        args: "app",
+        commandBody: "/cas_new app",
+      }),
+    );
+
+    expect(clientMock.startThread).not.toHaveBeenCalled();
+    const buttons = (reply.channelData as any)?.telegram?.buttons;
+    expect(buttons?.[0]?.[0]?.text).toContain("/work/customer-b/app");
+    expect(buttons?.[1]?.[0]?.text).toContain("/work/customer-a/app");
+
+    const firstToken = (buttons?.[0]?.[0]?.callback_data as string).split(":").pop() ?? "";
+    const secondToken = (buttons?.[1]?.[0]?.callback_data as string).split(":").pop() ?? "";
+    expect((controller as any).store.getCallback(firstToken)?.kind).toBe("start-new-thread");
+    expect((controller as any).store.getCallback(firstToken)?.workspaceDir).toBe("/work/customer-b/app");
+    expect((controller as any).store.getCallback(secondToken)?.workspaceDir).toBe("/work/customer-a/app");
+  });
+
   it("rejects resume when the thread worktree path no longer exists on disk", async () => {
     const { controller, clientMock } = await createControllerHarness();
     const missingWorktreePath = "/tmp/worktrees/bold-bartik/repo-name";

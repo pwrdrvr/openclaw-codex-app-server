@@ -575,6 +575,73 @@ function truncateDiscordLabel(text: string, maxChars = 80): string {
   return `${trimmed.slice(0, Math.max(1, maxChars - 1)).trimEnd()}…`;
 }
 
+type StartNewThreadWorkspaceOption = {
+  workspaceDir: string;
+  projectName: string;
+  threadCount: number;
+  latestUpdatedAt?: number;
+  duplicateProjectName: boolean;
+};
+
+function listStartNewThreadWorkspaceOptions(
+  threads: Array<{ projectKey?: string; createdAt?: number; updatedAt?: number }>,
+  query = "",
+): StartNewThreadWorkspaceOption[] {
+  const filteredQuery = query.trim().toLowerCase();
+  const grouped = new Map<string, Omit<StartNewThreadWorkspaceOption, "duplicateProjectName">>();
+
+  for (const thread of threads) {
+    const workspaceDir = thread.projectKey?.trim();
+    const projectName = getProjectName(workspaceDir);
+    if (!workspaceDir || !projectName) {
+      continue;
+    }
+    const queryMatches =
+      !filteredQuery ||
+      projectName.toLowerCase().includes(filteredQuery) ||
+      workspaceDir.toLowerCase().includes(filteredQuery);
+    if (!queryMatches) {
+      continue;
+    }
+    const existing = grouped.get(workspaceDir);
+    const updatedAt = thread.updatedAt ?? thread.createdAt;
+    if (!existing) {
+      grouped.set(workspaceDir, {
+        workspaceDir,
+        projectName,
+        threadCount: 1,
+        latestUpdatedAt: updatedAt,
+      });
+      continue;
+    }
+    existing.threadCount += 1;
+    existing.latestUpdatedAt = Math.max(existing.latestUpdatedAt ?? 0, updatedAt ?? 0) || undefined;
+  }
+
+  const duplicateCounts = new Map<string, number>();
+  for (const option of grouped.values()) {
+    duplicateCounts.set(option.projectName, (duplicateCounts.get(option.projectName) ?? 0) + 1);
+  }
+
+  return [...grouped.values()]
+    .map((option) => ({
+      ...option,
+      duplicateProjectName: (duplicateCounts.get(option.projectName) ?? 0) > 1,
+    }))
+    .sort((left, right) => {
+      const updatedDelta = (right.latestUpdatedAt ?? 0) - (left.latestUpdatedAt ?? 0);
+      if (updatedDelta !== 0) {
+        return updatedDelta;
+      }
+      return left.workspaceDir.localeCompare(right.workspaceDir);
+    });
+}
+
+function formatStartNewThreadWorkspaceLabel(option: StartNewThreadWorkspaceOption): string {
+  const label = option.duplicateProjectName ? option.workspaceDir : option.projectName;
+  return `${label} (${option.threadCount})`;
+}
+
 function summarizeTextForLog(text: string, maxChars = 120): string {
   const normalized = text.replace(/\s+/g, " ").trim();
   if (!normalized) {
@@ -2694,17 +2761,23 @@ export class CodexPluginController {
       },
       filterProjectsOnly: true,
     });
-    const exact = listProjects(threads).filter(
-      (project) => project.name.trim().toLowerCase() === query.toLowerCase(),
+    const workspaces = listStartNewThreadWorkspaceOptions(threads);
+    const exactWorkspace = workspaces.filter(
+      (workspace) => workspace.workspaceDir.toLowerCase() === query.toLowerCase(),
     );
-    const candidates = exact.length > 0 ? exact : listProjects(threads, query);
+    if (exactWorkspace.length === 1) {
+      return exactWorkspace[0]?.workspaceDir ?? null;
+    }
+    const exactProjectName = workspaces.filter(
+      (workspace) => workspace.projectName.toLowerCase() === query.toLowerCase(),
+    );
+    const candidates = exactProjectName.length > 0
+      ? exactProjectName
+      : listStartNewThreadWorkspaceOptions(threads, query);
     if (candidates.length !== 1) {
       return null;
     }
-    const projectThread = threads.find(
-      (thread) => getProjectName(thread.projectKey)?.toLowerCase() === candidates[0]?.name.toLowerCase(),
-    );
-    return projectThread?.projectKey?.trim() ?? null;
+    return candidates[0]?.workspaceDir ?? null;
   }
 
   private async listPickerThreads(
@@ -2914,126 +2987,190 @@ export class CodexPluginController {
       parsed,
       filterProjectsOnly: true,
     });
-    const projects = paginateItems(listProjects(threads, parsed.query), page);
     const buttons: PluginInteractiveButtons = [];
-    for (const project of projects.items) {
-      const projectThread = threads.find(
-        (thread) => getProjectName(thread.projectKey)?.toLowerCase() === project.name.toLowerCase(),
-      );
-      const callback =
-        action === "start-new-thread"
-          ? await this.store.putCallback({
-              kind: "start-new-thread",
-              conversation,
-              workspaceDir: projectThread?.projectKey?.trim() || project.name,
-              syncTopic: parsed.syncTopic,
-            })
-          : await this.store.putCallback({
-              kind: "picker-view",
-              conversation,
-              view: {
-                mode: "threads",
-                includeAll: true,
-                syncTopic: parsed.syncTopic,
-                workspaceDir: parsed.cwd,
-                projectName: project.name,
-                page: 0,
-              },
-            });
-      buttons.push([
-        {
-          text: `${project.name} (${project.threadCount})`,
-          callback_data: `${INTERACTIVE_NAMESPACE}:${callback.token}`,
-        },
-      ]);
-    }
-
-    if (projects.totalPages > 1) {
-      const navRow: PluginInteractiveButtons[number] = [];
-      if (projects.page > 0) {
-        const prev = await this.store.putCallback({
-          kind: "picker-view",
+    if (action === "start-new-thread") {
+      const projectOptions = paginateItems(listStartNewThreadWorkspaceOptions(threads, parsed.query), page);
+      for (const option of projectOptions.items) {
+        const callback = await this.store.putCallback({
+          kind: "start-new-thread",
           conversation,
-          view: {
-            mode: "projects",
-            action,
-            includeAll: true,
-            syncTopic: parsed.syncTopic,
-            workspaceDir: parsed.cwd,
-            query: parsed.query || undefined,
-            page: projects.page - 1,
-          },
+          workspaceDir: option.workspaceDir,
+          syncTopic: parsed.syncTopic,
         });
-        navRow.push({
-          text: "◀ Prev",
-          callback_data: `${INTERACTIVE_NAMESPACE}:${prev.token}`,
-        });
-      }
-      if (projects.page + 1 < projects.totalPages) {
-        const next = await this.store.putCallback({
-          kind: "picker-view",
-          conversation,
-          view: {
-            mode: "projects",
-            action,
-            includeAll: true,
-            syncTopic: parsed.syncTopic,
-            workspaceDir: parsed.cwd,
-            query: parsed.query || undefined,
-            page: projects.page + 1,
-          },
-        });
-        navRow.push({
-          text: "Next ▶",
-          callback_data: `${INTERACTIVE_NAMESPACE}:${next.token}`,
-        });
-      }
-      if (navRow.length > 0) {
-        buttons.push(navRow);
-      }
-    }
-
-    const cancel = await this.store.putCallback({
-      kind: "cancel-picker",
-      conversation,
-    });
-    buttons.push(action === "start-new-thread"
-      ? [
+        buttons.push([
           {
-            text: "Cancel",
-            callback_data: `${INTERACTIVE_NAMESPACE}:${cancel.token}`,
-          },
-        ]
-      : [
-          {
-            text: "Recent Sessions",
-            callback_data: `${INTERACTIVE_NAMESPACE}:${(await this.store.putCallback({
-              kind: "picker-view",
-              conversation,
-              view: {
-                mode: "threads",
-                includeAll: true,
-                syncTopic: parsed.syncTopic,
-                workspaceDir: parsed.cwd,
-                page: 0,
-              },
-            })).token}`,
-          },
-          {
-            text: "Cancel",
-            callback_data: `${INTERACTIVE_NAMESPACE}:${cancel.token}`,
+            text: formatStartNewThreadWorkspaceLabel(option),
+            callback_data: `${INTERACTIVE_NAMESPACE}:${callback.token}`,
           },
         ]);
+      }
+      if (projectOptions.totalPages > 1) {
+        const navRow: PluginInteractiveButtons[number] = [];
+        if (projectOptions.page > 0) {
+          const prev = await this.store.putCallback({
+            kind: "picker-view",
+            conversation,
+            view: {
+              mode: "projects",
+              action,
+              includeAll: true,
+              syncTopic: parsed.syncTopic,
+              workspaceDir: parsed.cwd,
+              query: parsed.query || undefined,
+              page: projectOptions.page - 1,
+            },
+          });
+          navRow.push({
+            text: "◀ Prev",
+            callback_data: `${INTERACTIVE_NAMESPACE}:${prev.token}`,
+          });
+        }
+        if (projectOptions.page + 1 < projectOptions.totalPages) {
+          const next = await this.store.putCallback({
+            kind: "picker-view",
+            conversation,
+            view: {
+              mode: "projects",
+              action,
+              includeAll: true,
+              syncTopic: parsed.syncTopic,
+              workspaceDir: parsed.cwd,
+              query: parsed.query || undefined,
+              page: projectOptions.page + 1,
+            },
+          });
+          navRow.push({
+            text: "Next ▶",
+            callback_data: `${INTERACTIVE_NAMESPACE}:${next.token}`,
+          });
+        }
+        if (navRow.length > 0) {
+          buttons.push(navRow);
+        }
+      }
 
-    return {
-      text: formatProjectPickerIntro({
-        page: projects.page,
-        totalPages: projects.totalPages,
-        totalItems: projects.totalItems,
-        workspaceDir,
-      }),
-      buttons,
-    };
+      const cancel = await this.store.putCallback({
+        kind: "cancel-picker",
+        conversation,
+      });
+      buttons.push([
+        {
+          text: "Cancel",
+          callback_data: `${INTERACTIVE_NAMESPACE}:${cancel.token}`,
+        },
+      ]);
+
+      return {
+        text: formatProjectPickerIntro({
+          page: projectOptions.page,
+          totalPages: projectOptions.totalPages,
+          totalItems: projectOptions.totalItems,
+          workspaceDir,
+        }),
+        buttons,
+      };
+    } else {
+      const projectOptions = paginateItems(listProjects(threads, parsed.query), page);
+      for (const option of projectOptions.items) {
+        const callback = await this.store.putCallback({
+          kind: "picker-view",
+          conversation,
+          view: {
+            mode: "threads",
+            includeAll: true,
+            syncTopic: parsed.syncTopic,
+            workspaceDir: parsed.cwd,
+            projectName: option.name,
+            page: 0,
+          },
+        });
+        buttons.push([
+          {
+            text: `${option.name} (${option.threadCount})`,
+            callback_data: `${INTERACTIVE_NAMESPACE}:${callback.token}`,
+          },
+        ]);
+      }
+      if (projectOptions.totalPages > 1) {
+        const navRow: PluginInteractiveButtons[number] = [];
+        if (projectOptions.page > 0) {
+          const prev = await this.store.putCallback({
+            kind: "picker-view",
+            conversation,
+            view: {
+              mode: "projects",
+              action,
+              includeAll: true,
+              syncTopic: parsed.syncTopic,
+              workspaceDir: parsed.cwd,
+              query: parsed.query || undefined,
+              page: projectOptions.page - 1,
+            },
+          });
+          navRow.push({
+            text: "◀ Prev",
+            callback_data: `${INTERACTIVE_NAMESPACE}:${prev.token}`,
+          });
+        }
+        if (projectOptions.page + 1 < projectOptions.totalPages) {
+          const next = await this.store.putCallback({
+            kind: "picker-view",
+            conversation,
+            view: {
+              mode: "projects",
+              action,
+              includeAll: true,
+              syncTopic: parsed.syncTopic,
+              workspaceDir: parsed.cwd,
+              query: parsed.query || undefined,
+              page: projectOptions.page + 1,
+            },
+          });
+          navRow.push({
+            text: "Next ▶",
+            callback_data: `${INTERACTIVE_NAMESPACE}:${next.token}`,
+          });
+        }
+        if (navRow.length > 0) {
+          buttons.push(navRow);
+        }
+      }
+
+      const cancel = await this.store.putCallback({
+        kind: "cancel-picker",
+        conversation,
+      });
+      buttons.push([
+        {
+          text: "Recent Sessions",
+          callback_data: `${INTERACTIVE_NAMESPACE}:${(await this.store.putCallback({
+            kind: "picker-view",
+            conversation,
+            view: {
+              mode: "threads",
+              includeAll: true,
+              syncTopic: parsed.syncTopic,
+              workspaceDir: parsed.cwd,
+              page: 0,
+            },
+          })).token}`,
+        },
+        {
+          text: "Cancel",
+          callback_data: `${INTERACTIVE_NAMESPACE}:${cancel.token}`,
+        },
+      ]);
+
+      return {
+        text: formatProjectPickerIntro({
+          page: projectOptions.page,
+          totalPages: projectOptions.totalPages,
+          totalItems: projectOptions.totalItems,
+          workspaceDir,
+        }),
+        buttons,
+      };
+    }
   }
 
   private async sendDiscordPicker(
