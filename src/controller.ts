@@ -1115,15 +1115,6 @@ export class CodexPluginController {
     }
 
     switch (commandName) {
-      case "cas_new":
-        return await this.handleNewCommand(
-          conversation,
-          binding,
-          args,
-          ctx.channel,
-          ctx,
-          pendingBind,
-        );
       case "cas_resume":
         return await this.handleJoinCommand(
           conversation,
@@ -1184,19 +1175,16 @@ export class CodexPluginController {
     }
   }
 
-  private async handleNewCommand(
+  private async handleStartNewThreadSelection(
     conversation: ConversationTarget | null,
     binding: StoredBinding | null,
-    args: string,
+    parsed: ReturnType<typeof parseThreadSelectionArgs>,
     channel: string,
-    ctx: PluginCommandContext,
-    _pendingBind?: StoredPendingBind | null,
+    requestConversationBinding?: PickerResponders["requestConversationBinding"],
   ): Promise<ReplyPayload> {
-    const bindingApi = asScopedBindingApi(ctx);
     if (!conversation) {
       return { text: "This command needs a Telegram or Discord conversation." };
     }
-    const parsed = parseThreadSelectionArgs(args);
     if (parsed.listProjects || !parsed.query) {
       const picker = await this.renderProjectPicker(conversation, binding, parsed, 0, "start-new-thread");
       if (isDiscordChannel(channel) && picker.buttons) {
@@ -1233,7 +1221,7 @@ export class CodexPluginController {
       binding,
       workspaceDir,
       parsed.syncTopic,
-      bindingApi.requestConversationBinding,
+      requestConversationBinding,
     );
     if (result.status === "pending") {
       return result.reply;
@@ -1283,6 +1271,15 @@ export class CodexPluginController {
       return { text: "This command needs a Telegram or Discord conversation." };
     }
     const parsed = parseThreadSelectionArgs(args);
+    if (parsed.startNew) {
+      return await this.handleStartNewThreadSelection(
+        conversation,
+        binding,
+        parsed,
+        channel,
+        bindingApi.requestConversationBinding,
+      );
+    }
     if (
       hydratedPendingBind?.notifyBound &&
       !parsed.listProjects &&
@@ -1337,6 +1334,7 @@ export class CodexPluginController {
       const passthroughArgs = [
         parsed.includeAll ? "--all" : "",
         parsed.listProjects ? "--projects" : "",
+        parsed.startNew ? "--new" : "",
         parsed.syncTopic ? "--sync" : "",
         parsed.cwd ? `--cwd ${parsed.cwd}` : "",
       ]
@@ -2900,26 +2898,50 @@ export class CodexPluginController {
       conversation: params.conversation,
       view: {
         mode: "projects",
+        action: "resume-thread",
         includeAll: true,
         syncTopic: params.parsed.syncTopic,
         workspaceDir: params.parsed.cwd,
         page: 0,
       },
     });
+    const newThread = !params.parsed.startNew
+      ? await this.store.putCallback({
+          kind: "picker-view",
+          conversation: params.conversation,
+          view: {
+            mode: "projects",
+            action: "start-new-thread",
+            includeAll: true,
+            syncTopic: params.parsed.syncTopic,
+            workspaceDir: params.parsed.cwd,
+            query: params.parsed.query || undefined,
+            page: 0,
+          },
+        })
+      : null;
     const cancel = await this.store.putCallback({
       kind: "cancel-picker",
       conversation: params.conversation,
     });
-    params.buttons.push([
-      {
-        text: params.projectName ? "Projects" : "Browse Projects",
-        callback_data: `${INTERACTIVE_NAMESPACE}:${projects.token}`,
-      },
-      {
-        text: "Cancel",
-        callback_data: `${INTERACTIVE_NAMESPACE}:${cancel.token}`,
-      },
-    ]);
+    params.buttons.push(
+      [
+        {
+          text: params.projectName ? "Projects" : "Browse Projects",
+          callback_data: `${INTERACTIVE_NAMESPACE}:${projects.token}`,
+        },
+        ...(newThread
+          ? [{
+              text: "New",
+              callback_data: `${INTERACTIVE_NAMESPACE}:${newThread.token}`,
+            }]
+          : []),
+        {
+          text: "Cancel",
+          callback_data: `${INTERACTIVE_NAMESPACE}:${cancel.token}`,
+        },
+      ],
+    );
     return params.buttons;
   }
 
@@ -3069,6 +3091,7 @@ export class CodexPluginController {
           totalPages: projectOptions.totalPages,
           totalItems: projectOptions.totalItems,
           workspaceDir,
+          action,
         }),
         buttons,
       };
@@ -3170,6 +3193,7 @@ export class CodexPluginController {
           totalPages: projectOptions.totalPages,
           totalItems: projectOptions.totalItems,
           workspaceDir,
+          action,
         }),
         buttons,
       };
@@ -3502,6 +3526,8 @@ export class CodexPluginController {
     const parsed = {
       includeAll: callback.view.includeAll,
       listProjects: callback.view.mode === "projects",
+      startNew:
+        callback.view.mode === "projects" && callback.view.action === "start-new-thread",
       syncTopic: callback.view.syncTopic ?? false,
       cwd: callback.view.workspaceDir,
       query: callback.view.query ?? "",

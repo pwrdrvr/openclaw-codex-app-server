@@ -327,17 +327,70 @@ describe("Discord controller flows", () => {
     );
   });
 
-  it("shows a project picker for /cas_new without args", async () => {
+  it("offers a New button on /cas_resume and flips into the new-thread project picker", async () => {
     const { controller } = await createControllerHarness();
 
     const reply = await controller.handleCommand(
-      "cas_new",
+      "cas_resume",
       buildTelegramCommandContext({
-        commandBody: "/cas_new",
+        commandBody: "/cas_resume",
       }),
     );
 
-    expect(reply.text).toContain("Choose a project");
+    const buttons = (reply.channelData as any)?.telegram?.buttons;
+    const newButton = buttons?.flat().find((button: { text: string }) => button.text === "New");
+    expect(newButton?.callback_data).toBeTruthy();
+    const token = (newButton?.callback_data as string).split(":").pop() ?? "";
+    const callback = (controller as any).store.getCallback(token);
+    expect(callback).toEqual(expect.objectContaining({
+      kind: "picker-view",
+      view: expect.objectContaining({
+        mode: "projects",
+        action: "start-new-thread",
+      }),
+    }));
+
+    const editMessage = vi.fn(async () => {});
+    await controller.handleTelegramInteractive({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123:topic:456",
+      parentConversationId: "123",
+      threadId: 456,
+      callback: {
+        payload: token,
+      },
+      respond: {
+        clearButtons: vi.fn(async () => {}),
+        reply: vi.fn(async () => {}),
+        editMessage,
+      },
+    } as any);
+
+    expect(editMessage).toHaveBeenCalledWith(expect.objectContaining({
+      text: expect.stringContaining("Choose a project for the new Codex thread"),
+      buttons: expect.arrayContaining([
+        expect.arrayContaining([
+          expect.objectContaining({
+            text: expect.stringContaining("openclaw"),
+          }),
+        ]),
+      ]),
+    }));
+  });
+
+  it("shows a project picker for /cas_resume --new without args", async () => {
+    const { controller } = await createControllerHarness();
+
+    const reply = await controller.handleCommand(
+      "cas_resume",
+      buildTelegramCommandContext({
+        args: "--new",
+        commandBody: "/cas_resume --new",
+      }),
+    );
+
+    expect(reply.text).toContain("Choose a project for the new Codex thread");
     const buttons = (reply.channelData as any)?.telegram?.buttons;
     expect(buttons?.[0]?.[0]?.text).toContain("openclaw");
     const callbackData = buttons?.[0]?.[0]?.callback_data as string;
@@ -346,15 +399,15 @@ describe("Discord controller flows", () => {
     expect(callback?.kind).toBe("start-new-thread");
   });
 
-  it("starts a new thread directly for /cas_new <project>", async () => {
+  it("starts a new thread directly for /cas_resume --new <project>", async () => {
     const { controller, clientMock } = await createControllerHarness();
     const requestConversationBinding = vi.fn(async () => ({ status: "bound" as const }));
 
     const reply = await controller.handleCommand(
-      "cas_new",
+      "cas_resume",
       buildTelegramCommandContext({
-        args: "openclaw",
-        commandBody: "/cas_new openclaw",
+        args: "--new openclaw",
+        commandBody: "/cas_resume --new openclaw",
         requestConversationBinding,
       }),
     );
@@ -372,7 +425,7 @@ describe("Discord controller flows", () => {
     );
   });
 
-  it("forces workspace disambiguation when /cas_new matches duplicate project basenames", async () => {
+  it("forces workspace disambiguation when /cas_resume --new matches duplicate project basenames", async () => {
     const { controller, clientMock } = await createControllerHarness();
     clientMock.listThreads.mockResolvedValue([
       {
@@ -392,10 +445,10 @@ describe("Discord controller flows", () => {
     ]);
 
     const reply = await controller.handleCommand(
-      "cas_new",
+      "cas_resume",
       buildTelegramCommandContext({
-        args: "app",
-        commandBody: "/cas_new app",
+        args: "--new app",
+        commandBody: "/cas_resume --new app",
       }),
     );
 
@@ -411,15 +464,15 @@ describe("Discord controller flows", () => {
     expect((controller as any).store.getCallback(secondToken)?.workspaceDir).toBe("/work/customer-a/app");
   });
 
-  it("expands home-relative paths for /cas_new positional workspace args", async () => {
+  it("expands home-relative paths for /cas_resume --new positional workspace args", async () => {
     const { controller, clientMock } = await createControllerHarness();
     const requestConversationBinding = vi.fn(async () => ({ status: "bound" as const }));
 
     const reply = await controller.handleCommand(
-      "cas_new",
+      "cas_resume",
       buildTelegramCommandContext({
-        args: "~/github/openclaw",
-        commandBody: "/cas_new ~/github/openclaw",
+        args: "--new ~/github/openclaw",
+        commandBody: "/cas_resume --new ~/github/openclaw",
         requestConversationBinding,
       }),
     );

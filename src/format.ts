@@ -181,13 +181,21 @@ export function formatProjectPickerIntro(params: {
   totalPages: number;
   totalItems: number;
   workspaceDir?: string;
+  action?: "resume-thread" | "start-new-thread";
 }): string {
-  const scopeLabel = params.workspaceDir
-    ? `Showing projects for ${getProjectName(params.workspaceDir) ?? "this workspace"}.`
-    : "Choose a project to filter recent Codex sessions.";
+  const scopeLabel =
+    params.action === "start-new-thread"
+      ? params.workspaceDir
+        ? `Choose a project in ${getProjectName(params.workspaceDir) ?? "this workspace"} for the new Codex thread.`
+        : "Choose a project for the new Codex thread."
+      : params.workspaceDir
+        ? `Showing projects for ${getProjectName(params.workspaceDir) ?? "this workspace"}.`
+        : "Choose a project to filter recent Codex sessions.";
   return [
     `${scopeLabel} Page ${params.page + 1}/${params.totalPages}.`,
-    "Tap a project to show only that project's sessions. Use `--cwd /path/to/project` to target one exact workspace.",
+    params.action === "start-new-thread"
+      ? "Tap a project to start a fresh Codex thread there. Use `--cwd /path/to/project` to target one exact workspace."
+      : "Tap a project to show only that project's sessions. Use `--cwd /path/to/project` to target one exact workspace.",
     params.totalItems === 0 ? "No Codex projects found." : "",
   ]
     .filter(Boolean)

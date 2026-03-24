@@ -11,7 +11,7 @@ If `codex` already works on the machine running OpenClaw, this plugin should wor
 1. Install the plugin into OpenClaw.
 2. Start in the Telegram or Discord conversation where you want the bridge bound.
 3. Run `/cas_resume`.
-4. Pick a project and thread, or search directly.
+4. Pick a recent thread, click `New` to start a fresh one, or search directly.
 5. Once bound, plain text in that conversation routes to the selected Codex thread.
 
 Buttons are presented for project and thread selection, model switching, and skill shortcuts. If your filter is ambiguous, the plugin sends a picker instead of guessing.
@@ -46,7 +46,7 @@ Pre-release packages are published on matching npm dist-tags instead of `latest`
 ## Typical Workflow
 
 1. Run `/cas_resume` in the conversation you want to bind.
-2. Use the picker buttons, or pass a filter like `/cas_resume release-fix` or `/cas_resume --projects`.
+2. Use the picker buttons, click `New`, or pass a filter like `/cas_resume release-fix`, `/cas_resume --projects`, or `/cas_resume --new openclaw`.
 3. Send normal chat messages once the thread is bound.
 4. Use control commands such as `/cas_status`, `/cas_plan`, `/cas_review`, `/cas_model`, and `/cas_stop` as needed.
 5. If you leave plan mode through the normal `Implement this plan` button, you do not need `/cas_plan off`; use `/cas_plan off` only when you want to exit planning manually instead.
@@ -55,8 +55,10 @@ Pre-release packages are published on matching npm dist-tags instead of `latest`
 
 | Command | What it does | Notes / examples |
 | --- | --- | --- |
-| `/cas_resume` | Bind this conversation to a Codex thread. | With no args, opens a picker for recent sessions in the current workspace. |
+| `/cas_resume` | Bind this conversation to a Codex thread. | With no args, opens a picker for recent sessions in the current workspace and includes a `New` button. |
 | `/cas_resume --projects` | Browse projects first. | Opens a project picker, then a thread picker. |
+| `/cas_resume --new` | Start a fresh Codex thread in a project. | Opens a project picker instead of a thread picker. |
+| `/cas_resume --new openclaw` | Start a fresh Codex thread directly in a matching project. | If more than one workspace matches, you get buttons to choose. |
 | `/cas_resume --all` | Search recent sessions across projects. | Useful when the thread is not in the current workspace. |
 | `/cas_resume --cwd ~/github/openclaw` | Restrict browsing/search to one workspace. | `--cwd` accepts an absolute path or `~/...`. |
 | `/cas_resume --sync` | Resume and try to sync the chat/topic name to the Codex thread. | You can combine this with other flags. |

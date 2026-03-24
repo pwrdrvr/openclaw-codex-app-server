@@ -25,6 +25,7 @@ describe("thread selection args", () => {
     expect(parseThreadSelectionArgs("--all")).toEqual({
       includeAll: true,
       listProjects: false,
+      startNew: false,
       syncTopic: false,
       cwd: undefined,
       query: "",
@@ -35,6 +36,7 @@ describe("thread selection args", () => {
     expect(parseThreadSelectionArgs("—all")).toEqual({
       includeAll: true,
       listProjects: false,
+      startNew: false,
       syncTopic: false,
       cwd: undefined,
       query: "",
@@ -45,6 +47,7 @@ describe("thread selection args", () => {
     expect(parseThreadSelectionArgs("--all thread-home")).toEqual({
       includeAll: true,
       listProjects: false,
+      startNew: false,
       syncTopic: false,
       cwd: undefined,
       query: "thread-home",
@@ -55,6 +58,7 @@ describe("thread selection args", () => {
     expect(parseThreadSelectionArgs("--projects --cwd ~/github/openclaw")).toEqual({
       includeAll: false,
       listProjects: true,
+      startNew: false,
       syncTopic: false,
       cwd: path.join(os.homedir(), "github/openclaw"),
       query: "",
@@ -65,9 +69,21 @@ describe("thread selection args", () => {
     expect(parseThreadSelectionArgs("—all —sync approvals")).toEqual({
       includeAll: true,
       listProjects: false,
+      startNew: false,
       syncTopic: true,
       cwd: undefined,
       query: "approvals",
+    });
+  });
+
+  it("parses --new separately from the query text", () => {
+    expect(parseThreadSelectionArgs("--new openclaw")).toEqual({
+      includeAll: false,
+      listProjects: false,
+      startNew: true,
+      syncTopic: false,
+      cwd: undefined,
+      query: "openclaw",
     });
   });
 });
