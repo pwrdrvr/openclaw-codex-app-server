@@ -355,6 +355,64 @@ describe("Discord controller flows", () => {
     );
   });
 
+  it("renders structured help text for representative commands via handleCommand", async () => {
+    const { controller } = await createControllerHarness();
+
+    const fastHelp = await controller.handleCommand("cas_fast", buildDiscordCommandContext({
+      args: "help",
+      commandBody: "/cas_fast help",
+    }));
+    const resumeHelp = await controller.handleCommand("cas_resume", buildDiscordCommandContext({
+      args: "--help",
+      commandBody: "/cas_resume --help",
+    }));
+    const renameHelp = await controller.handleCommand("cas_rename", buildDiscordCommandContext({
+      args: "help",
+      commandBody: "/cas_rename help",
+    }));
+
+    expect(fastHelp.text).toContain("/cas_fast");
+    expect(fastHelp.text).toContain("Usage:");
+    expect(fastHelp.text).toContain("Examples:");
+    expect(resumeHelp.text).toContain("/cas_resume");
+    expect(resumeHelp.text).toContain("Flags/Args:");
+    expect(renameHelp.text).toContain("/cas_rename");
+    expect(renameHelp.text).toContain("Usage:");
+  });
+
+  it("keeps usage error paths for cas_fast, cas_steer, and cas_plan", async () => {
+    const { controller } = await createControllerHarness();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:chan-1",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+
+    const fastUsage = await controller.handleCommand("cas_fast", buildDiscordCommandContext({
+      args: "nope",
+      commandBody: "/cas_fast nope",
+      getCurrentConversationBinding: vi.fn(async () => ({ bindingId: "b1" })),
+    }));
+    const steerUsage = await controller.handleCommand("cas_steer", buildDiscordCommandContext({
+      args: "",
+      commandBody: "/cas_steer",
+    }));
+    const planUsage = await controller.handleCommand("cas_plan", buildDiscordCommandContext({
+      args: "",
+      commandBody: "/cas_plan",
+    }));
+
+    expect(fastUsage).toEqual({ text: "Usage: /cas_fast [on|off|status]" });
+    expect(steerUsage).toEqual({ text: "Usage: /cas_steer <message>" });
+    expect(planUsage).toEqual({ text: "Usage: /cas_plan <goal> | /cas_plan off" });
+  });
+
   it("offers a New button on /cas_resume and flips into the new-thread project picker", async () => {
     const { controller } = await createControllerHarness();
 

@@ -1,24 +1,7 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { CodexPluginController } from "./src/controller.js";
+import { COMMANDS } from "./src/commands.js";
 import { INTERACTIVE_NAMESPACE } from "./src/types.js";
-
-const COMMANDS = [
-  ["cas_resume", "Resume or create a Codex thread. Supports --new, --model, --fast, and --yolo."],
-  ["cas_detach", "Detach this conversation from the current Codex thread."],
-  ["cas_status", "Show Codex status and controls. Supports --model, --fast, and --yolo."],
-  ["cas_stop", "Stop the active Codex turn."],
-  ["cas_steer", "Send a steer message to the active Codex turn."],
-  ["cas_plan", "Ask Codex to produce a plan, or use 'off' to exit plan mode."],
-  ["cas_review", "Run Codex review on the current changes."],
-  ["cas_compact", "Compact the current Codex thread."],
-  ["cas_skills", "List Codex skills."],
-  ["cas_experimental", "List Codex experimental features."],
-  ["cas_mcp", "List Codex MCP servers."],
-  ["cas_init", "Forward /init to Codex."],
-  ["cas_diff", "Forward /diff to Codex."],
-  ["cas_rename", "Rename the Codex thread and sync the channel name when possible."],
-] as const;
-
 const plugin = {
   id: "openclaw-codex-app-server",
   name: "OpenClaw Plugin For Codex App Server",

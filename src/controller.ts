@@ -54,6 +54,7 @@ import {
   normalizeReasoningEffort,
   REASONING_EFFORT_OPTIONS,
 } from "./model-capabilities.js";
+import { formatCommandUsage, renderCommandHelpText } from "./help.js";
 import type {
   AccountSummary,
   CollaborationMode,
@@ -468,10 +469,32 @@ function extractReplyButtons(reply: ReplyPayload): PluginInteractiveButtons | un
   }
   return rows.length > 0 ? rows : undefined;
 }
-
+function parseFastAction(
+  argsText: string,
+): "toggle" | "on" | "off" | "status" | { error: string } {
+  const normalized = argsText.trim().toLowerCase();
+  if (!normalized) {
+    return "toggle";
+  }
+  if (normalized === "on" || normalized === "off" || normalized === "status") {
+    return normalized;
+  }
+  return { error: formatCommandUsage("cas_fast") };
+}
 function normalizeServiceTier(value: string | undefined | null): string | undefined {
   const normalized = value?.trim().toLowerCase();
   return normalized ? normalized : undefined;
+}
+
+function formatFastModeValue(value: string | undefined): string {
+  const normalized = normalizeServiceTier(value);
+  if (!normalized || normalized === "default" || normalized === "auto") {
+    return "off";
+  }
+  if (normalized === "fast" || normalized === "priority") {
+    return "on";
+  }
+  return normalized;
 }
 
 function normalizePreferenceServiceTier(value: string | undefined | null): string | null {
@@ -1365,6 +1388,10 @@ export class CodexPluginController {
         : null;
     const binding = existingBinding ?? hydratedBinding?.binding ?? null;
     const args = ctx.args?.trim() ?? "";
+    const trimmedArgs = args.trim();
+    if (trimmedArgs === "help" || trimmedArgs === "--help") {
+      return this.renderCommandHelp(commandName);
+    }
     if (isDiscordChannel(ctx.channel)) {
       this.api.logger.debug(
         `codex discord command /${commandName} from=${ctx.from ?? "<none>"} to=${ctx.to ?? "<none>"} conversation=${conversation?.conversationId ?? "<none>"}`,
@@ -1416,6 +1443,16 @@ export class CodexPluginController {
         return await this.handleExperimentalCommand(binding);
       case "cas_mcp":
         return await this.handleMcpCommand(binding, args);
+      case "cas_fast":
+        return await this.handleFastCommand(binding, args);
+      case "cas_model":
+        return await this.handleModelCommand(conversation, binding, args);
+      case "cas_permissions":
+        return await this.handlePermissionsCommand(
+          conversation,
+          binding,
+          Boolean(currentBinding || binding),
+        );
       case "cas_init":
         return await this.handlePromptAlias(conversation, binding, args, "/init");
       case "cas_diff":
@@ -1425,6 +1462,10 @@ export class CodexPluginController {
       default:
         return { text: "Unknown Codex command." };
     }
+  }
+
+  private renderCommandHelp(commandName: string): ReplyPayload {
+    return { text: renderCommandHelpText(commandName) };
   }
 
   private async handleStartNewThreadSelection(
@@ -2306,7 +2347,7 @@ export class CodexPluginController {
     }
     const prompt = args.trim();
     if (!prompt) {
-      return { text: "Usage: /cas_steer <message>" };
+      return { text: formatCommandUsage("cas_steer") };
     }
     const active = this.activeRuns.get(buildConversationKey(conversation));
     if (!active) {
@@ -2339,7 +2380,7 @@ export class CodexPluginController {
     }
     const prompt = parsed.prompt.trim();
     if (!prompt) {
-      return { text: "Usage: /cas_plan <goal> or /cas_plan off" };
+      return { text: formatCommandUsage("cas_plan") };
     }
     const workspaceDir = resolveWorkspaceDir({
       bindingWorkspaceDir: binding?.workspaceDir,
@@ -2538,6 +2579,134 @@ export class CodexPluginController {
     };
   }
 
+  private async handleFastCommand(binding: StoredBinding | null, args: string): Promise<ReplyPayload> {
+    if (!binding) {
+      return { text: "Bind this conversation to a Codex thread before toggling fast mode." };
+    }
+    const action = parseFastAction(args);
+    if (typeof action === "object") {
+      return { text: action.error };
+    }
+    const profile = this.getPermissionsMode(binding);
+    const { state: threadState, effectiveState } = await this.readEffectiveThreadState(binding);
+    const currentModel =
+      effectiveState?.model?.trim() || binding.preferences?.preferredModel?.trim() || undefined;
+    if (!modelSupportsFast(currentModel)) {
+      return {
+        text: `Fast mode is unavailable for ${currentModel ?? "the current model"}. Use a GPT-5.4+ model to enable it.`,
+      };
+    }
+    const currentTier = normalizeServiceTier(threadState?.serviceTier);
+    if (action === "status") {
+      return { text: `Fast mode is ${formatFastModeValue(currentTier)}.` };
+    }
+    const nextTier =
+      action === "toggle" ? (currentTier === "fast" ? null : "fast")
+      : action === "on" ? "fast"
+      : null;
+    const updatedState = await this.client.setThreadServiceTier({
+      profile,
+      sessionKey: binding.sessionKey,
+      threadId: binding.threadId,
+      serviceTier: nextTier,
+    });
+    const updatedBinding: StoredBinding = {
+      ...binding,
+      preferences: {
+        ...(binding.preferences ?? {
+          preferredServiceTier: null,
+          updatedAt: Date.now(),
+        }),
+        preferredServiceTier: preferredServiceTierFromRequest(nextTier),
+        updatedAt: Date.now(),
+      },
+      updatedAt: Date.now(),
+    };
+    await this.store.upsertBinding(updatedBinding);
+    return {
+      text: `Fast mode set to ${formatFastModeValue(updatedState.serviceTier)}.`,
+    };
+  }
+
+  private async handleModelCommand(
+    conversation: ConversationTarget | null,
+    binding: StoredBinding | null,
+    args: string,
+  ): Promise<ReplyPayload> {
+    const trimmedArgs = args.trim();
+    const profile = this.getPermissionsMode(binding);
+    if (!binding) {
+      const models = await this.client.listModels({ profile });
+      return { text: formatModels(models) };
+    }
+    if (!trimmedArgs) {
+      if (!conversation) {
+        const [models, { effectiveState }] = await Promise.all([
+          this.client.listModels({ profile, sessionKey: binding.sessionKey }),
+          this.readEffectiveThreadState(binding),
+        ]);
+        return { text: formatModels(models, effectiveState) };
+      }
+      const picker = await this.buildModelPicker(conversation, binding);
+      if (isDiscordChannel(conversation.channel) && picker.buttons) {
+        try {
+          await this.sendReply(conversation, {
+            text: picker.text,
+            buttons: picker.buttons,
+          });
+          return { text: "Sent Codex model choices to this Discord conversation." };
+        } catch (error) {
+          this.api.logger.warn(`codex discord model picker send failed: ${String(error)}`);
+          return { text: picker.text };
+        }
+      }
+      return buildReplyWithButtons(picker.text, picker.buttons);
+    }
+    const state = await this.client.setThreadModel({
+      profile,
+      sessionKey: binding.sessionKey,
+      threadId: binding.threadId,
+      model: trimmedArgs,
+    });
+    const nextPreferredServiceTier = modelSupportsFast(trimmedArgs)
+      ? binding.preferences?.preferredServiceTier ?? null
+      : "default";
+    const nextState =
+      !modelSupportsFast(trimmedArgs) && normalizeServiceTier(state.serviceTier) === "fast"
+        ? await this.client
+            .setThreadServiceTier({
+              profile,
+              sessionKey: binding.sessionKey,
+              threadId: binding.threadId,
+              serviceTier: null,
+            })
+            .catch(() => ({ ...state, serviceTier: "default" }))
+        : state;
+    const updatedBinding: StoredBinding = {
+      ...binding,
+      preferences: {
+        ...(binding.preferences ?? {
+          preferredServiceTier: null,
+          updatedAt: Date.now(),
+        }),
+        preferredModel: trimmedArgs,
+        preferredServiceTier: nextPreferredServiceTier,
+        updatedAt: Date.now(),
+      },
+      updatedAt: Date.now(),
+    };
+    await this.store.upsertBinding(updatedBinding);
+    return { text: `Codex model set to ${nextState.model || trimmedArgs}.` };
+  }
+
+  private async handlePermissionsCommand(
+    conversation: ConversationTarget | null,
+    binding: StoredBinding | null,
+    bindingActive: boolean,
+  ): Promise<ReplyPayload> {
+    return await this.handleStatusCommand(conversation, binding, "", bindingActive);
+  }
+
   private async handlePromptAlias(
     conversation: ConversationTarget | null,
     binding: StoredBinding | null,
@@ -2645,7 +2814,7 @@ export class CodexPluginController {
       ]);
     }
     if (buttons.length === 0) {
-      return { text: "Usage: /cas_rename [--sync] <new name>", buttons: [] };
+      return { text: formatCommandUsage("cas_rename"), buttons: [] };
     }
     return {
       text: syncTopic

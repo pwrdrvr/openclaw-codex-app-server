@@ -32,3 +32,9 @@ Tests use Vitest and should stay next to the code they cover, named `*.test.ts`.
 
 ## Commit & Pull Request Guidelines
 Follow the repository’s existing commit style: short imperative subjects, often with a `Plugin:` prefix, for example `Plugin: restore Codex interactive workflows`. Keep commits scoped to one behavior change. PRs should include a concise summary, linked issue or context, and the exact validation performed (`pnpm test`, `pnpm typecheck`, manual OpenClaw plugin exercise). Include screenshots or message transcripts when changing interactive Telegram or Discord flows.
+
+## Command Help Text
+Every `/cas_*` command has structured help metadata in `src/help.ts`.
+When adding, removing, or changing a command's flags, arguments, or behavior,
+update the corresponding entry in `COMMAND_HELP` and the README command
+reference table to keep them in sync.
