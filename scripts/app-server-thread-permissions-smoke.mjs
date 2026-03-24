@@ -440,6 +440,26 @@ class StdioJsonRpcHarness {
     return null;
   }
 
+  async waitForThreadClosed(threadId, timeoutMs) {
+    const baselineNotificationCount = this.notifications.length;
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const relevantNotifications = this.notifications.slice(baselineNotificationCount);
+      for (const notification of relevantNotifications) {
+        const ids = extractIds(notification.params);
+        if (ids.threadId !== threadId) {
+          continue;
+        }
+        if (notification.method.trim().toLowerCase() === "thread/closed") {
+          this.log(`thread closed thread=${threadId}`);
+          return true;
+        }
+      }
+      await sleep(250);
+    }
+    return false;
+  }
+
   async close() {
     if (!this.child || this.closed) {
       return;
@@ -524,7 +544,7 @@ async function main() {
       prompt: options.prompt,
       timeoutMs: options.timeoutMs,
     });
-    await sleep(3_000);
+    const initialThreadClosed = await harness.waitForThreadClosed(defaultThreadId, 15_000);
     const downgradedState = await harness.resumeThread({
       threadId: defaultThreadId,
       approvalPolicy: "on-request",
@@ -560,6 +580,7 @@ async function main() {
 
     const summary = {
       initialFullAccessOutcome,
+      initialThreadClosed,
       downgradedState,
       defaultOutcome,
       defaultTerminal,
@@ -573,6 +594,7 @@ async function main() {
 
     const succeeded =
       initialFullAccessOutcome.kind === "turn-completed" &&
+      initialThreadClosed &&
       downgradedState.approvalPolicy === "on-request" &&
       downgradedState.sandbox === "workspace-write" &&
       defaultOutcome.kind === "approval-requested" &&
