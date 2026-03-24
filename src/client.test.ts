@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { __testing } from "./client.js";
+import { describe, expect, it, vi } from "vitest";
+import { __testing, CodexAppServerClient } from "./client.js";
 
 describe("buildTurnStartPayloads", () => {
   it("uses the canonical v2 turn/start payload for normal turns", () => {
@@ -144,6 +144,58 @@ describe("buildThreadResumePayloads", () => {
         serviceTier: "default",
       },
     ]);
+  });
+});
+
+describe("CodexAppServerClient.setThreadModel", () => {
+  it("does not send cwd while resuming a thread to change its model", async () => {
+    const request = vi.fn(async () => ({
+      threadId: "thread-123",
+      model: "gpt-5.4",
+      cwd: "/repo/original",
+    }));
+    const client = new CodexAppServerClient(
+      {
+        enabled: true,
+        transport: "stdio",
+        command: "codex",
+        args: [],
+        requestTimeoutMs: 1_000,
+      },
+      {
+        debug: vi.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      },
+    );
+    (client as any).ensureConnected = vi.fn(async () => ({
+      client: {
+        connect: vi.fn(),
+        close: vi.fn(),
+        notify: vi.fn(),
+        request,
+        setNotificationHandler: vi.fn(),
+        setRequestHandler: vi.fn(),
+      },
+      initializeResult: {},
+    }));
+
+    const state = await client.setThreadModel({
+      sessionKey: "session-123",
+      threadId: "thread-123",
+      model: "gpt-5.4",
+    });
+
+    expect(request).toHaveBeenCalledWith(
+      "thread/resume",
+      {
+        threadId: "thread-123",
+        model: "gpt-5.4",
+      },
+      1_000,
+    );
+    expect(state.cwd).toBe("/repo/original");
   });
 });
 

@@ -1757,7 +1757,6 @@ export class CodexPluginController {
       sessionKey: binding.sessionKey,
       threadId: binding.threadId,
       model: args.trim(),
-      workspaceDir: binding.workspaceDir,
     });
     return { text: `Codex model set to ${state.model || args.trim()}.` };
   }
@@ -3460,7 +3459,6 @@ export class CodexPluginController {
         sessionKey: binding.sessionKey,
         threadId: binding.threadId,
         model: callback.model,
-        workspaceDir: binding.workspaceDir,
       });
       await responders.reply(`Codex model set to ${state.model || callback.model}.`);
       return;

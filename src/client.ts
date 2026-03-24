@@ -2698,7 +2698,6 @@ export class CodexAppServerClient {
     sessionKey?: string;
     threadId: string;
     model: string;
-    workspaceDir?: string;
   }): Promise<ThreadState> {
     return await this.withClient(
       { sessionKey: params.sessionKey },
@@ -2709,7 +2708,6 @@ export class CodexAppServerClient {
           payloads: buildThreadResumePayloads({
             threadId: params.threadId,
             model: params.model,
-            cwd: params.workspaceDir,
           }),
           timeoutMs: settings.requestTimeoutMs,
         });
