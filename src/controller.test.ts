@@ -1488,6 +1488,70 @@ describe("Discord controller flows", () => {
     expect(reply.text).toContain("Project folder: /repo/openclaw");
   });
 
+  it("shows cas_status as active for Telegram #General when commands omit messageThreadId", async () => {
+    const { controller } = await createControllerHarness();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123:topic:1",
+        parentConversationId: "123",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      threadTitle: "Discord Thread",
+      updatedAt: Date.now(),
+    });
+
+    const reply = await controller.handleCommand(
+      "cas_status",
+      buildTelegramCommandContext({
+        commandBody: "/cas_status",
+        getCurrentConversationBinding: vi.fn(async () => null),
+      }),
+    );
+
+    expect(reply.text).toContain("Binding: active");
+    expect(reply.text).toContain("Project folder: /repo/openclaw");
+  });
+
+  it("detaches Telegram #General bindings when commands omit messageThreadId", async () => {
+    const { controller } = await createControllerHarness();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123:topic:1",
+        parentConversationId: "123",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      threadTitle: "Discord Thread",
+      updatedAt: Date.now(),
+    });
+
+    const reply = await controller.handleCommand(
+      "cas_detach",
+      buildTelegramCommandContext({
+        commandBody: "/cas_detach",
+        detachConversationBinding: vi.fn(async () => ({ removed: false })),
+        getCurrentConversationBinding: vi.fn(async () => null),
+      }),
+    );
+
+    expect(reply).toEqual({ text: "Detached this conversation from Codex." });
+    expect(
+      (controller as any).store.getBinding({
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123:topic:1",
+        parentConversationId: "123",
+      }),
+    ).toBeNull();
+  });
+
   it("falls back to chat-level Telegram binding when messageThreadId is missing on cas_resume", async () => {
     const { controller } = await createControllerHarness();
 

@@ -772,7 +772,7 @@ export class CodexPluginController {
     ].join(" ");
   }
 
-  private resolveInboundConversationTarget(conversation: ConversationTarget): ConversationTarget {
+  private resolveLocalConversationTarget(conversation: ConversationTarget): ConversationTarget {
     const generalFallback = toTelegramGeneralTopicFallback(conversation);
     if (!generalFallback) {
       return conversation;
@@ -812,7 +812,7 @@ export class CodexPluginController {
       if (!inboundConversation) {
         return { handled: false };
       }
-      const conversation = this.resolveInboundConversationTarget(inboundConversation);
+      const conversation = this.resolveLocalConversationTarget(inboundConversation);
       const activeKey = buildConversationKey(conversation);
       const active = this.activeRuns.get(activeKey);
       if (active) {
@@ -1123,16 +1123,25 @@ export class CodexPluginController {
     await this.start();
     this.lastRuntimeConfig = ctx.config;
     const bindingApi = asScopedBindingApi(ctx);
-    const conversation = toConversationTargetFromCommand(ctx);
+    const rawConversation = toConversationTargetFromCommand(ctx);
+    const conversation = rawConversation ? this.resolveLocalConversationTarget(rawConversation) : null;
     const currentBinding =
-      conversation && bindingApi.getCurrentConversationBinding
+      rawConversation && bindingApi.getCurrentConversationBinding
         ? await bindingApi.getCurrentConversationBinding()
         : null;
+    const trustedLocalCommandState = Boolean(
+      conversation &&
+        rawConversation &&
+        conversation !== rawConversation &&
+        isTelegramChannel(conversation.channel),
+    );
     const pendingBind = conversation ? this.store.getPendingBind(conversation) : null;
     const existingBinding =
-      conversation && currentBinding ? this.store.getBinding(conversation) : null;
+      conversation && (currentBinding || trustedLocalCommandState)
+        ? this.store.getBinding(conversation)
+        : null;
     const hydratedBinding =
-      conversation && currentBinding && !existingBinding
+      conversation && (currentBinding || trustedLocalCommandState) && !existingBinding
         ? await this.hydrateApprovedBinding(conversation)
         : null;
     const binding = existingBinding ?? hydratedBinding?.binding ?? null;
@@ -1158,10 +1167,11 @@ export class CodexPluginController {
         if (!conversation) {
           return { text: "This command needs a Telegram or Discord conversation." };
         }
+        const hadLocalBinding = Boolean(binding || pendingBind);
         const detachResult = await bindingApi.detachConversationBinding?.();
         await this.unbindConversation(conversation);
         return {
-          text: detachResult?.removed
+          text: detachResult?.removed || hadLocalBinding
             ? "Detached this conversation from Codex."
             : "This conversation is not currently bound to Codex.",
         };
@@ -1169,7 +1179,7 @@ export class CodexPluginController {
         return await this.handleStatusCommand(
           conversation,
           binding,
-          Boolean(currentBinding || binding),
+          Boolean(currentBinding || trustedLocalCommandState || binding),
         );
       case "cas_stop":
         return await this.handleStopCommand(conversation);
