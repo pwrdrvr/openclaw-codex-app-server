@@ -3786,19 +3786,27 @@ export class CodexPluginController {
         threadState.sandbox?.trim() ||
         "workspace-write";
       const nextIsFullAuto = !isFullAutoPermissions(currentApproval, currentSandbox);
+      const requestedApproval = nextIsFullAuto ? "never" : "on-request";
+      const requestedSandbox = nextIsFullAuto ? "danger-full-access" : "workspace-write";
       let updatedState = await this.client.setThreadPermissions({
         sessionKey: binding.sessionKey,
         threadId: binding.threadId,
-        approvalPolicy: nextIsFullAuto ? "never" : "on-request",
+        approvalPolicy: requestedApproval,
         sandbox: "workspace-write",
       });
+      this.api.logger.debug?.(
+        `codex status control toggle-permissions step=workspace-write conversation=${this.formatConversationForLog(callback.conversation)} requestedApproval=${requestedApproval} raw=${formatThreadStateForLog(updatedState)}`,
+      );
       if (nextIsFullAuto) {
         updatedState = await this.client.setThreadPermissions({
           sessionKey: binding.sessionKey,
           threadId: binding.threadId,
-          approvalPolicy: updatedState.approvalPolicy?.trim() || "never",
-          sandbox: "danger-full-access",
+          approvalPolicy: requestedApproval,
+          sandbox: requestedSandbox,
         }).catch(() => updatedState);
+        this.api.logger.debug?.(
+          `codex status control toggle-permissions step=full-access conversation=${this.formatConversationForLog(callback.conversation)} requestedApproval=${requestedApproval} requestedSandbox=${requestedSandbox} raw=${formatThreadStateForLog(updatedState)}`,
+        );
       }
       const preferredApprovalPolicy =
         nextIsFullAuto
@@ -3823,7 +3831,7 @@ export class CodexPluginController {
       };
       await this.store.upsertBinding(updatedBinding);
       this.api.logger.debug?.(
-        `codex status control toggle-permissions conversation=${this.formatConversationForLog(callback.conversation)} requestedApproval=${nextIsFullAuto ? "never" : "on-request"} requestedSandbox=${nextIsFullAuto ? "danger-full-access" : "workspace-write"} raw=${formatThreadStateForLog(updatedState)} effective=${formatThreadStateForLog(applyBindingPreferencesToThreadState(updatedState, updatedBinding))} ${formatBindingPreferencesForLog(updatedBinding)}`,
+        `codex status control toggle-permissions conversation=${this.formatConversationForLog(callback.conversation)} requestedApproval=${requestedApproval} requestedSandbox=${requestedSandbox} raw=${formatThreadStateForLog(updatedState)} effective=${formatThreadStateForLog(applyBindingPreferencesToThreadState(updatedState, updatedBinding))} ${formatBindingPreferencesForLog(updatedBinding)}`,
       );
       const statusCard = await this.buildStatusCard(
         {

@@ -3571,6 +3571,102 @@ describe("Discord controller flows", () => {
     );
   });
 
+  it("turns permissions back to full access when the first resume response is stale", async () => {
+    const { controller, clientMock } = await createControllerHarness();
+    clientMock.setThreadPermissions
+      .mockImplementationOnce(async () => ({
+        threadId: "thread-1",
+        threadName: "Discord Thread",
+        model: "openai/gpt-5.4",
+        cwd: "/repo/openclaw",
+        serviceTier: "default",
+        approvalPolicy: "on-request",
+        sandbox: "workspace-write",
+      }))
+      .mockImplementationOnce(async (params: { approvalPolicy: string; sandbox: string }) => ({
+        threadId: "thread-1",
+        threadName: "Discord Thread",
+        model: "openai/gpt-5.4",
+        cwd: "/repo/openclaw",
+        serviceTier: "default",
+        approvalPolicy: params.approvalPolicy,
+        sandbox: params.sandbox,
+      }));
+    clientMock.readThreadState.mockImplementation(async () => ({
+      threadId: "thread-1",
+      threadName: "Discord Thread",
+      model: "openai/gpt-5.4",
+      cwd: "/repo/openclaw",
+      serviceTier: "default",
+      approvalPolicy: "on-request",
+      sandbox: "workspace-write",
+    }));
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      preferences: {
+        preferredServiceTier: null,
+        preferredApprovalPolicy: "on-request",
+        preferredSandbox: "workspace-write",
+        updatedAt: Date.now(),
+      },
+      updatedAt: Date.now(),
+    });
+    const callback = await (controller as any).store.putCallback({
+      kind: "toggle-permissions",
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+    });
+    const editMessage = vi.fn(async (_payload: any) => {});
+
+    await controller.handleTelegramInteractive({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+      callback: { payload: callback.token },
+      respond: {
+        clearButtons: vi.fn(async () => {}),
+        reply: vi.fn(async () => {}),
+        editMessage,
+      },
+    } as any);
+
+    expect(clientMock.setThreadPermissions).toHaveBeenNthCalledWith(1, {
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      approvalPolicy: "never",
+      sandbox: "workspace-write",
+    });
+    expect(clientMock.setThreadPermissions).toHaveBeenNthCalledWith(2, {
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+    });
+    const binding = (controller as any).store.getBinding({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+    });
+    expect(binding?.preferences?.preferredApprovalPolicy).toBe("never");
+    expect(binding?.preferences?.preferredSandbox).toBe("danger-full-access");
+    expect(editMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("Permissions: Full Access"),
+        buttons: expect.any(Array),
+      }),
+    );
+  });
+
   it("shows model-picker buttons from the status card callback", async () => {
     const { controller } = await createControllerHarness();
     await (controller as any).store.upsertBinding({
