@@ -512,6 +512,10 @@ function formatBindingPreferencesForLog(binding: StoredBinding | null): string {
   ].join(" ");
 }
 
+function buildPermissionsUnavailableNote(): string {
+  return "Permissions note: Full Access was refused by the current Codex Desktop session, so this thread remains in Default mode.";
+}
+
 const PLAN_PROGRESS_DELAY_MS = 12_000;
 const REVIEW_PROGRESS_DELAY_MS = 12_000;
 const COMPACT_PROGRESS_DELAY_MS = 12_000;
@@ -3830,8 +3834,13 @@ export class CodexPluginController {
         updatedAt: Date.now(),
       };
       await this.store.upsertBinding(updatedBinding);
+      const fullAccessApplied =
+        requestedApproval === "never" &&
+        requestedSandbox === "danger-full-access" &&
+        preferredApprovalPolicy === "never" &&
+        preferredSandbox === "danger-full-access";
       this.api.logger.debug?.(
-        `codex status control toggle-permissions conversation=${this.formatConversationForLog(callback.conversation)} requestedApproval=${requestedApproval} requestedSandbox=${requestedSandbox} raw=${formatThreadStateForLog(updatedState)} effective=${formatThreadStateForLog(applyBindingPreferencesToThreadState(updatedState, updatedBinding))} ${formatBindingPreferencesForLog(updatedBinding)}`,
+        `codex status control toggle-permissions conversation=${this.formatConversationForLog(callback.conversation)} requestedApproval=${requestedApproval} requestedSandbox=${requestedSandbox} appliedFullAccess=${fullAccessApplied ? "yes" : "no"} raw=${formatThreadStateForLog(updatedState)} effective=${formatThreadStateForLog(applyBindingPreferencesToThreadState(updatedState, updatedBinding))} ${formatBindingPreferencesForLog(updatedBinding)}`,
       );
       const statusCard = await this.buildStatusCard(
         {
@@ -3842,7 +3851,10 @@ export class CodexPluginController {
         true,
       );
       await responders.editPicker({
-        text: statusCard.text,
+        text:
+          nextIsFullAuto && !fullAccessApplied
+            ? `${statusCard.text}\n\n${buildPermissionsUnavailableNote()}`
+            : statusCard.text,
         buttons: statusCard.buttons,
       });
       return;

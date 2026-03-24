@@ -3667,6 +3667,87 @@ describe("Discord controller flows", () => {
     );
   });
 
+  it("keeps default permissions and explains when Codex Desktop refuses full access", async () => {
+    const { controller, clientMock } = await createControllerHarness();
+    clientMock.setThreadPermissions.mockImplementation(async () => ({
+      threadId: "thread-1",
+      threadName: "Discord Thread",
+      model: "openai/gpt-5.4",
+      cwd: "/repo/openclaw",
+      serviceTier: "default",
+      approvalPolicy: "on-request",
+      sandbox: "workspace-write",
+    }));
+    clientMock.readThreadState.mockImplementation(async () => ({
+      threadId: "thread-1",
+      threadName: "Discord Thread",
+      model: "openai/gpt-5.4",
+      cwd: "/repo/openclaw",
+      serviceTier: "default",
+      approvalPolicy: "on-request",
+      sandbox: "workspace-write",
+    }));
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      preferences: {
+        preferredServiceTier: null,
+        preferredApprovalPolicy: "on-request",
+        preferredSandbox: "workspace-write",
+        updatedAt: Date.now(),
+      },
+      updatedAt: Date.now(),
+    });
+    const callback = await (controller as any).store.putCallback({
+      kind: "toggle-permissions",
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+    });
+    const editMessage = vi.fn(async (_payload: any) => {});
+
+    await controller.handleTelegramInteractive({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+      callback: { payload: callback.token },
+      respond: {
+        clearButtons: vi.fn(async () => {}),
+        reply: vi.fn(async () => {}),
+        editMessage,
+      },
+    } as any);
+
+    const binding = (controller as any).store.getBinding({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+    });
+    expect(binding?.preferences?.preferredApprovalPolicy).toBe("on-request");
+    expect(binding?.preferences?.preferredSandbox).toBe("workspace-write");
+    expect(editMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("Permissions: Default"),
+        buttons: expect.any(Array),
+      }),
+    );
+    expect(editMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining(
+          "Permissions note: Full Access was refused by the current Codex Desktop session",
+        ),
+      }),
+    );
+  });
+
   it("shows model-picker buttons from the status card callback", async () => {
     const { controller } = await createControllerHarness();
     await (controller as any).store.upsertBinding({
