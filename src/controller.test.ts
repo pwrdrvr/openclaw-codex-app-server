@@ -1425,9 +1425,11 @@ describe("Discord controller flows", () => {
 
     expect(buttons).toHaveLength(3);
     expect(buttons[0][0].text).toBe("Select Model");
+    expect(buttons[0][1].text).toBe("Reasoning: Default");
     expect(buttons[1][0].text).toBe("Fast: toggle");
     expect(buttons[1][1].text).toBe("Permissions: toggle");
-    expect(buttons[2][0].text).toBe("Stop");
+    expect(buttons[2][0].text).toBe("Compact");
+    expect(buttons[2][1].text).toBe("Stop");
     const kinds = buttons.flatMap((row: Array<{ callback_data: string }>) => {
       return row.map((button) => {
         const token = button.callback_data.split(":").pop() ?? "";
@@ -1435,8 +1437,54 @@ describe("Discord controller flows", () => {
       });
     });
     expect(kinds).toEqual(
-      expect.arrayContaining(["show-model-picker", "toggle-fast", "toggle-permissions"]),
+      expect.arrayContaining([
+        "show-model-picker",
+        "show-reasoning-picker",
+        "toggle-fast",
+        "toggle-permissions",
+        "compact-thread",
+        "stop-run",
+      ]),
     );
+  });
+
+  it("hides the fast button on status controls when the current model does not support it", async () => {
+    const { controller } = await createControllerHarness();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      preferences: {
+        preferredModel: "openai/gpt-5.2-codex",
+        preferredServiceTier: "fast",
+        updatedAt: Date.now(),
+      },
+      updatedAt: Date.now(),
+    });
+
+    const reply = await controller.handleCommand(
+      "cas_status",
+      buildTelegramCommandContext({
+        commandBody: "/cas_status",
+        getCurrentConversationBinding: vi.fn(async () => ({ bindingId: "b1" })),
+      }),
+    );
+    const buttons = (reply as any).channelData?.telegram?.buttons;
+
+    expect(buttons[1]).toHaveLength(1);
+    expect(buttons[1][0].text).toBe("Permissions: toggle");
+    const kinds = buttons.flatMap((row: Array<{ callback_data: string }>) => {
+      return row.map((button) => {
+        const token = button.callback_data.split(":").pop() ?? "";
+        return (controller as any).store.getCallback(token)?.kind;
+      });
+    });
+    expect(kinds).not.toContain("toggle-fast");
   });
 
   it("renders saved conversation preferences in cas_status even if thread reads lag behind", async () => {
@@ -1452,6 +1500,7 @@ describe("Discord controller flows", () => {
       workspaceDir: "/repo/openclaw",
       preferences: {
         preferredModel: "openai/gpt-5.3-codex",
+        preferredReasoningEffort: "high",
         preferredServiceTier: "fast",
         preferredApprovalPolicy: "never",
         preferredSandbox: "workspace-write",
@@ -1468,8 +1517,8 @@ describe("Discord controller flows", () => {
       }),
     );
 
-    expect(reply.text).toContain("Model: openai/gpt-5.3-codex");
-    expect(reply.text).toContain("Fast mode: on");
+    expect(reply.text).toContain("Model: openai/gpt-5.3-codex · reasoning high");
+    expect(reply.text).toContain("Fast mode: off");
     expect(reply.text).toContain("Permissions: Custom (workspace-write, never)");
   });
 
@@ -3166,7 +3215,8 @@ describe("Discord controller flows", () => {
         threadId: "thread-1",
         workspaceDir: "/repo/openclaw",
         preferences: {
-          preferredModel: "gpt-5.3-codex",
+          preferredModel: "gpt-5.4",
+          preferredReasoningEffort: "high",
           preferredServiceTier: "fast",
           preferredApprovalPolicy: "never",
           preferredSandbox: "workspace-write",
@@ -3183,7 +3233,8 @@ describe("Discord controller flows", () => {
       expect.objectContaining({
         sessionKey: "session-1",
         existingThreadId: "thread-1",
-        model: "gpt-5.3-codex",
+        model: "gpt-5.4",
+        reasoningEffort: "high",
         serviceTier: "fast",
         approvalPolicy: "never",
         sandbox: "workspace-write",
@@ -3771,6 +3822,46 @@ describe("Discord controller flows", () => {
     );
   });
 
+  it("shows reasoning-picker buttons from the status card callback", async () => {
+    const { controller } = await createControllerHarness();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+    const callback = await (controller as any).store.putCallback({
+      kind: "show-reasoning-picker",
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+    });
+    const editMessage = vi.fn(async (_payload: any) => {});
+
+    await controller.handleTelegramInteractive({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+      callback: { payload: callback.token },
+      respond: {
+        clearButtons: vi.fn(async () => {}),
+        reply: vi.fn(async () => {}),
+        editMessage,
+      },
+    } as any);
+
+    const lastCall = editMessage.mock.calls.at(-1)?.[0] as any;
+    expect(lastCall?.text).toContain("Current reasoning: Default");
+    expect(lastCall?.buttons?.some((row: Array<{ text: string }>) => row[0]?.text === "High")).toBe(true);
+  });
+
   it("shows the model picker using the saved preferred model when the thread snapshot is stale", async () => {
     const { controller, clientMock } = await createControllerHarness();
     clientMock.readThreadState.mockImplementation(async () => ({
@@ -3873,6 +3964,114 @@ describe("Discord controller flows", () => {
     expect(editMessage).toHaveBeenLastCalledWith(
       expect.objectContaining({
         text: expect.stringContaining("Model: openai/gpt-5.3"),
+        buttons: expect.any(Array),
+      }),
+    );
+  });
+
+  it("sets the reasoning from the status picker and returns to the updated status card", async () => {
+    const { controller } = await createControllerHarness();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+    const callback = await (controller as any).store.putCallback({
+      kind: "set-reasoning",
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      reasoningEffort: "high",
+      returnToStatus: true,
+    });
+    const editMessage = vi.fn(async (_payload: any) => {});
+
+    await controller.handleTelegramInteractive({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+      callback: { payload: callback.token },
+      respond: {
+        clearButtons: vi.fn(async () => {}),
+        reply: vi.fn(async () => {}),
+        editMessage,
+      },
+    } as any);
+
+    const binding = (controller as any).store.getBinding({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+    });
+    expect(binding?.preferences?.preferredReasoningEffort).toBe("high");
+    expect(editMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("Model: openai/gpt-5.4 · reasoning high"),
+        buttons: expect.any(Array),
+      }),
+    );
+  });
+
+  it("starts compaction from the status card", async () => {
+    const { controller } = await createControllerHarness();
+    const startCompact = vi.fn(async () => {});
+    (controller as any).startCompact = startCompact;
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+    const callback = await (controller as any).store.putCallback({
+      kind: "compact-thread",
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+    });
+    const editMessage = vi.fn(async (_payload: any) => {});
+
+    await controller.handleTelegramInteractive({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+      callback: { payload: callback.token },
+      respond: {
+        clearButtons: vi.fn(async () => {}),
+        reply: vi.fn(async () => {}),
+        editMessage,
+      },
+    } as any);
+
+    expect(startCompact).toHaveBeenCalledWith({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+        threadId: undefined,
+      },
+      binding: expect.objectContaining({
+        sessionKey: "session-1",
+        threadId: "thread-1",
+      }),
+    });
+    expect(editMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("Compaction started."),
         buttons: expect.any(Array),
       }),
     );

@@ -4,6 +4,7 @@ import readline from "node:readline";
 import { promisify } from "node:util";
 import WebSocket from "ws";
 import type { PluginLogger } from "openclaw/plugin-sdk";
+import { modelSupportsFast, modelSupportsReasoning } from "./model-capabilities.js";
 import { createPendingInputState, parseCodexUserInput } from "./pending-input.js";
 import {
   CALLBACK_TTL_MS,
@@ -1589,6 +1590,24 @@ function extractModelSummaries(value: unknown): ModelSummary[] {
         current:
           pickBoolean(record, ["current", "selected", "isCurrent", "is_current", "active"]) ??
           existing?.current,
+        supportsReasoning:
+          pickBoolean(record, [
+            "supportsReasoning",
+            "supports_reasoning",
+            "supportsReasoningEffort",
+            "supports_reasoning_effort",
+          ]) ??
+          existing?.supportsReasoning ??
+          modelSupportsReasoning(id),
+        supportsFast:
+          pickBoolean(record, [
+            "supportsFast",
+            "supports_fast",
+            "supportsServiceTierFast",
+            "supports_service_tier_fast",
+          ]) ??
+          existing?.supportsFast ??
+          modelSupportsFast(id),
       });
     }
     for (const key of ["models", "items", "data", "results", "entries", "available"]) {
@@ -3209,6 +3228,7 @@ export class CodexAppServerClient {
     runId: string;
     existingThreadId?: string;
     model?: string;
+    reasoningEffort?: string;
     serviceTier?: string;
     approvalPolicy?: string;
     sandbox?: string;
@@ -3517,7 +3537,7 @@ export class CodexAppServerClient {
         }
         const synthesizedDefaultMode = buildDefaultCollaborationMode({
           model: params.model?.trim() || threadModel,
-          reasoningEffort: threadReasoningEffort,
+          reasoningEffort: params.reasoningEffort?.trim() || threadReasoningEffort,
         });
         const collaborationMode = params.collaborationMode ?? synthesizedDefaultMode;
         const turnStartPayloads = buildTurnStartPayloads({

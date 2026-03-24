@@ -45,6 +45,13 @@ import {
   formatThreadState,
   formatTurnCompletion,
 } from "./format.js";
+import {
+  formatReasoningEffortLabel,
+  getSupportedReasoningEfforts,
+  modelSupportsFast,
+  normalizeReasoningEffort,
+  REASONING_EFFORT_OPTIONS,
+} from "./model-capabilities.js";
 import type {
   AccountSummary,
   AppServerProfile,
@@ -496,16 +503,24 @@ function applyBindingPreferencesToThreadState(
   );
   const preferredApprovalPolicy = binding?.preferences?.preferredApprovalPolicy?.trim();
   const preferredSandbox = binding?.preferences?.preferredSandbox?.trim();
+  const preferredReasoningEffort = normalizeReasoningEffort(
+    binding?.preferences?.preferredReasoningEffort,
+  );
   const baseState = threadState ?? {
     threadId: binding?.threadId ?? "",
   };
-  return {
+  const nextState: import("./types.js").ThreadState = {
     ...baseState,
     model: preferredModel || baseState.model,
     serviceTier: preferredServiceTier ?? baseState.serviceTier,
     approvalPolicy: preferredApprovalPolicy || baseState.approvalPolicy,
     sandbox: preferredSandbox || baseState.sandbox,
+    reasoningEffort: preferredReasoningEffort || baseState.reasoningEffort,
   };
+  if (!modelSupportsFast(nextState.model) && normalizeServiceTier(nextState.serviceTier) === "fast") {
+    nextState.serviceTier = "default";
+  }
+  return nextState;
 }
 
 function formatThreadStateForLog(
@@ -516,6 +531,7 @@ function formatThreadStateForLog(
   }
   return [
     `model=${threadState.model?.trim() || "<none>"}`,
+    `reasoning=${threadState.reasoningEffort?.trim() || "<none>"}`,
     `tier=${threadState.serviceTier?.trim() || "<none>"}`,
     `approval=${threadState.approvalPolicy?.trim() || "<none>"}`,
     `sandbox=${threadState.sandbox?.trim() || "<none>"}`,
@@ -525,6 +541,7 @@ function formatThreadStateForLog(
 function formatBindingPreferencesForLog(binding: StoredBinding | null): string {
   return [
     `prefModel=${binding?.preferences?.preferredModel?.trim() || "<none>"}`,
+    `prefReasoning=${binding?.preferences?.preferredReasoningEffort?.trim() || "<none>"}`,
     `prefTier=${binding?.preferences?.preferredServiceTier?.trim() || "<none>"}`,
     `prefApproval=${binding?.preferences?.preferredApprovalPolicy?.trim() || "<none>"}`,
     `prefSandbox=${binding?.preferences?.preferredSandbox?.trim() || "<none>"}`,
@@ -1520,16 +1537,39 @@ export class CodexPluginController {
     return !this.activeRuns.has(key);
   }
 
+  private async readEffectiveThreadState(binding: StoredBinding): Promise<{
+    state: import("./types.js").ThreadState | undefined;
+    effectiveState: import("./types.js").ThreadState | undefined;
+  }> {
+    const profile = this.getClientProfile(binding);
+    const state = await this.client.readThreadState({
+      profile,
+      sessionKey: binding.sessionKey,
+      threadId: binding.threadId,
+    }).catch(() => undefined);
+    return {
+      state,
+      effectiveState: applyBindingPreferencesToThreadState(state, binding) ?? state,
+    };
+  }
+
   private async buildStatusControlButtons(
     conversation: ConversationTarget,
+    binding: StoredBinding,
   ): Promise<PluginInteractiveButtons> {
-    const [showModelPicker, toggleFast, togglePermissions, stopRun] = await Promise.all([
+    const { effectiveState } = await this.readEffectiveThreadState(binding);
+    const currentModel =
+      effectiveState?.model?.trim() || binding.preferences?.preferredModel?.trim() || undefined;
+    const currentReasoning = normalizeReasoningEffort(
+      effectiveState?.reasoningEffort ?? binding.preferences?.preferredReasoningEffort,
+    );
+    const [showModelPicker, showReasoningPicker, togglePermissions, compactThread, stopRun] = await Promise.all([
       this.store.putCallback({
         kind: "show-model-picker",
         conversation,
       }),
       this.store.putCallback({
-        kind: "toggle-fast",
+        kind: "show-reasoning-picker",
         conversation,
       }),
       this.store.putCallback({
@@ -1537,18 +1577,32 @@ export class CodexPluginController {
         conversation,
       }),
       this.store.putCallback({
+        kind: "compact-thread",
+        conversation,
+      }),
+      this.store.putCallback({
         kind: "stop-run",
         conversation,
       }),
     ]);
-    return [
+    const buttons: PluginInteractiveButtons = [
       [
         {
           text: "Select Model",
           callback_data: `${INTERACTIVE_NAMESPACE}:${showModelPicker.token}`,
         },
+        {
+          text: `Reasoning: ${formatReasoningEffortLabel(currentReasoning)}`,
+          callback_data: `${INTERACTIVE_NAMESPACE}:${showReasoningPicker.token}`,
+        },
       ],
-      [
+    ];
+    if (modelSupportsFast(currentModel)) {
+      const toggleFast = await this.store.putCallback({
+        kind: "toggle-fast",
+        conversation,
+      });
+      buttons.push([
         {
           text: "Fast: toggle",
           callback_data: `${INTERACTIVE_NAMESPACE}:${toggleFast.token}`,
@@ -1557,14 +1611,26 @@ export class CodexPluginController {
           text: "Permissions: toggle",
           callback_data: `${INTERACTIVE_NAMESPACE}:${togglePermissions.token}`,
         },
-      ],
-      [
+      ]);
+    } else {
+      buttons.push([
         {
-          text: "Stop",
-          callback_data: `${INTERACTIVE_NAMESPACE}:${stopRun.token}`,
+          text: "Permissions: toggle",
+          callback_data: `${INTERACTIVE_NAMESPACE}:${togglePermissions.token}`,
         },
-      ],
-    ];
+      ]);
+    }
+    buttons.push([
+      {
+        text: "Compact",
+        callback_data: `${INTERACTIVE_NAMESPACE}:${compactThread.token}`,
+      },
+      {
+        text: "Stop",
+        callback_data: `${INTERACTIVE_NAMESPACE}:${stopRun.token}`,
+      },
+    ]);
+    return buttons;
   }
 
   private async buildModelPicker(
@@ -1575,15 +1641,11 @@ export class CodexPluginController {
     },
   ): Promise<PickerRender> {
     const profile = this.getClientProfile(binding);
-    const [models, state] = await Promise.all([
+    const [models, threadState] = await Promise.all([
       this.client.listModels({ profile, sessionKey: binding.sessionKey }),
-      this.client.readThreadState({
-        profile,
-        sessionKey: binding.sessionKey,
-        threadId: binding.threadId,
-      }),
+      this.readEffectiveThreadState(binding),
     ]);
-    const effectiveState = applyBindingPreferencesToThreadState(state, binding) ?? state;
+    const { state, effectiveState } = threadState;
     this.api.logger.debug?.(
       `codex model picker conversation=${this.formatConversationForLog(conversation)} raw=${formatThreadStateForLog(state)} effective=${formatThreadStateForLog(effectiveState)} ${formatBindingPreferencesForLog(binding)}`,
     );
@@ -1613,6 +1675,57 @@ export class CodexPluginController {
     };
   }
 
+  private async buildReasoningPicker(
+    conversation: ConversationTarget,
+    binding: StoredBinding,
+    opts?: {
+      returnToStatus?: boolean;
+    },
+  ): Promise<PickerRender> {
+    const { state, effectiveState } = await this.readEffectiveThreadState(binding);
+    const model =
+      effectiveState?.model?.trim() || binding.preferences?.preferredModel?.trim() || undefined;
+    const supported = getSupportedReasoningEfforts(model);
+    const currentReasoning = normalizeReasoningEffort(
+      effectiveState?.reasoningEffort ?? binding.preferences?.preferredReasoningEffort,
+    );
+    const buttons: PluginInteractiveButtons = [];
+    for (const option of REASONING_EFFORT_OPTIONS) {
+      if (!supported.includes(option.value)) {
+        continue;
+      }
+      const callback = await this.store.putCallback({
+        kind: "set-reasoning",
+        conversation,
+        reasoningEffort: option.value,
+        returnToStatus: opts?.returnToStatus,
+      });
+      buttons.push([
+        {
+          text: `${option.label}${currentReasoning === option.value ? " (current)" : ""}`,
+          callback_data: `${INTERACTIVE_NAMESPACE}:${callback.token}`,
+        },
+      ]);
+    }
+    const currentText = currentReasoning ? formatReasoningEffortLabel(currentReasoning) : "Default";
+    return {
+      text:
+        supported.length === 0
+          ? `Reasoning selection is unavailable for ${model ?? "this model"}.`
+          : [
+              `Current reasoning: ${currentText}`,
+              model ? `Model: ${model}` : "",
+              "Available reasoning levels:",
+              ...REASONING_EFFORT_OPTIONS
+                .filter((option) => supported.includes(option.value))
+                .map((option) => `- ${option.label}${currentReasoning === option.value ? " (current)" : ""}`),
+            ]
+              .filter(Boolean)
+              .join("\n"),
+      buttons,
+    };
+  }
+
   private async buildStatusCard(
     conversation: ConversationTarget | null,
     binding: StoredBinding | null,
@@ -1624,7 +1737,7 @@ export class CodexPluginController {
     }
     return {
       text,
-      buttons: await this.buildStatusControlButtons(conversation),
+      buttons: await this.buildStatusControlButtons(conversation, binding),
     };
   }
 
@@ -1910,6 +2023,13 @@ export class CodexPluginController {
       sessionKey: binding.sessionKey,
       threadId: binding.threadId,
     });
+    const effectiveState = applyBindingPreferencesToThreadState(state, binding) ?? state;
+    const currentModel = effectiveState.model?.trim() || binding.preferences?.preferredModel?.trim();
+    if (!modelSupportsFast(currentModel)) {
+      return {
+        text: `Fast mode is unavailable for ${currentModel ?? "the current model"}. Use a GPT-5.4+ model to enable it.`,
+      };
+    }
     const currentTier = normalizeServiceTier(state.serviceTier);
     if (action === "status") {
       return { text: `Fast mode is ${formatFastModeValue(currentTier)}.` };
@@ -1990,6 +2110,20 @@ export class CodexPluginController {
       model: args.trim(),
     });
     const preferredModel = args.trim();
+    const nextPreferredServiceTier = modelSupportsFast(preferredModel)
+      ? binding.preferences?.preferredServiceTier ?? null
+      : null;
+    const nextState =
+      !modelSupportsFast(preferredModel) && normalizeServiceTier(state.serviceTier) === "fast"
+        ? await this.client
+            .setThreadServiceTier({
+              profile,
+              sessionKey: binding.sessionKey,
+              threadId: binding.threadId,
+              serviceTier: "flex",
+            })
+            .catch(() => ({ ...state, serviceTier: "flex" }))
+        : state;
     const updatedBinding: StoredBinding = {
       ...binding,
       preferences: {
@@ -1998,13 +2132,14 @@ export class CodexPluginController {
           updatedAt: Date.now(),
         }),
         preferredModel,
+        preferredServiceTier: nextPreferredServiceTier,
         updatedAt: Date.now(),
       },
       updatedAt: Date.now(),
     };
     await this.store.upsertBinding(updatedBinding);
     this.api.logger.debug?.(
-      `codex model command requested=${preferredModel} responseModel=${state.model?.trim() || "<none>"} ${formatBindingPreferencesForLog(updatedBinding)}`,
+      `codex model command requested=${preferredModel} responseModel=${nextState.model?.trim() || "<none>"} ${formatBindingPreferencesForLog(updatedBinding)}`,
     );
     return { text: `Codex model set to ${preferredModel}.` };
   }
@@ -2250,9 +2385,14 @@ export class CodexPluginController {
       runId: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
       existingThreadId: params.binding?.threadId,
       model: params.binding?.preferences?.preferredModel?.trim() || this.settings.defaultModel,
+      reasoningEffort: normalizeReasoningEffort(
+        params.binding?.preferences?.preferredReasoningEffort,
+      ),
       serviceTier:
-        normalizePreferenceServiceTier(params.binding?.preferences?.preferredServiceTier) ??
-        undefined,
+        modelSupportsFast(params.binding?.preferences?.preferredModel?.trim() || this.settings.defaultModel)
+          ? normalizePreferenceServiceTier(params.binding?.preferences?.preferredServiceTier) ??
+            undefined
+          : undefined,
       approvalPolicy: params.binding?.preferences?.preferredApprovalPolicy?.trim(),
       sandbox: params.binding?.preferences?.preferredSandbox?.trim(),
       collaborationMode: params.collaborationMode,
@@ -2488,6 +2628,7 @@ export class CodexPluginController {
       clearTimeout(progressTimer);
       progressTimer = null;
     };
+    const effectiveThreadState = applyBindingPreferencesToThreadState(threadState ?? undefined, params.binding) ?? threadState;
     const run = this.client.startTurn({
       profile,
       sessionKey: params.binding?.sessionKey,
@@ -2495,12 +2636,17 @@ export class CodexPluginController {
       prompt: params.prompt,
       runId: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
       existingThreadId: params.binding?.threadId,
-      model: threadState?.model || this.settings.defaultModel,
+      model: effectiveThreadState?.model || this.settings.defaultModel,
+      reasoningEffort: normalizeReasoningEffort(
+        params.binding?.preferences?.preferredReasoningEffort ?? effectiveThreadState?.reasoningEffort,
+      ),
       collaborationMode: {
         mode: "plan",
         settings: {
-          model: threadState?.model || this.settings.defaultModel,
-          reasoningEffort: threadState?.reasoningEffort,
+          model: effectiveThreadState?.model || this.settings.defaultModel,
+          reasoningEffort: normalizeReasoningEffort(
+            params.binding?.preferences?.preferredReasoningEffort ?? effectiveThreadState?.reasoningEffort,
+          ),
           developerInstructions: null,
         },
       },
@@ -2560,8 +2706,10 @@ export class CodexPluginController {
             collaborationMode: {
               mode: "default",
               settings: {
-                model: threadState?.model || this.settings.defaultModel,
-                reasoningEffort: threadState?.reasoningEffort,
+                model: effectiveThreadState?.model || this.settings.defaultModel,
+                reasoningEffort: normalizeReasoningEffort(
+                  params.binding?.preferences?.preferredReasoningEffort ?? effectiveThreadState?.reasoningEffort,
+                ),
                 developerInstructions: null,
               },
             },
@@ -3839,12 +3987,16 @@ export class CodexPluginController {
         return;
       }
       const profile = this.getClientProfile(binding);
-      const threadState = await this.client.readThreadState({
-        profile,
-        sessionKey: binding.sessionKey,
-        threadId: binding.threadId,
-      });
-      const currentTier = normalizeServiceTier(threadState.serviceTier);
+      const { state: threadState, effectiveState } = await this.readEffectiveThreadState(binding);
+      const currentModel =
+        effectiveState?.model?.trim() || binding.preferences?.preferredModel?.trim() || undefined;
+      if (!modelSupportsFast(currentModel)) {
+        await responders.reply(
+          `Fast mode is unavailable for ${currentModel ?? "the current model"}. Use a GPT-5.4+ model to enable it.`,
+        );
+        return;
+      }
+      const currentTier = normalizeServiceTier(threadState?.serviceTier);
       const nextTier = currentTier === "fast" ? "flex" : "fast";
       const updatedState = await this.client.setThreadServiceTier({
         profile,
@@ -3881,6 +4033,73 @@ export class CodexPluginController {
         text: statusCard.text,
         buttons: statusCard.buttons,
       });
+      return;
+    }
+    if (callback.kind === "show-reasoning-picker") {
+      const binding = this.store.getBinding(callback.conversation);
+      await this.store.removeCallback(callback.token);
+      if (!binding) {
+        await responders.reply("No Codex binding for this conversation.");
+        return;
+      }
+      const picker = await this.buildReasoningPicker(
+        {
+          ...callback.conversation,
+          threadId: responders.conversation.threadId,
+        },
+        binding,
+        {
+          returnToStatus: true,
+        },
+      );
+      await responders.editPicker(picker);
+      return;
+    }
+    if (callback.kind === "set-reasoning") {
+      const binding = this.store.getBinding(callback.conversation);
+      await this.store.removeCallback(callback.token);
+      if (!binding) {
+        await responders.reply("No Codex binding for this conversation.");
+        return;
+      }
+      const normalizedReasoning = normalizeReasoningEffort(callback.reasoningEffort);
+      if (!normalizedReasoning) {
+        await responders.reply("That reasoning level is no longer available.");
+        return;
+      }
+      const updatedBinding: StoredBinding = {
+        ...binding,
+        preferences: {
+          ...(binding.preferences ?? {
+            preferredServiceTier: null,
+            updatedAt: Date.now(),
+          }),
+          preferredReasoningEffort: normalizedReasoning,
+          updatedAt: Date.now(),
+        },
+        updatedAt: Date.now(),
+      };
+      await this.store.upsertBinding(updatedBinding);
+      this.api.logger.debug?.(
+        `codex status control set-reasoning conversation=${this.formatConversationForLog(callback.conversation)} requested=${normalizedReasoning} ${formatBindingPreferencesForLog(updatedBinding)}`,
+      );
+      if (callback.returnToStatus) {
+        const statusCard = await this.buildStatusCard(
+          {
+            ...callback.conversation,
+            threadId: responders.conversation.threadId,
+          },
+          updatedBinding,
+          true,
+        );
+        await responders.editPicker({
+          text: statusCard.text,
+          buttons: statusCard.buttons,
+        });
+        return;
+      }
+      await responders.clear().catch(() => undefined);
+      await responders.reply(`Codex reasoning set to ${formatReasoningEffortLabel(normalizedReasoning)}.`);
       return;
     }
     if (callback.kind === "toggle-permissions") {
@@ -3947,6 +4166,34 @@ export class CodexPluginController {
         text: active
           ? `${statusCard.text}\n\n${buildPendingPermissionsMigrationNote(nextProfile)}`
           : statusCard.text,
+        buttons: statusCard.buttons,
+      });
+      return;
+    }
+    if (callback.kind === "compact-thread") {
+      const binding = this.store.getBinding(callback.conversation);
+      await this.store.removeCallback(callback.token);
+      if (!binding) {
+        await responders.reply("No Codex binding for this conversation.");
+        return;
+      }
+      void this.startCompact({
+        conversation: {
+          ...callback.conversation,
+          threadId: responders.conversation.threadId,
+        },
+        binding,
+      });
+      const statusCard = await this.buildStatusCard(
+        {
+          ...callback.conversation,
+          threadId: responders.conversation.threadId,
+        },
+        binding,
+        true,
+      );
+      await responders.editPicker({
+        text: `${statusCard.text}\n\nCompaction started.`,
         buttons: statusCard.buttons,
       });
       return;
@@ -4021,6 +4268,20 @@ export class CodexPluginController {
         threadId: binding.threadId,
         model: callback.model,
       });
+      const nextPreferredServiceTier = modelSupportsFast(callback.model)
+        ? binding.preferences?.preferredServiceTier ?? null
+        : null;
+      const nextState =
+        !modelSupportsFast(callback.model) && normalizeServiceTier(state.serviceTier) === "fast"
+          ? await this.client
+              .setThreadServiceTier({
+                profile,
+                sessionKey: binding.sessionKey,
+                threadId: binding.threadId,
+                serviceTier: "flex",
+              })
+              .catch(() => ({ ...state, serviceTier: "flex" }))
+          : state;
       const updatedBinding: StoredBinding = {
         ...binding,
         preferences: {
@@ -4029,13 +4290,14 @@ export class CodexPluginController {
             updatedAt: Date.now(),
           }),
           preferredModel: callback.model,
+          preferredServiceTier: nextPreferredServiceTier,
           updatedAt: Date.now(),
         },
         updatedAt: Date.now(),
       };
       await this.store.upsertBinding(updatedBinding);
       this.api.logger.debug?.(
-        `codex status control set-model conversation=${this.formatConversationForLog(callback.conversation)} requested=${callback.model} raw=${formatThreadStateForLog(state)} effective=${formatThreadStateForLog(applyBindingPreferencesToThreadState(state, updatedBinding))} ${formatBindingPreferencesForLog(updatedBinding)}`,
+        `codex status control set-model conversation=${this.formatConversationForLog(callback.conversation)} requested=${callback.model} raw=${formatThreadStateForLog(nextState)} effective=${formatThreadStateForLog(applyBindingPreferencesToThreadState(nextState, updatedBinding))} ${formatBindingPreferencesForLog(updatedBinding)}`,
       );
       if (callback.returnToStatus) {
         const statusCard = await this.buildStatusCard(
@@ -4053,7 +4315,7 @@ export class CodexPluginController {
         return;
       }
       await responders.clear().catch(() => undefined);
-      await responders.reply(`Codex model set to ${state.model || callback.model}.`);
+      await responders.reply(`Codex model set to ${nextState.model || callback.model}.`);
       return;
     }
     if (callback.kind === "reply-text") {

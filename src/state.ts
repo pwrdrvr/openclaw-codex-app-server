@@ -79,7 +79,27 @@ type PutCallbackInput =
       ttlMs?: number;
     }
   | {
+      kind: "show-reasoning-picker";
+      conversation: ConversationTarget;
+      token?: string;
+      ttlMs?: number;
+    }
+  | {
+      kind: "set-reasoning";
+      conversation: ConversationTarget;
+      reasoningEffort: string;
+      returnToStatus?: boolean;
+      token?: string;
+      ttlMs?: number;
+    }
+  | {
       kind: "toggle-permissions";
+      conversation: ConversationTarget;
+      token?: string;
+      ttlMs?: number;
+    }
+  | {
+      kind: "compact-thread";
       conversation: ConversationTarget;
       token?: string;
       ttlMs?: number;
@@ -377,6 +397,24 @@ export class PluginStateStore {
                       createdAt: now,
                       expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
                     }
+                : callback.kind === "show-reasoning-picker"
+                  ? {
+                      kind: "show-reasoning-picker",
+                      conversation: callback.conversation,
+                      token: callback.token ?? this.createCallbackToken(),
+                      createdAt: now,
+                      expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
+                    }
+              : callback.kind === "set-reasoning"
+                ? {
+                    kind: "set-reasoning",
+                    conversation: callback.conversation,
+                    reasoningEffort: callback.reasoningEffort,
+                    returnToStatus: callback.returnToStatus,
+                    token: callback.token ?? this.createCallbackToken(),
+                    createdAt: now,
+                    expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
+                  }
                   : callback.kind === "toggle-permissions"
                     ? {
                         kind: "toggle-permissions",
@@ -385,6 +423,14 @@ export class PluginStateStore {
                         createdAt: now,
                         expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
                       }
+                    : callback.kind === "compact-thread"
+                      ? {
+                          kind: "compact-thread",
+                          conversation: callback.conversation,
+                          token: callback.token ?? this.createCallbackToken(),
+                          createdAt: now,
+                          expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
+                        }
                     : callback.kind === "stop-run"
                       ? {
                           kind: "stop-run",

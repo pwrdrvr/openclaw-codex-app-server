@@ -1,4 +1,5 @@
 import os from "node:os";
+import { formatModelCapabilitySuffix } from "./model-capabilities.js";
 import type {
   AccountSummary,
   ContextUsageSnapshot,
@@ -624,7 +625,7 @@ export function formatModels(models: ModelSummary[], state?: ThreadState): strin
     ...models.slice(0, 20).map((model) => {
       const current =
         model.id === state?.model || (!state?.model && model.current) ? " (current)" : "";
-      return `- ${model.id}${current}`;
+      return `- ${model.id}${current}${formatModelCapabilitySuffix(model)}`;
     }),
   );
   return lines.join("\n");

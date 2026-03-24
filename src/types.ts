@@ -121,6 +121,8 @@ export type ModelSummary = {
   label?: string;
   description?: string;
   current?: boolean;
+  supportsReasoning?: boolean;
+  supportsFast?: boolean;
 };
 
 export type SkillSummary = {
@@ -196,6 +198,7 @@ export type ContextUsageSnapshot = {
 
 export type ConversationPreferences = {
   preferredModel?: string;
+  preferredReasoningEffort?: string;
   preferredServiceTier: string | null;
   preferredApprovalPolicy?: string;
   preferredSandbox?: string;
@@ -395,7 +398,30 @@ export type CallbackAction =
     }
   | {
       token: string;
+      kind: "show-reasoning-picker";
+      conversation: ConversationRef;
+      createdAt: number;
+      expiresAt: number;
+    }
+  | {
+      token: string;
+      kind: "set-reasoning";
+      conversation: ConversationRef;
+      reasoningEffort: string;
+      returnToStatus?: boolean;
+      createdAt: number;
+      expiresAt: number;
+    }
+  | {
+      token: string;
       kind: "toggle-permissions";
+      conversation: ConversationRef;
+      createdAt: number;
+      expiresAt: number;
+    }
+  | {
+      token: string;
+      kind: "compact-thread";
       conversation: ConversationRef;
       createdAt: number;
       expiresAt: number;
