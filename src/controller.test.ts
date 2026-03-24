@@ -133,6 +133,7 @@ async function createControllerHarness() {
     sandbox: "workspace-write",
   };
   const clientMock = {
+    hasProfile: vi.fn((profile: string) => profile === "default" || profile === "full-access"),
     listThreads: vi.fn(async () => [
       {
         threadId: "thread-1",
@@ -438,6 +439,7 @@ describe("Discord controller flows", () => {
 
     expect(reply).toEqual({});
     expect(clientMock.startThread).toHaveBeenCalledWith({
+      profile: "default",
       sessionKey: undefined,
       workspaceDir: "/repo/openclaw",
       model: undefined,
@@ -540,6 +542,7 @@ describe("Discord controller flows", () => {
 
     expect(reply).toEqual({});
     expect(clientMock.startThread).toHaveBeenCalledWith({
+      profile: "default",
       sessionKey: undefined,
       workspaceDir: path.join(os.homedir(), "github/openclaw"),
       model: undefined,
@@ -1420,10 +1423,11 @@ describe("Discord controller flows", () => {
     );
     const buttons = (reply as any).channelData?.telegram?.buttons;
 
-    expect(buttons).toHaveLength(2);
+    expect(buttons).toHaveLength(3);
     expect(buttons[0][0].text).toBe("Select Model");
     expect(buttons[1][0].text).toBe("Fast: toggle");
     expect(buttons[1][1].text).toBe("Permissions: toggle");
+    expect(buttons[2][0].text).toBe("Stop");
     const kinds = buttons.flatMap((row: Array<{ callback_data: string }>) => {
       return row.map((button) => {
         const token = button.callback_data.split(":").pop() ?? "";
@@ -1538,6 +1542,7 @@ describe("Discord controller flows", () => {
     );
 
     expect(clientMock.setThreadName).toHaveBeenCalledWith({
+      profile: "default",
       sessionKey: "session-1",
       threadId: "thread-1",
       name: "New Topic Name",
@@ -2067,6 +2072,7 @@ describe("Discord controller flows", () => {
     } as any);
 
     expect(clientMock.startThread).toHaveBeenCalledWith({
+      profile: "default",
       sessionKey: undefined,
       workspaceDir: "/repo/openclaw",
       model: undefined,
@@ -3034,6 +3040,7 @@ describe("Discord controller flows", () => {
       expect.anything(),
     );
     expect(clientMock.readAccount).toHaveBeenCalledWith({
+      profile: "default",
       sessionKey: "session-1",
       refreshToken: true,
     });
@@ -3121,6 +3128,7 @@ describe("Discord controller flows", () => {
       expect.anything(),
     );
     expect(clientMock.readAccount).toHaveBeenCalledWith({
+      profile: "default",
       sessionKey: "session-1",
       refreshToken: true,
     });
@@ -3312,6 +3320,7 @@ describe("Discord controller flows", () => {
     } as any);
 
     expect(clientMock.setThreadServiceTier).toHaveBeenCalledWith({
+      profile: "default",
       sessionKey: "session-1",
       threadId: "thread-1",
       serviceTier: "fast",
@@ -3397,7 +3406,7 @@ describe("Discord controller flows", () => {
     );
   });
 
-  it("cycles permissions mode from standard to full auto and back", async () => {
+  it("cycles permissions mode between default and full-access profiles", async () => {
     const { controller, clientMock } = await createControllerHarness();
     await (controller as any).store.upsertBinding({
       conversation: {
@@ -3408,6 +3417,7 @@ describe("Discord controller flows", () => {
       sessionKey: "session-1",
       threadId: "thread-1",
       workspaceDir: "/repo/openclaw",
+      appServerProfile: "default",
       updatedAt: Date.now(),
     });
     const editMessage = vi.fn(async (_payload: any) => {});
@@ -3437,15 +3447,11 @@ describe("Discord controller flows", () => {
       accountId: "default",
       conversationId: "123",
     });
+    expect(binding?.appServerProfile).toBe("full-access");
     expect(binding?.preferences?.preferredApprovalPolicy).toBe("never");
     expect(binding?.preferences?.preferredSandbox).toBe("danger-full-access");
     expect(clientMock.setThreadPermissions).toHaveBeenNthCalledWith(1, {
-      sessionKey: "session-1",
-      threadId: "thread-1",
-      approvalPolicy: "never",
-      sandbox: "workspace-write",
-    });
-    expect(clientMock.setThreadPermissions).toHaveBeenNthCalledWith(2, {
+      profile: "full-access",
       sessionKey: "session-1",
       threadId: "thread-1",
       approvalPolicy: "never",
@@ -3482,9 +3488,11 @@ describe("Discord controller flows", () => {
       accountId: "default",
       conversationId: "123",
     });
+    expect(binding?.appServerProfile).toBe("default");
     expect(binding?.preferences?.preferredApprovalPolicy).toBe("on-request");
     expect(binding?.preferences?.preferredSandbox).toBe("workspace-write");
-    expect(clientMock.setThreadPermissions).toHaveBeenNthCalledWith(3, {
+    expect(clientMock.setThreadPermissions).toHaveBeenNthCalledWith(2, {
+      profile: "default",
       sessionKey: "session-1",
       threadId: "thread-1",
       approvalPolicy: "on-request",
@@ -3497,26 +3505,8 @@ describe("Discord controller flows", () => {
     );
   });
 
-  it("renders permissions off from the status card when the app server returns stale full-access state", async () => {
+  it("defers permission profile migration until the active run ends", async () => {
     const { controller, clientMock } = await createControllerHarness();
-    clientMock.setThreadPermissions.mockImplementation(async () => ({
-      threadId: "thread-1",
-      threadName: "Discord Thread",
-      model: "openai/gpt-5.4",
-      cwd: "/repo/openclaw",
-      serviceTier: "default",
-      approvalPolicy: "never",
-      sandbox: "danger-full-access",
-    }));
-    clientMock.readThreadState.mockImplementation(async () => ({
-      threadId: "thread-1",
-      threadName: "Discord Thread",
-      model: "openai/gpt-5.4",
-      cwd: "/repo/openclaw",
-      serviceTier: "default",
-      approvalPolicy: "never",
-      sandbox: "danger-full-access",
-    }));
     await (controller as any).store.upsertBinding({
       conversation: {
         channel: "telegram",
@@ -3526,98 +3516,36 @@ describe("Discord controller flows", () => {
       sessionKey: "session-1",
       threadId: "thread-1",
       workspaceDir: "/repo/openclaw",
+      appServerProfile: "default",
       preferences: {
-        preferredServiceTier: null,
-        preferredApprovalPolicy: "never",
-        preferredSandbox: "danger-full-access",
-        updatedAt: Date.now(),
-      },
-      updatedAt: Date.now(),
-    });
-    const callback = await (controller as any).store.putCallback({
-      kind: "toggle-permissions",
-      conversation: {
-        channel: "telegram",
-        accountId: "default",
-        conversationId: "123",
-      },
-    });
-    const editMessage = vi.fn(async (_payload: any) => {});
-
-    await controller.handleTelegramInteractive({
-      channel: "telegram",
-      accountId: "default",
-      conversationId: "123",
-      callback: { payload: callback.token },
-      respond: {
-        clearButtons: vi.fn(async () => {}),
-        reply: vi.fn(async () => {}),
-        editMessage,
-      },
-    } as any);
-
-    const binding = (controller as any).store.getBinding({
-      channel: "telegram",
-      accountId: "default",
-      conversationId: "123",
-    });
-    expect(binding?.preferences?.preferredApprovalPolicy).toBe("on-request");
-    expect(binding?.preferences?.preferredSandbox).toBe("workspace-write");
-    expect(editMessage).toHaveBeenCalledWith(
-      expect.objectContaining({
-        text: expect.stringContaining("Permissions: Default"),
-        buttons: expect.any(Array),
-      }),
-    );
-  });
-
-  it("turns permissions back to full access when the first resume response is stale", async () => {
-    const { controller, clientMock } = await createControllerHarness();
-    clientMock.setThreadPermissions
-      .mockImplementationOnce(async () => ({
-        threadId: "thread-1",
-        threadName: "Discord Thread",
-        model: "openai/gpt-5.4",
-        cwd: "/repo/openclaw",
-        serviceTier: "default",
-        approvalPolicy: "on-request",
-        sandbox: "workspace-write",
-      }))
-      .mockImplementationOnce(async (params: { approvalPolicy: string; sandbox: string }) => ({
-        threadId: "thread-1",
-        threadName: "Discord Thread",
-        model: "openai/gpt-5.4",
-        cwd: "/repo/openclaw",
-        serviceTier: "default",
-        approvalPolicy: params.approvalPolicy,
-        sandbox: params.sandbox,
-      }));
-    clientMock.readThreadState.mockImplementation(async () => ({
-      threadId: "thread-1",
-      threadName: "Discord Thread",
-      model: "openai/gpt-5.4",
-      cwd: "/repo/openclaw",
-      serviceTier: "default",
-      approvalPolicy: "on-request",
-      sandbox: "workspace-write",
-    }));
-    await (controller as any).store.upsertBinding({
-      conversation: {
-        channel: "telegram",
-        accountId: "default",
-        conversationId: "123",
-      },
-      sessionKey: "session-1",
-      threadId: "thread-1",
-      workspaceDir: "/repo/openclaw",
-      preferences: {
-        preferredServiceTier: null,
         preferredApprovalPolicy: "on-request",
         preferredSandbox: "workspace-write",
         updatedAt: Date.now(),
       },
       updatedAt: Date.now(),
     });
+    const interrupt = vi.fn(async () => {
+      (controller as any).activeRuns.delete("telegram::default::123::");
+    });
+    (controller as any).activeRuns.set("telegram::default::123::", {
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      workspaceDir: "/repo/openclaw",
+      mode: "default",
+      profile: "default",
+      handle: {
+        result: Promise.resolve({ threadId: "thread-1", text: "done" }),
+        queueMessage: vi.fn(async () => false),
+        getThreadId: () => "thread-1",
+        interrupt,
+        isAwaitingInput: () => false,
+        submitPendingInput: vi.fn(async () => false),
+        submitPendingInputPayload: vi.fn(async () => false),
+      },
+    });
     const callback = await (controller as any).store.putCallback({
       kind: "toggle-permissions",
       conversation: {
@@ -3640,53 +3568,26 @@ describe("Discord controller flows", () => {
       },
     } as any);
 
-    expect(clientMock.setThreadPermissions).toHaveBeenNthCalledWith(1, {
-      sessionKey: "session-1",
-      threadId: "thread-1",
-      approvalPolicy: "never",
-      sandbox: "workspace-write",
-    });
-    expect(clientMock.setThreadPermissions).toHaveBeenNthCalledWith(2, {
-      sessionKey: "session-1",
-      threadId: "thread-1",
-      approvalPolicy: "never",
-      sandbox: "danger-full-access",
-    });
     const binding = (controller as any).store.getBinding({
       channel: "telegram",
       accountId: "default",
       conversationId: "123",
     });
+    expect(binding?.appServerProfile).toBe("default");
+    expect(binding?.pendingAppServerProfile).toBe("full-access");
     expect(binding?.preferences?.preferredApprovalPolicy).toBe("never");
     expect(binding?.preferences?.preferredSandbox).toBe("danger-full-access");
+    expect(clientMock.setThreadPermissions).not.toHaveBeenCalled();
     expect(editMessage).toHaveBeenCalledWith(
       expect.objectContaining({
-        text: expect.stringContaining("Permissions: Full Access"),
+        text: expect.stringContaining("Permissions note: Full Access will apply after the current Codex turn ends."),
         buttons: expect.any(Array),
       }),
     );
   });
 
-  it("keeps default permissions and explains when Codex Desktop refuses full access", async () => {
+  it("stops the active run from the status card", async () => {
     const { controller, clientMock } = await createControllerHarness();
-    clientMock.setThreadPermissions.mockImplementation(async () => ({
-      threadId: "thread-1",
-      threadName: "Discord Thread",
-      model: "openai/gpt-5.4",
-      cwd: "/repo/openclaw",
-      serviceTier: "default",
-      approvalPolicy: "on-request",
-      sandbox: "workspace-write",
-    }));
-    clientMock.readThreadState.mockImplementation(async () => ({
-      threadId: "thread-1",
-      threadName: "Discord Thread",
-      model: "openai/gpt-5.4",
-      cwd: "/repo/openclaw",
-      serviceTier: "default",
-      approvalPolicy: "on-request",
-      sandbox: "workspace-write",
-    }));
     await (controller as any).store.upsertBinding({
       conversation: {
         channel: "telegram",
@@ -3696,8 +3597,81 @@ describe("Discord controller flows", () => {
       sessionKey: "session-1",
       threadId: "thread-1",
       workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+    const callback = await (controller as any).store.putCallback({
+      kind: "stop-run",
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+    });
+    const editMessage = vi.fn(async (_payload: any) => {});
+    const interrupt = vi.fn(async () => {
+      (controller as any).activeRuns.delete("telegram::default::123::");
+    });
+    (controller as any).activeRuns.set("telegram::default::123::", {
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      workspaceDir: "/repo/openclaw",
+      mode: "default",
+      profile: "default",
+      handle: {
+        result: Promise.resolve({ threadId: "thread-1", text: "done" }),
+        queueMessage: vi.fn(async () => false),
+        getThreadId: () => "thread-1",
+        interrupt,
+        isAwaitingInput: () => false,
+        submitPendingInput: vi.fn(async () => false),
+        submitPendingInputPayload: vi.fn(async () => false),
+      },
+    });
+
+    await controller.handleTelegramInteractive({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+      callback: { payload: callback.token },
+      respond: {
+        clearButtons: vi.fn(async () => {}),
+        reply: vi.fn(async () => {}),
+        editMessage,
+      },
+    } as any);
+
+    expect(interrupt).toHaveBeenCalledOnce();
+    expect((controller as any).activeRuns.has("telegram::default::123::")).toBe(false);
+    expect(clientMock.readThreadState).toHaveBeenCalledWith({
+      profile: "default",
+      sessionKey: "session-1",
+      threadId: "thread-1",
+    });
+    expect(editMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("Binding: active"),
+        buttons: expect.any(Array),
+      }),
+    );
+  });
+
+  it("keeps default permissions and explains when no full-access profile is available", async () => {
+    const { controller, clientMock } = await createControllerHarness();
+    clientMock.hasProfile.mockImplementation((profile: string) => profile === "default");
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      appServerProfile: "default",
       preferences: {
-        preferredServiceTier: null,
         preferredApprovalPolicy: "on-request",
         preferredSandbox: "workspace-write",
         updatedAt: Date.now(),
@@ -3733,6 +3707,8 @@ describe("Discord controller flows", () => {
     });
     expect(binding?.preferences?.preferredApprovalPolicy).toBe("on-request");
     expect(binding?.preferences?.preferredSandbox).toBe("workspace-write");
+    expect(binding?.appServerProfile).toBe("default");
+    expect(clientMock.setThreadPermissions).not.toHaveBeenCalled();
     expect(editMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         text: expect.stringContaining("Permissions: Default"),
@@ -3888,6 +3864,7 @@ describe("Discord controller flows", () => {
     } as any);
 
     expect(clientMock.setThreadModel).toHaveBeenCalledWith({
+      profile: "default",
       sessionKey: "session-1",
       threadId: "thread-1",
       model: "openai/gpt-5.3",

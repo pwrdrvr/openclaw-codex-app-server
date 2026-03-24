@@ -3906,7 +3906,6 @@ export class CodexPluginController {
       if (nextProfile === "full-access" && !this.hasFullAccessProfile()) {
         const unchangedBinding: StoredBinding = {
           ...binding,
-          preferences: nextPreferences,
           updatedAt: Date.now(),
         };
         await this.store.upsertBinding(unchangedBinding);
@@ -3965,7 +3964,10 @@ export class CodexPluginController {
           binding,
           Boolean(binding),
         );
-        await responders.editPicker(statusCard);
+        await responders.editPicker({
+          text: statusCard.text,
+          buttons: statusCard.buttons ?? [],
+        });
         return;
       }
       await active.handle.interrupt().catch(() => undefined);
@@ -3979,7 +3981,10 @@ export class CodexPluginController {
         nextBinding,
         Boolean(nextBinding),
       );
-      await responders.editPicker(statusCard);
+      await responders.editPicker({
+        text: statusCard.text,
+        buttons: statusCard.buttons ?? [],
+      });
       return;
     }
     if (callback.kind === "show-model-picker") {
