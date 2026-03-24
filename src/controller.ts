@@ -1144,19 +1144,13 @@ export class CodexPluginController {
       rawConversation && bindingApi.getCurrentConversationBinding
         ? await bindingApi.getCurrentConversationBinding()
         : null;
-    const trustedLocalCommandState = Boolean(
-      conversation &&
-        rawConversation &&
-        conversation !== rawConversation &&
-        isTelegramChannel(conversation.channel),
-    );
     const pendingBind = conversation ? this.store.getPendingBind(conversation) : null;
     const existingBinding =
-      conversation && (currentBinding || trustedLocalCommandState)
+      conversation && (currentBinding || isTelegramChannel(conversation.channel))
         ? this.store.getBinding(conversation)
         : null;
     const hydratedBinding =
-      conversation && (currentBinding || trustedLocalCommandState) && !existingBinding
+      conversation && currentBinding && !existingBinding
         ? await this.hydrateApprovedBinding(conversation)
         : null;
     const binding = existingBinding ?? hydratedBinding?.binding ?? null;
@@ -1194,7 +1188,7 @@ export class CodexPluginController {
         return await this.handleStatusCommand(
           conversation,
           binding,
-          Boolean(currentBinding || trustedLocalCommandState || binding),
+          Boolean(currentBinding || binding),
         );
       case "cas_stop":
         return await this.handleStopCommand(conversation);
