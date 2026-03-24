@@ -21,11 +21,41 @@ const discordSdkState = vi.hoisted(() => ({
   resolveDiscordAccount: vi.fn(() => ({ accountId: "default" })),
 }));
 
+const conversationRuntimeState = vi.hoisted(() => ({
+  createConversationBindingRecord: vi.fn(async () => ({
+    bindingId: "binding-1",
+    targetSessionKey: "plugin-binding:openclaw-codex-app-server:aaaaaaaaaaaaaaaaaaaaaaaa",
+    targetKind: "session",
+    conversation: {
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123:topic:1",
+      parentConversationId: "123",
+    },
+    status: "active",
+    boundAt: Date.now(),
+    metadata: {
+      pluginBindingOwner: "plugin",
+      pluginId: "openclaw-codex-app-server",
+      pluginName: "OpenClaw Plugin For Codex App Server",
+      pluginRoot: "/Users/huntharo/github/openclaw-app-server",
+    },
+  })),
+  resolveConversationBindingRecord: vi.fn(() => null),
+  unbindConversationBindingRecord: vi.fn(async () => []),
+}));
+
 vi.mock("openclaw/plugin-sdk/discord", () => ({
   buildDiscordComponentMessage: discordSdkState.buildDiscordComponentMessage,
   editDiscordComponentMessage: discordSdkState.editDiscordComponentMessage,
   registerBuiltDiscordComponentMessage: discordSdkState.registerBuiltDiscordComponentMessage,
   resolveDiscordAccount: discordSdkState.resolveDiscordAccount,
+}));
+
+vi.mock("openclaw/plugin-sdk/conversation-runtime", () => ({
+  createConversationBindingRecord: conversationRuntimeState.createConversationBindingRecord,
+  resolveConversationBindingRecord: conversationRuntimeState.resolveConversationBindingRecord,
+  unbindConversationBindingRecord: conversationRuntimeState.unbindConversationBindingRecord,
 }));
 
 function makeStateDir(): string {
@@ -254,6 +284,10 @@ beforeEach(() => {
   discordSdkState.editDiscordComponentMessage.mockClear();
   discordSdkState.registerBuiltDiscordComponentMessage.mockClear();
   discordSdkState.resolveDiscordAccount.mockClear();
+  conversationRuntimeState.createConversationBindingRecord.mockClear();
+  conversationRuntimeState.resolveConversationBindingRecord.mockReset();
+  conversationRuntimeState.resolveConversationBindingRecord.mockReturnValue(null);
+  conversationRuntimeState.unbindConversationBindingRecord.mockClear();
   vi.spyOn(CodexAppServerClient.prototype, "logStartupProbe").mockResolvedValue();
   vi.stubGlobal(
     "fetch",
@@ -1428,7 +1462,7 @@ describe("Discord controller flows", () => {
   });
 
   it("binds Telegram #General as topic 1 for cas_resume when messageThreadId is present", async () => {
-    const { controller, api, sendMessageTelegram } = await createControllerHarness();
+    const { controller, sendMessageTelegram } = await createControllerHarness();
 
     await controller.handleCommand(
       "cas_resume",
@@ -1457,7 +1491,7 @@ describe("Discord controller flows", () => {
       expect.stringContaining("Thread ID: thread-1"),
       expect.objectContaining({ accountId: "default", messageThreadId: 1 }),
     );
-    expect(api.runtime.channel.bindings.bind).toHaveBeenCalledWith(
+    expect(conversationRuntimeState.createConversationBindingRecord).toHaveBeenCalledWith(
       expect.objectContaining({
         targetSessionKey: expect.stringMatching(/^plugin-binding:openclaw-codex-app-server:[0-9a-f]{24}$/),
         targetKind: "session",
@@ -1594,7 +1628,7 @@ describe("Discord controller flows", () => {
   });
 
   it("detaches Telegram #General bindings when commands omit messageThreadId", async () => {
-    const { controller, api } = await createControllerHarness();
+    const { controller } = await createControllerHarness();
     await (controller as any).store.upsertBinding({
       conversation: {
         channel: "telegram",
@@ -1619,7 +1653,7 @@ describe("Discord controller flows", () => {
     );
 
     expect(reply).toEqual({ text: "Detached this conversation from Codex." });
-    expect(api.runtime.channel.bindings.unbind).toHaveBeenCalledWith(
+    expect(conversationRuntimeState.unbindConversationBindingRecord).toHaveBeenCalledWith(
       expect.objectContaining({
         targetSessionKey: expect.stringMatching(/^plugin-binding:openclaw-codex-app-server:[0-9a-f]{24}$/),
         reason: "plugin-detach",
@@ -1673,8 +1707,8 @@ describe("Discord controller flows", () => {
   });
 
   it("reconciles existing Telegram #General bindings into runtime binding records", async () => {
-    const { controller, api } = await createControllerHarness();
-    vi.mocked(api.runtime.channel.bindings.bind).mockClear();
+    const { controller } = await createControllerHarness();
+    conversationRuntimeState.createConversationBindingRecord.mockClear();
 
     await (controller as any).store.upsertBinding({
       conversation: {
@@ -1692,7 +1726,7 @@ describe("Discord controller flows", () => {
 
     await (controller as any).reconcileBindings();
 
-    expect(api.runtime.channel.bindings.bind).toHaveBeenCalledWith(
+    expect(conversationRuntimeState.createConversationBindingRecord).toHaveBeenCalledWith(
       expect.objectContaining({
         targetSessionKey: expect.stringMatching(/^plugin-binding:openclaw-codex-app-server:[0-9a-f]{24}$/),
         conversation: {

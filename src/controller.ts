@@ -17,6 +17,12 @@ import type {
   ConversationRef,
 } from "openclaw/plugin-sdk";
 import {
+  createConversationBindingRecord,
+  resolveConversationBindingRecord,
+  unbindConversationBindingRecord,
+  type SessionBindingRecord,
+} from "openclaw/plugin-sdk/conversation-runtime";
+import {
   buildDiscordComponentMessage,
   editDiscordComponentMessage,
   registerBuiltDiscordComponentMessage,
@@ -834,18 +840,12 @@ export class CodexPluginController {
     return binding.targetSessionKey.trim();
   }
 
-  private resolveRuntimeBinding(conversation: ConversationTarget | null): { targetSessionKey?: string } | null {
+  private resolveRuntimeBinding(conversation: ConversationTarget | null): SessionBindingRecord | null {
     if (!conversation) {
       return null;
     }
-    const bindingsApi = this.api.runtime.channel.bindings;
-    if (!bindingsApi?.resolveByConversation) {
-      return null;
-    }
     try {
-      return bindingsApi.resolveByConversation(toConversationRef(conversation)) as
-        | { targetSessionKey?: string }
-        | null;
+      return resolveConversationBindingRecord(toConversationRef(conversation));
     } catch (error) {
       this.api.logger.warn(
         `codex runtime binding lookup failed ${this.formatConversationForLog(conversation)}: ${String(error)}`,
@@ -3864,8 +3864,7 @@ export class CodexPluginController {
   }
 
   private async syncRuntimeConversationBinding(binding: StoredBinding): Promise<void> {
-    const bindingsApi = this.api.runtime.channel.bindings;
-    if (!bindingsApi || !isTelegramChannel(binding.conversation.channel)) {
+    if (!isTelegramChannel(binding.conversation.channel)) {
       return;
     }
     const topicId = binding.conversation.conversationId.includes(":topic:")
@@ -3883,7 +3882,7 @@ export class CodexPluginController {
     this.api.logger.debug?.(
       `codex runtime binding sync start ${this.formatConversationForLog(runtimeConversation)} expected=${targetSessionKey} existing=${this.describeRuntimeBindingForLog(existingBinding)} thread=${binding.threadId}`,
     );
-    await bindingsApi.bind({
+    await createConversationBindingRecord({
       targetSessionKey,
       targetKind: "session",
       placement: "current",
@@ -4385,8 +4384,7 @@ export class CodexPluginController {
     if (binding?.pinnedBindingMessage) {
       await this.unpinStoredBindingMessage(binding);
     }
-    const bindingsApi = this.api.runtime.channel.bindings;
-    if (binding && bindingsApi && isTelegramGeneralTopicConversation(binding.conversation)) {
+    if (binding && isTelegramGeneralTopicConversation(binding.conversation)) {
       const runtimeConversation = {
         ...binding.conversation,
         threadId: 1,
@@ -4395,7 +4393,7 @@ export class CodexPluginController {
       this.api.logger.debug?.(
         `codex runtime binding unbind start ${this.formatConversationForLog(runtimeConversation)} expected=${targetSessionKey} existing=${this.describeRuntimeBindingForLog(this.resolveRuntimeBinding(runtimeConversation))}`,
       );
-      await bindingsApi.unbind({
+      await unbindConversationBindingRecord({
         targetSessionKey,
         reason: "plugin-detach",
       }).catch(() => undefined);
@@ -4407,11 +4405,6 @@ export class CodexPluginController {
   }
 
   private async reconcileBindings(): Promise<void> {
-    const bindingsApi = this.api.runtime.channel.bindings;
-    if (!bindingsApi) {
-      this.api.logger.debug?.("codex binding reconcile skipped: runtime.channel.bindings unavailable");
-      return;
-    }
     const bindings = this.store.listBindings().filter((binding) =>
       isTelegramGeneralTopicConversation(binding.conversation),
     );
