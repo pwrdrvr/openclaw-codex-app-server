@@ -8,6 +8,10 @@ export type ParsedThreadSelectionArgs = {
   startNew: boolean;
   syncTopic: boolean;
   cwd?: string;
+  requestedModel?: string;
+  requestedFast?: boolean;
+  requestedYolo?: boolean;
+  error?: string;
   query: string;
 };
 
@@ -32,6 +36,10 @@ export function parseThreadSelectionArgs(args: string): ParsedThreadSelectionArg
   let startNew = false;
   let syncTopic = false;
   let cwd: string | undefined;
+  let requestedModel: string | undefined;
+  let requestedFast: boolean | undefined;
+  let requestedYolo: boolean | undefined;
+  let error: string | undefined;
   const queryTokens: string[] = [];
 
   for (let index = 0; index < tokens.length; index += 1) {
@@ -52,6 +60,32 @@ export function parseThreadSelectionArgs(args: string): ParsedThreadSelectionArg
       syncTopic = true;
       continue;
     }
+    if (token === "--fast") {
+      requestedFast = true;
+      continue;
+    }
+    if (token === "--no-fast") {
+      requestedFast = false;
+      continue;
+    }
+    if (token === "--yolo") {
+      requestedYolo = true;
+      continue;
+    }
+    if (token === "--no-yolo") {
+      requestedYolo = false;
+      continue;
+    }
+    if (token === "--model") {
+      const next = tokens[index + 1]?.trim();
+      if (next) {
+        requestedModel = next;
+        index += 1;
+        continue;
+      }
+      error = "Usage: /cas_resume [--new] [--sync] [--fast|--no-fast] [--yolo|--no-yolo] [--model <name>] [--cwd <path>] [query]";
+      break;
+    }
     if (token === "--cwd") {
       const next = tokens[index + 1]?.trim();
       if (next) {
@@ -59,6 +93,8 @@ export function parseThreadSelectionArgs(args: string): ParsedThreadSelectionArg
         index += 1;
         continue;
       }
+      error = "Usage: /cas_resume [--new] [--sync] [--fast|--no-fast] [--yolo|--no-yolo] [--model <name>] [--cwd <path>] [query]";
+      break;
     }
     queryTokens.push(token);
   }
@@ -69,6 +105,10 @@ export function parseThreadSelectionArgs(args: string): ParsedThreadSelectionArg
     startNew,
     syncTopic,
     cwd,
+    requestedModel,
+    requestedFast,
+    requestedYolo,
+    error,
     query: queryTokens.join(" ").trim(),
   };
 }

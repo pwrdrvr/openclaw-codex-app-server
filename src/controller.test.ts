@@ -582,6 +582,30 @@ describe("Discord controller flows", () => {
     expect(reply.text).toContain("no longer exists on disk");
   });
 
+  it("applies model, fast, and yolo flags when resuming a thread", async () => {
+    const { controller } = await createControllerHarness();
+
+    const reply = await controller.handleCommand(
+      "cas_resume",
+      buildDiscordCommandContext({
+        args: "thread-1 --model gpt-5.4 --fast --yolo",
+        commandBody: "/cas_resume thread-1 --model gpt-5.4 --fast --yolo",
+      }),
+    );
+
+    expect(reply).toEqual({});
+    const binding = (controller as any).store.getBinding({
+      channel: "discord",
+      accountId: "default",
+      conversationId: "channel:chan-1",
+    });
+    expect(binding?.appServerProfile).toBe("full-access");
+    expect(binding?.preferences?.preferredModel).toBe("gpt-5.4");
+    expect(binding?.preferences?.preferredServiceTier).toBe("fast");
+    expect(binding?.preferences?.preferredApprovalPolicy).toBe("never");
+    expect(binding?.preferences?.preferredSandbox).toBe("danger-full-access");
+  });
+
   it("resolves channel identity from ctx.to when ctx.from is a slash identity in a new Discord thread", async () => {
     // Regression test for brand-new Discord threads where the slash interaction
     // places the slash user identity in ctx.from and the channel target in ctx.to.
@@ -606,37 +630,6 @@ describe("Discord controller flows", () => {
       expect.objectContaining({
         accountId: "default",
       }),
-    );
-  });
-
-  it("sends Discord model pickers directly instead of returning Telegram buttons", async () => {
-    const { controller, sendComponentMessage } = await createControllerHarness();
-    await (controller as any).store.upsertBinding({
-      conversation: {
-        channel: "discord",
-        accountId: "default",
-        conversationId: "channel:chan-1",
-      },
-      sessionKey: "session-1",
-      threadId: "thread-1",
-      workspaceDir: "/repo/openclaw",
-      updatedAt: Date.now(),
-    });
-
-    const reply = await controller.handleCommand("cas_model", buildDiscordCommandContext({
-      commandBody: "/cas_model",
-      getCurrentConversationBinding: vi.fn(async () => ({ bindingId: "b1" })),
-    }));
-
-    expect(reply).toEqual({
-      text: "Sent Codex model choices to this Discord conversation.",
-    });
-    expect(sendComponentMessage).toHaveBeenCalledWith(
-      "channel:chan-1",
-      expect.objectContaining({
-        text: expect.stringContaining("Current model"),
-      }),
-      expect.objectContaining({ accountId: "default" }),
     );
   });
 
@@ -1558,6 +1551,44 @@ describe("Discord controller flows", () => {
       }),
       expect.objectContaining({ accountId: "default" }),
     );
+  });
+
+  it("applies model, fast, and yolo flags from cas_status", async () => {
+    const { controller } = await createControllerHarness();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+
+    const reply = await controller.handleCommand(
+      "cas_status",
+      buildTelegramCommandContext({
+        args: "--model gpt-5.4 --fast --yolo",
+        commandBody: "/cas_status --model gpt-5.4 --fast --yolo",
+        getCurrentConversationBinding: vi.fn(async () => ({ bindingId: "b1" })),
+      }),
+    );
+
+    const binding = (controller as any).store.getBinding({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+    });
+    expect(binding?.appServerProfile).toBe("full-access");
+    expect(binding?.preferences?.preferredModel).toBe("gpt-5.4");
+    expect(binding?.preferences?.preferredServiceTier).toBe("fast");
+    expect(binding?.preferences?.preferredApprovalPolicy).toBe("never");
+    expect(binding?.preferences?.preferredSandbox).toBe("danger-full-access");
+    expect((reply as any).text).toContain("Model: gpt-5.4");
+    expect((reply as any).text).toContain("Fast mode: on");
+    expect((reply as any).text).toContain("Permissions: Full Access");
   });
 
   it("parses unicode em dash --sync for cas_rename and renames the Telegram topic", async () => {

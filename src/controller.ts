@@ -655,6 +655,102 @@ function parseRenameArgs(args: string): { syncTopic: boolean; name: string } | n
   return { syncTopic, name };
 }
 
+type CommandPreferenceOverrides = {
+  requestedModel?: string;
+  requestedFast?: boolean;
+  requestedYolo?: boolean;
+};
+
+function parseStatusArgs(args: string): CommandPreferenceOverrides & { error?: string } {
+  const tokens = normalizeOptionDashes(args)
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
+  let requestedModel: string | undefined;
+  let requestedFast: boolean | undefined;
+  let requestedYolo: boolean | undefined;
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token === "--fast") {
+      requestedFast = true;
+      continue;
+    }
+    if (token === "--no-fast") {
+      requestedFast = false;
+      continue;
+    }
+    if (token === "--yolo") {
+      requestedYolo = true;
+      continue;
+    }
+    if (token === "--no-yolo") {
+      requestedYolo = false;
+      continue;
+    }
+    if (token === "--model") {
+      const next = tokens[index + 1]?.trim();
+      if (next) {
+        requestedModel = next;
+        index += 1;
+        continue;
+      }
+      return {
+        error: "Usage: /cas_status [--model <name>] [--fast|--no-fast] [--yolo|--no-yolo]",
+      };
+    }
+    return {
+      error: "Usage: /cas_status [--model <name>] [--fast|--no-fast] [--yolo|--no-yolo]",
+    };
+  }
+  return {
+    requestedModel,
+    requestedFast,
+    requestedYolo,
+  };
+}
+
+function hasCommandPreferenceOverrides(overrides: CommandPreferenceOverrides): boolean {
+  return (
+    typeof overrides.requestedFast === "boolean" ||
+    typeof overrides.requestedYolo === "boolean" ||
+    Boolean(overrides.requestedModel?.trim())
+  );
+}
+
+function mergeConversationPreferences(
+  existing: import("./types.js").ConversationPreferences | undefined,
+  updates: Partial<import("./types.js").ConversationPreferences>,
+): import("./types.js").ConversationPreferences | undefined {
+  if (Object.keys(updates).length === 0) {
+    return existing;
+  }
+  return {
+    ...(existing ?? {
+      preferredServiceTier: null,
+      updatedAt: Date.now(),
+    }),
+    ...updates,
+    updatedAt: Date.now(),
+  };
+}
+
+function normalizePreferencesForModel(
+  preferences: import("./types.js").ConversationPreferences | undefined,
+  model: string | undefined,
+): import("./types.js").ConversationPreferences | undefined {
+  if (!preferences) {
+    return preferences;
+  }
+  if (!modelSupportsFast(model) && normalizePreferenceServiceTier(preferences.preferredServiceTier) === "fast") {
+    return {
+      ...preferences,
+      preferredServiceTier: "default",
+      updatedAt: Date.now(),
+    };
+  }
+  return preferences;
+}
+
 function buildResumeTopicName(params: { title?: string; projectKey?: string; threadId: string }): string | undefined {
   const threadName = params.title?.trim() || params.threadId.trim();
   if (!threadName) {
@@ -663,6 +759,21 @@ function buildResumeTopicName(params: { title?: string; projectKey?: string; thr
   const projectName = path.basename(params.projectKey?.replace(/[\\/]+$/, "").trim() || "");
   const normalizedThreadName = normalizeThreadTitleProjectSuffix(threadName, projectName);
   return projectName ? `${normalizedThreadName} (${projectName})` : normalizedThreadName;
+}
+
+function formatThreadSelectionFlags(parsed: ReturnType<typeof parseThreadSelectionArgs>): string {
+  return [
+    parsed.includeAll ? "--all" : "",
+    parsed.listProjects ? "--projects" : "",
+    parsed.startNew ? "--new" : "",
+    parsed.syncTopic ? "--sync" : "",
+    typeof parsed.requestedFast === "boolean" ? (parsed.requestedFast ? "--fast" : "--no-fast") : "",
+    typeof parsed.requestedYolo === "boolean" ? (parsed.requestedYolo ? "--yolo" : "--no-yolo") : "",
+    parsed.requestedModel ? `--model ${parsed.requestedModel}` : "",
+    parsed.cwd ? `--cwd ${parsed.cwd}` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 function buildThreadOnlyName(params: { title?: string; projectKey?: string; threadId: string }): string | undefined {
@@ -1240,6 +1351,7 @@ export class CodexPluginController {
         return await this.handleStatusCommand(
           conversation,
           binding,
+          args,
           Boolean(currentBinding || binding),
         );
       case "cas_stop":
@@ -1258,12 +1370,6 @@ export class CodexPluginController {
         return await this.handleExperimentalCommand(binding);
       case "cas_mcp":
         return await this.handleMcpCommand(binding, args);
-      case "cas_fast":
-        return await this.handleFastCommand(binding, args);
-      case "cas_model":
-        return await this.handleModelCommand(conversation, binding, args);
-      case "cas_permissions":
-        return await this.handlePermissionsCommand(binding);
       case "cas_init":
         return await this.handlePromptAlias(conversation, binding, args, "/init");
       case "cas_diff":
@@ -1321,6 +1427,11 @@ export class CodexPluginController {
       binding,
       workspaceDir,
       parsed.syncTopic,
+      {
+        requestedModel: parsed.requestedModel,
+        requestedFast: parsed.requestedFast,
+        requestedYolo: parsed.requestedYolo,
+      },
       requestConversationBinding,
     );
     if (result.status === "pending") {
@@ -1371,6 +1482,22 @@ export class CodexPluginController {
       return { text: "This command needs a Telegram or Discord conversation." };
     }
     const parsed = parseThreadSelectionArgs(args);
+    if (parsed.error) {
+      return { text: parsed.error };
+    }
+    if (parsed.requestedYolo && !this.hasFullAccessProfile()) {
+      return { text: "Full Access is unavailable because no full-access Codex app-server profile is configured." };
+    }
+    if (parsed.requestedFast && parsed.requestedModel && !modelSupportsFast(parsed.requestedModel)) {
+      return {
+        text: `Fast mode is unavailable for ${parsed.requestedModel}. Use a GPT-5.4+ model to enable it.`,
+      };
+    }
+    const overrides: CommandPreferenceOverrides = {
+      requestedModel: parsed.requestedModel,
+      requestedFast: parsed.requestedFast,
+      requestedYolo: parsed.requestedYolo,
+    };
     if (parsed.startNew) {
       return await this.handleStartNewThreadSelection(
         conversation,
@@ -1400,14 +1527,24 @@ export class CodexPluginController {
     }
     if (pendingBind && !binding && !parsed.listProjects && !parsed.query) {
       const syncTopic = parsed.syncTopic || Boolean(pendingBind.syncTopic);
+      const targetProfile = this.resolveRequestedProfile(
+        normalizeAppServerProfile(pendingBind.appServerProfile),
+        parsed.requestedYolo,
+      );
+      const preferences = this.buildBindingPreferencesWithOverrides(
+        pendingBind.preferences,
+        overrides,
+        parsed.requestedModel,
+      );
       const bindResult = await this.requestConversationBinding(
         conversation,
         {
           threadId: pendingBind.threadId,
           workspaceDir: pendingBind.workspaceDir,
-          appServerProfile: normalizeAppServerProfile(pendingBind.appServerProfile),
+          appServerProfile: targetProfile,
           threadTitle: pendingBind.threadTitle,
           syncTopic,
+          preferences,
           notifyBound: true,
         },
         bindingApi.requestConversationBinding,
@@ -1432,15 +1569,7 @@ export class CodexPluginController {
       return {};
     }
     if (parsed.listProjects || !parsed.query) {
-      const passthroughArgs = [
-        parsed.includeAll ? "--all" : "",
-        parsed.listProjects ? "--projects" : "",
-        parsed.startNew ? "--new" : "",
-        parsed.syncTopic ? "--sync" : "",
-        parsed.cwd ? `--cwd ${parsed.cwd}` : "",
-      ]
-        .filter(Boolean)
-        .join(" ");
+      const passthroughArgs = formatThreadSelectionFlags(parsed);
       return await this.handleListCommand(conversation, binding, passthroughArgs, channel);
     }
     const workspaceDir = this.resolveThreadWorkspaceDir(parsed, binding, false);
@@ -1467,6 +1596,12 @@ export class CodexPluginController {
       }
       return buildReplyWithButtons(picker.text, picker.buttons);
     }
+    const targetProfile = this.resolveRequestedProfile(this.getClientProfile(binding), parsed.requestedYolo);
+    const preferences = this.buildBindingPreferencesWithOverrides(
+      binding?.preferences,
+      overrides,
+      parsed.requestedModel,
+    );
     const bindResult = await this.requestConversationBinding(conversation, {
       threadId: selection.thread.threadId,
       workspaceDir:
@@ -1477,9 +1612,10 @@ export class CodexPluginController {
           configuredWorkspaceDir: this.settings.defaultWorkspaceDir,
           serviceWorkspaceDir: this.serviceWorkspaceDir,
       }),
-      appServerProfile: this.getClientProfile(binding),
+      appServerProfile: targetProfile,
       threadTitle: selection.thread.title,
       syncTopic: parsed.syncTopic,
+      preferences,
       notifyBound: true,
     }, bindingApi.requestConversationBinding);
     if (bindResult.status === "pending") {
@@ -1505,25 +1641,96 @@ export class CodexPluginController {
   private async handleStatusCommand(
     conversation: ConversationTarget | null,
     binding: StoredBinding | null,
+    args: string,
     bindingActive: boolean,
   ): Promise<ReplyPayload> {
+    const parsed = parseStatusArgs(args);
+    if (parsed.error) {
+      return { text: parsed.error };
+    }
+    const overrides: CommandPreferenceOverrides = {
+      requestedModel: parsed.requestedModel,
+      requestedFast: parsed.requestedFast,
+      requestedYolo: parsed.requestedYolo,
+    };
+    let note: string | undefined;
+    if (hasCommandPreferenceOverrides(overrides)) {
+      if (!binding || !conversation) {
+        return { text: "Bind this conversation to Codex before changing status settings." };
+      }
+      const { effectiveState } = await this.readEffectiveThreadState(binding);
+      const effectiveModel =
+        parsed.requestedModel?.trim() ||
+        effectiveState?.model?.trim() ||
+        binding.preferences?.preferredModel?.trim() ||
+        this.settings.defaultModel;
+      if (parsed.requestedFast && !modelSupportsFast(effectiveModel)) {
+        return {
+          text: `Fast mode is unavailable for ${effectiveModel ?? "the current model"}. Use a GPT-5.4+ model to enable it.`,
+        };
+      }
+      const currentProfile = this.getClientProfile(binding);
+      const targetProfile = this.resolveRequestedProfile(currentProfile, parsed.requestedYolo);
+      if (targetProfile === "full-access" && !this.hasFullAccessProfile()) {
+        note = buildPermissionsUnavailableNote();
+        const card = await this.buildStatusCard(conversation, binding, bindingActive);
+        const text = `${card.text}\n\n${note}`;
+        if (!card.buttons || !conversation) {
+          return { text };
+        }
+        if (isDiscordChannel(conversation.channel)) {
+          try {
+            await this.sendReply(conversation, {
+              text,
+              buttons: card.buttons,
+            });
+            return { text: "Sent Codex status controls to this Discord conversation." };
+          } catch (error) {
+            this.api.logger.warn(`codex discord status card send failed: ${String(error)}`);
+            return { text };
+          }
+        }
+        return buildReplyWithButtons(text, card.buttons);
+      }
+      const nextPreferences = this.buildBindingPreferencesWithOverrides(
+        binding.preferences,
+        overrides,
+        effectiveModel,
+      );
+      const updatedBindingBase: StoredBinding = {
+        ...binding,
+        preferences: nextPreferences,
+        updatedAt: Date.now(),
+      };
+      const active = this.activeRuns.get(buildConversationKey(conversation));
+      binding =
+        targetProfile !== currentProfile
+          ? active
+            ? await this.persistBindingProfile(updatedBindingBase, currentProfile, targetProfile)
+            : await this.migrateBindingProfile(updatedBindingBase, targetProfile)
+          : (await this.store.upsertBinding(updatedBindingBase), updatedBindingBase);
+      if (active && targetProfile !== currentProfile) {
+        note = buildPendingPermissionsMigrationNote(targetProfile);
+      }
+    }
     const card = await this.buildStatusCard(conversation, binding, bindingActive);
+    const text = note ? `${card.text}\n\n${note}` : card.text;
     if (!card.buttons || !conversation) {
-      return { text: card.text };
+      return { text };
     }
     if (isDiscordChannel(conversation.channel)) {
       try {
         await this.sendReply(conversation, {
-          text: card.text,
+          text,
           buttons: card.buttons,
         });
         return { text: "Sent Codex status controls to this Discord conversation." };
       } catch (error) {
         this.api.logger.warn(`codex discord status card send failed: ${String(error)}`);
-        return { text: card.text };
+        return { text };
       }
     }
-    return buildReplyWithButtons(card.text, card.buttons);
+    return buildReplyWithButtons(text, card.buttons);
   }
 
   private hasFullAccessProfile(): boolean {
@@ -1563,6 +1770,44 @@ export class CodexPluginController {
       state,
       effectiveState: applyBindingPreferencesToThreadState(state, binding) ?? state,
     };
+  }
+
+  private resolveRequestedProfile(
+    currentProfile: AppServerProfile,
+    requestedYolo: boolean | undefined,
+  ): AppServerProfile {
+    if (requestedYolo === undefined) {
+      return currentProfile;
+    }
+    return requestedYolo ? "full-access" : "default";
+  }
+
+  private buildPreferenceUpdatesFromOverrides(
+    overrides: CommandPreferenceOverrides,
+  ): Partial<import("./types.js").ConversationPreferences> {
+    const updates: Partial<import("./types.js").ConversationPreferences> = {};
+    if (overrides.requestedModel?.trim()) {
+      updates.preferredModel = overrides.requestedModel.trim();
+    }
+    if (typeof overrides.requestedFast === "boolean") {
+      updates.preferredServiceTier = overrides.requestedFast ? "fast" : "default";
+    }
+    if (typeof overrides.requestedYolo === "boolean") {
+      updates.preferredApprovalPolicy = overrides.requestedYolo ? "never" : "on-request";
+      updates.preferredSandbox = overrides.requestedYolo ? "danger-full-access" : "workspace-write";
+    }
+    return updates;
+  }
+
+  private buildBindingPreferencesWithOverrides(
+    existing: import("./types.js").ConversationPreferences | undefined,
+    overrides: CommandPreferenceOverrides,
+    modelHint?: string,
+  ): import("./types.js").ConversationPreferences | undefined {
+    return normalizePreferencesForModel(
+      mergeConversationPreferences(existing, this.buildPreferenceUpdatesFromOverrides(overrides)),
+      overrides.requestedModel?.trim() || modelHint,
+    );
   }
 
   private async buildStatusControlButtons(
@@ -2154,30 +2399,6 @@ export class CodexPluginController {
       `codex model command requested=${preferredModel} responseModel=${nextState.model?.trim() || "<none>"} ${formatBindingPreferencesForLog(updatedBinding)}`,
     );
     return { text: `Codex model set to ${preferredModel}.` };
-  }
-
-  private async handlePermissionsCommand(binding: StoredBinding | null): Promise<ReplyPayload> {
-    if (!binding) {
-      const [account, limits] = await Promise.all([
-        this.client.readAccount({ profile: "default" }),
-        this.client.readRateLimits({ profile: "default" }),
-      ]);
-      return { text: formatAccountSummary(account, limits) };
-    }
-    const profile = this.getClientProfile(binding);
-    const [state, account, limits] = await Promise.all([
-      this.client.readThreadState({
-        profile,
-        sessionKey: binding.sessionKey,
-        threadId: binding.threadId,
-      }),
-      this.client.readAccount({ profile, sessionKey: binding.sessionKey }),
-      this.client.readRateLimits({ profile, sessionKey: binding.sessionKey }),
-    ]);
-    return {
-      text:
-        `${formatThreadState(applyBindingPreferencesToThreadState(state, binding) ?? state, binding)}\n\n${formatAccountSummary(account, limits)}`.trim(),
-    };
   }
 
   private async handlePromptAlias(
@@ -3251,7 +3472,7 @@ export class CodexPluginController {
 
   private async buildThreadPickerButtons(params: {
     conversation: ConversationTarget;
-    syncTopic?: boolean;
+    parsed: ReturnType<typeof parseThreadSelectionArgs>;
     threads: Array<{ threadId: string; title?: string; projectKey?: string }>;
     showProjectName: boolean;
   }): Promise<PluginInteractiveButtons | undefined> {
@@ -3267,7 +3488,10 @@ export class CodexPluginController {
         conversation: params.conversation,
         threadId: thread.threadId,
         workspaceDir: thread.projectKey?.trim() || this.settings.defaultWorkspaceDir || process.cwd(),
-        syncTopic: params.syncTopic,
+        syncTopic: params.parsed.syncTopic,
+        requestedModel: params.parsed.requestedModel,
+        requestedFast: params.parsed.requestedFast,
+        requestedYolo: params.parsed.requestedYolo,
       });
       rows.push([
         {
@@ -3305,6 +3529,9 @@ export class CodexPluginController {
             workspaceDir: params.parsed.cwd,
             query: params.parsed.query || undefined,
             projectName: params.projectName,
+            requestedModel: params.parsed.requestedModel,
+            requestedFast: params.parsed.requestedFast,
+            requestedYolo: params.parsed.requestedYolo,
             page: params.page - 1,
           },
         });
@@ -3324,6 +3551,9 @@ export class CodexPluginController {
             workspaceDir: params.parsed.cwd,
             query: params.parsed.query || undefined,
             projectName: params.projectName,
+            requestedModel: params.parsed.requestedModel,
+            requestedFast: params.parsed.requestedFast,
+            requestedYolo: params.parsed.requestedYolo,
             page: params.page + 1,
           },
         });
@@ -3346,6 +3576,9 @@ export class CodexPluginController {
         includeAll: true,
         syncTopic: params.parsed.syncTopic,
         workspaceDir: params.parsed.cwd,
+        requestedModel: params.parsed.requestedModel,
+        requestedFast: params.parsed.requestedFast,
+        requestedYolo: params.parsed.requestedYolo,
         page: 0,
       },
     });
@@ -3360,6 +3593,9 @@ export class CodexPluginController {
             syncTopic: params.parsed.syncTopic,
             workspaceDir: params.parsed.cwd,
             query: params.parsed.query || undefined,
+            requestedModel: params.parsed.requestedModel,
+            requestedFast: params.parsed.requestedFast,
+            requestedYolo: params.parsed.requestedYolo,
             page: 0,
           },
         })
@@ -3421,7 +3657,7 @@ export class CodexPluginController {
     const threadButtons =
       (await this.buildThreadPickerButtons({
       conversation,
-      syncTopic: parsed.syncTopic,
+      parsed,
       threads: pageResult.items,
       showProjectName: !projectName && (fallbackToGlobal || distinctProjects.size > 1),
       })) ?? [];
@@ -3471,6 +3707,9 @@ export class CodexPluginController {
                   conversation,
                   workspaceDir: workspaces[0]?.workspaceDir ?? option.name,
                   syncTopic: parsed.syncTopic,
+                  requestedModel: parsed.requestedModel,
+                  requestedFast: parsed.requestedFast,
+                  requestedYolo: parsed.requestedYolo,
                 });
               }
               return this.store.putCallback({
@@ -3483,6 +3722,9 @@ export class CodexPluginController {
                   syncTopic: parsed.syncTopic,
                   workspaceDir: parsed.cwd,
                   projectName: option.name,
+                  requestedModel: parsed.requestedModel,
+                  requestedFast: parsed.requestedFast,
+                  requestedYolo: parsed.requestedYolo,
                   page: 0,
                 },
               });
@@ -3496,6 +3738,9 @@ export class CodexPluginController {
                 syncTopic: parsed.syncTopic,
                 workspaceDir: parsed.cwd,
                 projectName: option.name,
+                requestedModel: parsed.requestedModel,
+                requestedFast: parsed.requestedFast,
+                requestedYolo: parsed.requestedYolo,
                 page: 0,
               },
             });
@@ -3519,6 +3764,9 @@ export class CodexPluginController {
             syncTopic: parsed.syncTopic,
             workspaceDir: parsed.cwd,
             query: parsed.query || undefined,
+            requestedModel: parsed.requestedModel,
+            requestedFast: parsed.requestedFast,
+            requestedYolo: parsed.requestedYolo,
             page: projectOptions.page - 1,
           },
         });
@@ -3538,6 +3786,9 @@ export class CodexPluginController {
             syncTopic: parsed.syncTopic,
             workspaceDir: parsed.cwd,
             query: parsed.query || undefined,
+            requestedModel: parsed.requestedModel,
+            requestedFast: parsed.requestedFast,
+            requestedYolo: parsed.requestedYolo,
             page: projectOptions.page + 1,
           },
         });
@@ -3559,6 +3810,9 @@ export class CodexPluginController {
         includeAll: true,
         syncTopic: parsed.syncTopic,
         workspaceDir: parsed.cwd,
+        requestedModel: parsed.requestedModel,
+        requestedFast: parsed.requestedFast,
+        requestedYolo: parsed.requestedYolo,
         page: 0,
       },
     });
@@ -3609,6 +3863,9 @@ export class CodexPluginController {
         conversation,
         workspaceDir: option.workspaceDir,
         syncTopic: parsed.syncTopic,
+        requestedModel: parsed.requestedModel,
+        requestedFast: parsed.requestedFast,
+        requestedYolo: parsed.requestedYolo,
       });
       buttons.push([
         {
@@ -3630,6 +3887,9 @@ export class CodexPluginController {
             syncTopic: parsed.syncTopic,
             workspaceDir: parsed.cwd,
             projectName,
+            requestedModel: parsed.requestedModel,
+            requestedFast: parsed.requestedFast,
+            requestedYolo: parsed.requestedYolo,
             page: workspaceOptions.page - 1,
           },
         });
@@ -3649,6 +3909,9 @@ export class CodexPluginController {
             syncTopic: parsed.syncTopic,
             workspaceDir: parsed.cwd,
             projectName,
+            requestedModel: parsed.requestedModel,
+            requestedFast: parsed.requestedFast,
+            requestedYolo: parsed.requestedYolo,
             page: workspaceOptions.page + 1,
           },
         });
@@ -3671,6 +3934,9 @@ export class CodexPluginController {
         includeAll: true,
         syncTopic: parsed.syncTopic,
         workspaceDir: parsed.cwd,
+        requestedModel: parsed.requestedModel,
+        requestedFast: parsed.requestedFast,
+        requestedYolo: parsed.requestedYolo,
         page: 0,
       },
     });
@@ -3682,6 +3948,9 @@ export class CodexPluginController {
         includeAll: true,
         syncTopic: parsed.syncTopic,
         workspaceDir: parsed.cwd,
+        requestedModel: parsed.requestedModel,
+        requestedFast: parsed.requestedFast,
+        requestedYolo: parsed.requestedYolo,
         page: 0,
       },
     });
@@ -3765,6 +4034,11 @@ export class CodexPluginController {
         this.store.getBinding(callback.conversation),
         callback.workspaceDir,
         callback.syncTopic ?? false,
+        {
+          requestedModel: callback.requestedModel,
+          requestedFast: callback.requestedFast,
+          requestedYolo: callback.requestedYolo,
+        },
         responders.requestConversationBinding,
       );
       if (result.status === "pending") {
@@ -3782,7 +4056,10 @@ export class CodexPluginController {
         await responders.clear().catch(() => undefined);
       }
       const currentBinding = this.store.getBinding(callback.conversation);
-      const profile = this.getClientProfile(currentBinding);
+      const profile = this.resolveRequestedProfile(
+        this.getClientProfile(currentBinding),
+        callback.requestedYolo,
+      );
       const threadState = await this.client
         .readThreadState({
           profile,
@@ -3790,6 +4067,15 @@ export class CodexPluginController {
           threadId: callback.threadId,
         })
         .catch(() => undefined);
+      const preferences = this.buildBindingPreferencesWithOverrides(
+        currentBinding?.preferences,
+        {
+          requestedModel: callback.requestedModel,
+          requestedFast: callback.requestedFast,
+          requestedYolo: callback.requestedYolo,
+        },
+        callback.requestedModel ?? threadState?.model?.trim(),
+      );
       const bindResult = await this.requestConversationBinding(
         callback.conversation,
         {
@@ -3798,6 +4084,7 @@ export class CodexPluginController {
           appServerProfile: profile,
           threadTitle: threadState?.threadName,
           syncTopic: callback.syncTopic,
+          preferences,
           notifyBound: true,
         },
         responders.requestConversationBinding,
@@ -4374,6 +4661,9 @@ export class CodexPluginController {
         callback.view.mode === "workspaces",
       syncTopic: callback.view.syncTopic ?? false,
       cwd: callback.view.workspaceDir,
+      requestedModel: callback.view.requestedModel,
+      requestedFast: callback.view.requestedFast,
+      requestedYolo: callback.view.requestedYolo,
       query:
         callback.view.mode === "threads" || callback.view.mode === "projects"
           ? callback.view.query ?? ""
@@ -4411,19 +4701,25 @@ export class CodexPluginController {
     binding: StoredBinding | null,
     workspaceDir: string,
     syncTopic: boolean,
+    overrides: CommandPreferenceOverrides,
     requestConversationBinding?: PickerResponders["requestConversationBinding"],
   ): Promise<
     | { status: "bound" }
     | { status: "pending"; reply: ReplyPayload }
     | { status: "error"; message: string }
   > {
-    const profile = this.getClientProfile(binding);
+    const profile = this.resolveRequestedProfile(this.getClientProfile(binding), overrides.requestedYolo);
     const created = await this.client.startThread({
       profile,
       sessionKey: binding?.sessionKey,
       workspaceDir,
       model: undefined,
     });
+    const preferences = this.buildBindingPreferencesWithOverrides(
+      binding?.preferences,
+      overrides,
+      overrides.requestedModel ?? created.model?.trim(),
+    );
     const bindResult = await this.requestConversationBinding(
       conversation,
       {
@@ -4432,6 +4728,7 @@ export class CodexPluginController {
         threadTitle: created.threadName,
         appServerProfile: profile,
         syncTopic,
+        preferences,
         notifyBound: true,
       },
       requestConversationBinding,
@@ -4558,6 +4855,7 @@ export class CodexPluginController {
       threadTitle?: string;
       appServerProfile?: AppServerProfile;
       pendingAppServerProfile?: AppServerProfile;
+      preferences?: import("./types.js").ConversationPreferences;
     },
   ): Promise<StoredBinding> {
     const sessionKey = buildPluginSessionKey(params.threadId);
@@ -4577,7 +4875,7 @@ export class CodexPluginController {
       threadTitle: params.threadTitle,
       pinnedBindingMessage: existing?.pinnedBindingMessage,
       contextUsage: existing?.contextUsage,
-      preferences: existing?.preferences,
+      preferences: params.preferences ?? existing?.preferences,
       updatedAt: Date.now(),
     };
     await this.store.upsertBinding(record);
@@ -4600,6 +4898,7 @@ export class CodexPluginController {
       workspaceDir: pending.workspaceDir,
       threadTitle: pending.threadTitle,
       appServerProfile: normalizeAppServerProfile(pending.appServerProfile),
+      preferences: pending.preferences,
     });
     return { binding, pendingBind: pending };
   }
@@ -4613,6 +4912,7 @@ export class CodexPluginController {
       threadTitle?: string;
       syncTopic?: boolean;
       notifyBound?: boolean;
+      preferences?: import("./types.js").ConversationPreferences;
     },
     requestBinding?: (
       params?: { summary?: string },
@@ -4656,6 +4956,7 @@ export class CodexPluginController {
           threadTitle: params.threadTitle,
           syncTopic: params.syncTopic,
           notifyBound: params.notifyBound,
+          preferences: params.preferences,
           updatedAt: Date.now(),
         });
       }

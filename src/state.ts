@@ -18,6 +18,9 @@ type PutCallbackInput =
       conversation: ConversationTarget;
       workspaceDir: string;
       syncTopic?: boolean;
+      requestedModel?: string;
+      requestedFast?: boolean;
+      requestedYolo?: boolean;
       token?: string;
       ttlMs?: number;
     }
@@ -27,6 +30,9 @@ type PutCallbackInput =
       threadId: string;
       workspaceDir: string;
       syncTopic?: boolean;
+      requestedModel?: string;
+      requestedFast?: boolean;
+      requestedYolo?: boolean;
       token?: string;
       ttlMs?: number;
     }
@@ -312,6 +318,9 @@ export class PluginStateStore {
             conversation: callback.conversation,
             workspaceDir: callback.workspaceDir,
             syncTopic: callback.syncTopic,
+            requestedModel: callback.requestedModel,
+            requestedFast: callback.requestedFast,
+            requestedYolo: callback.requestedYolo,
             token: callback.token ?? this.createCallbackToken(),
             createdAt: now,
             expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
@@ -323,6 +332,9 @@ export class PluginStateStore {
             threadId: callback.threadId,
             workspaceDir: callback.workspaceDir,
             syncTopic: callback.syncTopic,
+            requestedModel: callback.requestedModel,
+            requestedFast: callback.requestedFast,
+            requestedYolo: callback.requestedYolo,
             token: callback.token ?? this.createCallbackToken(),
             createdAt: now,
             expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),

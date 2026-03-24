@@ -3,9 +3,9 @@ import { CodexPluginController } from "./src/controller.js";
 import { INTERACTIVE_NAMESPACE } from "./src/types.js";
 
 const COMMANDS = [
-  ["cas_resume", "Resume a Codex thread, or create a new one with --new."],
+  ["cas_resume", "Resume or create a Codex thread with optional --new, --model, --fast/--no-fast, and --yolo/--no-yolo controls."],
   ["cas_detach", "Detach this conversation from the current Codex thread."],
-  ["cas_status", "Show the current Codex binding and thread state."],
+  ["cas_status", "Show Codex status and controls, or update model, fast mode, and permissions with --model, --fast/--no-fast, and --yolo/--no-yolo."],
   ["cas_stop", "Stop the active Codex turn."],
   ["cas_steer", "Send a steer message to the active Codex turn."],
   ["cas_plan", "Ask Codex to produce a plan, or use 'off' to exit plan mode."],
@@ -14,9 +14,6 @@ const COMMANDS = [
   ["cas_skills", "List Codex skills."],
   ["cas_experimental", "List Codex experimental features."],
   ["cas_mcp", "List Codex MCP servers."],
-  ["cas_fast", "Toggle Codex fast mode."],
-  ["cas_model", "List or switch the Codex model."],
-  ["cas_permissions", "Show Codex permissions and account status."],
   ["cas_init", "Forward /init to Codex."],
   ["cas_diff", "Forward /diff to Codex."],
   ["cas_rename", "Rename the Codex thread and sync the channel name when possible."],

@@ -290,6 +290,7 @@ export type StoredPendingBind = {
   threadTitle?: string;
   syncTopic?: boolean;
   notifyBound?: boolean;
+  preferences?: ConversationPreferences;
   updatedAt: number;
 };
 
@@ -310,6 +311,9 @@ export type CallbackAction =
       conversation: ConversationRef;
       workspaceDir: string;
       syncTopic?: boolean;
+      requestedModel?: string;
+      requestedFast?: boolean;
+      requestedYolo?: boolean;
       createdAt: number;
       expiresAt: number;
     }
@@ -320,6 +324,9 @@ export type CallbackAction =
       threadId: string;
       workspaceDir: string;
       syncTopic?: boolean;
+      requestedModel?: string;
+      requestedFast?: boolean;
+      requestedYolo?: boolean;
       createdAt: number;
       expiresAt: number;
     }
@@ -356,6 +363,9 @@ export type CallbackAction =
             query?: string;
             workspaceDir?: string;
             projectName?: string;
+            requestedModel?: string;
+            requestedFast?: boolean;
+            requestedYolo?: boolean;
           }
         | {
             mode: "projects";
@@ -366,6 +376,9 @@ export type CallbackAction =
             query?: string;
             workspaceDir?: string;
             projectName?: string;
+            requestedModel?: string;
+            requestedFast?: boolean;
+            requestedYolo?: boolean;
           }
         | {
             mode: "workspaces";
@@ -375,6 +388,9 @@ export type CallbackAction =
             syncTopic?: boolean;
             workspaceDir?: string;
             projectName: string;
+            requestedModel?: string;
+            requestedFast?: boolean;
+            requestedYolo?: boolean;
           };
       createdAt: number;
       expiresAt: number;
