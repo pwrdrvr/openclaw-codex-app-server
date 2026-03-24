@@ -1,6 +1,6 @@
 ---
 name: test-ocas-openclaw
-description: "Regression test the OpenClaw Codex App Server plugin against a live local OpenClaw instance in Telegram or Discord. Use when the user wants an end-to-end OCAS manual test pass, wants to verify binding, approvals, plan mode, review, compact, status-card controls, model or fast toggles, split default-vs-full-access permission behavior, stop-button interrupt handling, rename, or other slash-command behavior, or wants reproducible bug notes from a live chat integration run."
+description: "Regression test the OpenClaw Codex App Server plugin against a live local OpenClaw instance in Telegram or Discord. Use when the user wants an end-to-end OCAS manual test pass, wants to verify binding, `/cas_resume` or `/cas_status` flags for model/fast/yolo, approvals, plan mode, review, compact, status-card controls, split default-vs-full-access permission behavior, stop-button interrupt handling, rename, or other slash-command behavior, or wants reproducible bug notes from a live chat integration run."
 ---
 
 # Test OCAS OpenClaw
@@ -59,6 +59,8 @@ Treat the state files as diagnostic evidence, not as a thing to hand-edit.
 
 - Prefer `/cas_resume` or `/cas_resume --all` with the normal picker flow.
 - Avoid `/cas_resume --all <thread-id>` for now. It is a known regression path and may not surface the expected approval UX.
+- Cover at least one flag-driven bind path with `/cas_resume --model <name>`, `/cas_resume --fast` or `/cas_resume --no-fast`, and `/cas_resume --yolo` or `/cas_resume --no-yolo`.
+- If the bind path falls back into project or thread pickers, verify the requested model, fast, and yolo settings still apply after the picker choice and final bind approval.
 - When approval appears, use Allow Once unless the user asks otherwise.
 - After binding, send `who are you`.
 - Expect a Codex response. If the reply sounds like OpenClaw persona text instead of Codex, the bind failed.
@@ -74,17 +76,27 @@ Treat the state files as diagnostic evidence, not as a thing to hand-edit.
 - Expect one status message that edits in place rather than a stream of follow-up bot messages.
 - Verify the card includes:
   - `Select Model`
-  - `Fast: toggle`
+  - `Reasoning: ...`
   - `Permissions: toggle`
+  - `Compact`
   - `Stop`
+- Verify `Fast: toggle` only appears when the current model supports fast mode. If the current model does not support fast mode, expect no fast button.
 - Click `Select Model`.
 - Expect the same message to switch into a model picker.
 - Choose a different model.
 - Expect the same message to return to the status card and show the new model on the `Model:` line.
 - Run `/cas_status` again and confirm the new model is still shown.
-- Click `Fast: toggle`.
-- Expect the same message to update `Fast mode:` immediately.
-- Run `/cas_status` again and confirm the fast-mode state persisted.
+- Click the reasoning button.
+- Expect the same message to switch into a reasoning picker.
+- Choose a different reasoning level.
+- Expect the same message to return to the status card and show the new reasoning on the `Model:` line.
+- Run `/cas_status` again and confirm the reasoning state persisted independently of the current model.
+- If the current model supports fast mode:
+  - click `Fast: toggle`
+  - expect the same message to update `Fast mode:` immediately
+  - run `/cas_status` again and confirm the fast-mode state persisted
+- If the current model does not support fast mode:
+  - use `Select Model` to switch to a fast-capable model before testing the fast toggle
 - Click `Permissions: toggle`.
 - If both app-server profiles are configured and no turn is active:
   - expect the same message to update `Permissions:` between `Default` and `Full Access`
@@ -162,27 +174,27 @@ Run `npm view dive version` and reply with only the version string.
 
 11. Cover other control commands as needed.
 
+- `/cas_resume`
+  - Verify `--model`, `--fast` or `--no-fast`, and `--yolo` or `--no-yolo` paths on direct bind, picker bind, and `--new` flows.
+  - Expect the chosen settings to show up immediately in `/cas_status` after the bind completes.
 - `/cas_mcp`
   - Expect a list of configured MCP servers.
 - `/cas_skills`
   - Expect installed skills.
   - If the response shows both a full text list and buttons for the same skills, record a display bug rather than a blocker.
-- `/cas_model`
-  - Expect model list and selection controls.
-  - Expect model selection from the status-card picker to reflect back into `/cas_status`.
-- `/cas_fast`
-  - Verify `on`, `off`, and `status` behavior when the conversation is bound.
-  - Expect the status card and slash-command path to agree on the current fast state.
 - `/cas_status`
-  - Verify in-place message edits for model, fast, permissions, and stop controls.
+  - Verify in-place message edits for model, reasoning, fast when supported, permissions, compact, and stop controls.
   - Verify the card does not post extra bot messages for each button press unless the platform requires it.
+  - Verify `/cas_status --model`, `/cas_status --fast` or `/cas_status --no-fast`, and `/cas_status --yolo` or `/cas_status --no-yolo` update the bound conversation settings and refresh the shown status.
 - `/cas_compact`
   - Expect progress keepalives and a final context-usage report.
 - `/cas_rename`
   - Verify thread rename and, if requested, `--sync` topic rename behavior.
-- `/cas_diff`, `/cas_permissions`, `/cas_init`
+- `/cas_diff`, `/cas_init`
   - Verify current forward-or-placeholder behavior instead of assuming full implementation.
   - Treat known-placeholder behavior as neutral, not as a regression, unless the user says the command should already work.
+- Do not look for `/cas_model`, `/cas_fast`, or `/cas_permissions`.
+  - Those controls were folded into `/cas_resume`, `/cas_status`, and the status card.
 
 12. Clean up.
 
@@ -201,7 +213,9 @@ Use a flat results table while testing:
 | Area | Status | Observed | Notes |
 | --- | --- | --- | --- |
 | `/cas_status` | `✅` | Bound topic reply in-topic | Include thread, model, and plugin version |
-| Status controls | `✅` or `❌` | Same message edits in place for model, fast, permissions, and stop | Record extra messages as a bug |
+| `/cas_resume` flags | `✅` or `❌` | `--model`, `--fast` or `--no-fast`, `--yolo` or `--no-yolo` survive bind flow | Include whether a picker path preserved the settings |
+| Status controls | `✅` or `❌` | Same message edits in place for model, reasoning, fast when supported, permissions, compact, and stop | Record extra messages as a bug |
+| `/cas_status` flags | `✅` or `❌` | `--model`, `--fast` or `--no-fast`, `--yolo` or `--no-yolo` refresh the binding and status card | Note unsupported fast-model cases separately |
 | Approval dialog | `✅` | Real execution approval with trimmed `npm view dive` | Approve after verifying |
 | Full Access execution | `✅`, `❌`, or `➖` | `npm view dive version` runs without approval | Use `➖` if no full-access profile is configured |
 | Permission migration | `✅` or `❌` | Default vs Full Access persists across `/cas_status` | Note pending migration if toggled mid-run |
