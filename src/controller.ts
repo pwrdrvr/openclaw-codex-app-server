@@ -454,7 +454,7 @@ function formatFastModeValue(value: string | undefined): string {
 
 function normalizePreferenceServiceTier(value: string | undefined | null): string | null {
   const normalized = normalizeServiceTier(value);
-  if (!normalized || normalized === "default" || normalized === "auto" || normalized === "flex") {
+  if (!normalized || normalized === "default" || normalized === "auto") {
     return null;
   }
   return normalized;
@@ -487,6 +487,29 @@ function applyBindingPreferencesToThreadState(
     approvalPolicy: preferredApprovalPolicy || baseState.approvalPolicy,
     sandbox: preferredSandbox || baseState.sandbox,
   };
+}
+
+function formatThreadStateForLog(
+  threadState: import("./types.js").ThreadState | undefined,
+): string {
+  if (!threadState) {
+    return "model=<none> tier=<none> approval=<none> sandbox=<none>";
+  }
+  return [
+    `model=${threadState.model?.trim() || "<none>"}`,
+    `tier=${threadState.serviceTier?.trim() || "<none>"}`,
+    `approval=${threadState.approvalPolicy?.trim() || "<none>"}`,
+    `sandbox=${threadState.sandbox?.trim() || "<none>"}`,
+  ].join(" ");
+}
+
+function formatBindingPreferencesForLog(binding: StoredBinding | null): string {
+  return [
+    `prefModel=${binding?.preferences?.preferredModel?.trim() || "<none>"}`,
+    `prefTier=${binding?.preferences?.preferredServiceTier?.trim() || "<none>"}`,
+    `prefApproval=${binding?.preferences?.preferredApprovalPolicy?.trim() || "<none>"}`,
+    `prefSandbox=${binding?.preferences?.preferredSandbox?.trim() || "<none>"}`,
+  ].join(" ");
 }
 
 const PLAN_PROGRESS_DELAY_MS = 12_000;
@@ -1496,6 +1519,10 @@ export class CodexPluginController {
         threadId: binding.threadId,
       }),
     ]);
+    const effectiveState = applyBindingPreferencesToThreadState(state, binding) ?? state;
+    this.api.logger.debug?.(
+      `codex model picker conversation=${this.formatConversationForLog(conversation)} raw=${formatThreadStateForLog(state)} effective=${formatThreadStateForLog(effectiveState)} ${formatBindingPreferencesForLog(binding)}`,
+    );
     const buttons: PluginInteractiveButtons = [];
     for (const model of models.slice(0, 8)) {
       const callback = await this.store.putCallback({
@@ -1506,13 +1533,18 @@ export class CodexPluginController {
       });
       buttons.push([
         {
-          text: `${model.id}${model.current || model.id === state.model ? " (current)" : ""}`,
+          text:
+            `${model.id}${
+              model.id === effectiveState?.model || (!effectiveState?.model && model.current)
+                ? " (current)"
+                : ""
+            }`,
           callback_data: `${INTERACTIVE_NAMESPACE}:${callback.token}`,
         },
       ]);
     }
     return {
-      text: formatModels(models, state),
+      text: formatModels(models, effectiveState),
       buttons,
     };
   }
@@ -1820,20 +1852,25 @@ export class CodexPluginController {
       threadId: binding.threadId,
       serviceTier: nextTier,
     });
-    await this.store.upsertBinding({
+    const preferredServiceTier = normalizePreferenceServiceTier(nextTier);
+    const updatedBinding: StoredBinding = {
       ...binding,
       preferences: {
         ...(binding.preferences ?? {
           preferredServiceTier: null,
           updatedAt: Date.now(),
         }),
-        preferredServiceTier: normalizePreferenceServiceTier(updated.serviceTier),
+        preferredServiceTier,
         updatedAt: Date.now(),
       },
       updatedAt: Date.now(),
-    });
+    };
+    await this.store.upsertBinding(updatedBinding);
+    this.api.logger.debug?.(
+      `codex fast command requested=${nextTier} responseTier=${updated.serviceTier?.trim() || "<none>"} ${formatBindingPreferencesForLog(updatedBinding)}`,
+    );
     return {
-      text: `Fast mode set to ${formatFastModeValue(updated.serviceTier)}.`,
+      text: `Fast mode set to ${formatFastModeValue(nextTier)}.`,
     };
   }
 
@@ -1877,19 +1914,24 @@ export class CodexPluginController {
       threadId: binding.threadId,
       model: args.trim(),
     });
-    await this.store.upsertBinding({
+    const preferredModel = args.trim();
+    const updatedBinding: StoredBinding = {
       ...binding,
       preferences: {
         ...(binding.preferences ?? {
           preferredServiceTier: null,
           updatedAt: Date.now(),
         }),
-        preferredModel: state.model || args.trim(),
+        preferredModel,
         updatedAt: Date.now(),
       },
       updatedAt: Date.now(),
-    });
-    return { text: `Codex model set to ${state.model || args.trim()}.` };
+    };
+    await this.store.upsertBinding(updatedBinding);
+    this.api.logger.debug?.(
+      `codex model command requested=${preferredModel} responseModel=${state.model?.trim() || "<none>"} ${formatBindingPreferencesForLog(updatedBinding)}`,
+    );
+    return { text: `Codex model set to ${preferredModel}.` };
   }
 
   private async handlePermissionsCommand(binding: StoredBinding | null): Promise<ReplyPayload> {
@@ -3693,6 +3735,7 @@ export class CodexPluginController {
         threadId: binding.threadId,
         serviceTier: nextTier,
       });
+      const preferredServiceTier = normalizePreferenceServiceTier(nextTier);
       const updatedBinding: StoredBinding = {
         ...binding,
         preferences: {
@@ -3700,12 +3743,15 @@ export class CodexPluginController {
             preferredServiceTier: null,
             updatedAt: Date.now(),
           }),
-          preferredServiceTier: normalizePreferenceServiceTier(updatedState.serviceTier),
+          preferredServiceTier,
           updatedAt: Date.now(),
         },
         updatedAt: Date.now(),
       };
       await this.store.upsertBinding(updatedBinding);
+      this.api.logger.debug?.(
+        `codex status control toggle-fast conversation=${this.formatConversationForLog(callback.conversation)} requested=${nextTier} raw=${formatThreadStateForLog(updatedState)} effective=${formatThreadStateForLog(applyBindingPreferencesToThreadState(updatedState, updatedBinding))} ${formatBindingPreferencesForLog(updatedBinding)}`,
+      );
       const statusCard = await this.buildStatusCard(
         {
           ...callback.conversation,
@@ -3754,6 +3800,14 @@ export class CodexPluginController {
           sandbox: "danger-full-access",
         }).catch(() => updatedState);
       }
+      const preferredApprovalPolicy =
+        nextIsFullAuto
+          ? updatedState.approvalPolicy?.trim() || "never"
+          : "on-request";
+      const preferredSandbox =
+        nextIsFullAuto
+          ? updatedState.sandbox?.trim() || "workspace-write"
+          : "workspace-write";
       const updatedBinding: StoredBinding = {
         ...binding,
         preferences: {
@@ -3761,13 +3815,16 @@ export class CodexPluginController {
             preferredServiceTier: null,
             updatedAt: Date.now(),
           }),
-          preferredApprovalPolicy: updatedState.approvalPolicy?.trim() || undefined,
-          preferredSandbox: updatedState.sandbox?.trim() || undefined,
+          preferredApprovalPolicy,
+          preferredSandbox,
           updatedAt: Date.now(),
         },
         updatedAt: Date.now(),
       };
       await this.store.upsertBinding(updatedBinding);
+      this.api.logger.debug?.(
+        `codex status control toggle-permissions conversation=${this.formatConversationForLog(callback.conversation)} requestedApproval=${nextIsFullAuto ? "never" : "on-request"} requestedSandbox=${nextIsFullAuto ? "danger-full-access" : "workspace-write"} raw=${formatThreadStateForLog(updatedState)} effective=${formatThreadStateForLog(applyBindingPreferencesToThreadState(updatedState, updatedBinding))} ${formatBindingPreferencesForLog(updatedBinding)}`,
+      );
       const statusCard = await this.buildStatusCard(
         {
           ...callback.conversation,
@@ -3821,12 +3878,15 @@ export class CodexPluginController {
             preferredServiceTier: null,
             updatedAt: Date.now(),
           }),
-          preferredModel: state.model || callback.model,
+          preferredModel: callback.model,
           updatedAt: Date.now(),
         },
         updatedAt: Date.now(),
       };
       await this.store.upsertBinding(updatedBinding);
+      this.api.logger.debug?.(
+        `codex status control set-model conversation=${this.formatConversationForLog(callback.conversation)} requested=${callback.model} raw=${formatThreadStateForLog(state)} effective=${formatThreadStateForLog(applyBindingPreferencesToThreadState(state, updatedBinding))} ${formatBindingPreferencesForLog(updatedBinding)}`,
+      );
       if (callback.returnToStatus) {
         const statusCard = await this.buildStatusCard(
           {
@@ -4289,13 +4349,14 @@ export class CodexPluginController {
       }).catch(() => []),
       this.resolveProjectFolder(binding?.workspaceDir || workspaceDir),
     ]);
+    const effectiveThreadState = applyBindingPreferencesToThreadState(threadState, binding);
     this.api.logger.debug?.(
-      `codex status snapshot bindingActive=${bindingActive ? "yes" : "no"} activeRun=${activeRun?.mode ?? "none"} boundThread=${binding?.threadId ?? "<none>"} threadModel=${threadState?.model?.trim() || "<none>"} threadCwd=${threadState?.cwd?.trim() || "<none>"}`,
+      `codex status snapshot bindingActive=${bindingActive ? "yes" : "no"} activeRun=${activeRun?.mode ?? "none"} boundThread=${binding?.threadId ?? "<none>"} raw=${formatThreadStateForLog(threadState)} effective=${formatThreadStateForLog(effectiveThreadState)} ${formatBindingPreferencesForLog(binding)} threadCwd=${threadState?.cwd?.trim() || "<none>"}`,
     );
 
     return formatCodexStatusText({
       pluginVersion: PLUGIN_VERSION,
-      threadState: applyBindingPreferencesToThreadState(threadState, binding),
+      threadState: effectiveThreadState,
       account,
       rateLimits: limits,
       bindingActive,

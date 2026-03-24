@@ -610,7 +610,7 @@ export function formatModels(models: ModelSummary[], state?: ThreadState): strin
   if (models.length === 0) {
     return state?.model ? `Current model: ${state.model}` : "No Codex models reported.";
   }
-  const currentModel = models.find((model) => model.current)?.id || state?.model;
+  const currentModel = state?.model || models.find((model) => model.current)?.id;
   const lines = [];
   if (currentModel) {
     lines.push(`Current model: ${currentModel}`);
@@ -618,7 +618,8 @@ export function formatModels(models: ModelSummary[], state?: ThreadState): strin
   lines.push(
     "Available models:",
     ...models.slice(0, 20).map((model) => {
-      const current = model.current || model.id === state?.model ? " (current)" : "";
+      const current =
+        model.id === state?.model || (!state?.model && model.current) ? " (current)" : "";
       return `- ${model.id}${current}`;
     }),
   );
