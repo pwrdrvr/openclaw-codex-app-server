@@ -1672,6 +1672,39 @@ describe("Discord controller flows", () => {
     ).toBeNull();
   });
 
+  it("reconciles existing Telegram #General bindings into runtime binding records", async () => {
+    const { controller, api } = await createControllerHarness();
+    vi.mocked(api.runtime.channel.bindings.bind).mockClear();
+
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123:topic:1",
+        parentConversationId: "123",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      threadTitle: "Discord Thread",
+      updatedAt: Date.now(),
+    });
+
+    await (controller as any).reconcileBindings();
+
+    expect(api.runtime.channel.bindings.bind).toHaveBeenCalledWith(
+      expect.objectContaining({
+        targetSessionKey: expect.stringMatching(/^plugin-binding:openclaw-codex-app-server:[0-9a-f]{24}$/),
+        conversation: {
+          channel: "telegram",
+          accountId: "default",
+          conversationId: "123:topic:1",
+          parentConversationId: "123",
+        },
+      }),
+    );
+  });
+
   it("falls back to chat-level Telegram binding when messageThreadId is missing on cas_resume", async () => {
     const { controller } = await createControllerHarness();
 

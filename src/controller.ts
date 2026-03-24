@@ -432,6 +432,13 @@ function buildRuntimePluginBindingSessionKey(
   return `plugin-binding:${PLUGIN_ID}:${hash}`;
 }
 
+function isTelegramGeneralTopicConversation(conversation: {
+  channel: string;
+  conversationId: string;
+}): boolean {
+  return isTelegramChannel(conversation.channel) && conversation.conversationId.includes(":topic:1");
+}
+
 function buildReplyWithButtons(text: string, buttons?: PluginInteractiveButtons): ReplyPayload {
   return buttons
     ? {
@@ -741,6 +748,9 @@ export class CodexPluginController {
     }
     await this.store.load();
     await this.client.logStartupProbe().catch(() => undefined);
+    await this.reconcileBindings().catch((error) => {
+      this.api.logger.warn(`codex binding reconcile failed during start: ${String(error)}`);
+    });
     this.started = true;
   }
 
@@ -817,6 +827,33 @@ export class CodexPluginController {
     ].join(" ");
   }
 
+  private describeRuntimeBindingForLog(binding: { targetSessionKey?: string } | null | undefined): string {
+    if (!binding?.targetSessionKey?.trim()) {
+      return "<none>";
+    }
+    return binding.targetSessionKey.trim();
+  }
+
+  private resolveRuntimeBinding(conversation: ConversationTarget | null): { targetSessionKey?: string } | null {
+    if (!conversation) {
+      return null;
+    }
+    const bindingsApi = this.api.runtime.channel.bindings;
+    if (!bindingsApi?.resolveByConversation) {
+      return null;
+    }
+    try {
+      return bindingsApi.resolveByConversation(toConversationRef(conversation)) as
+        | { targetSessionKey?: string }
+        | null;
+    } catch (error) {
+      this.api.logger.warn(
+        `codex runtime binding lookup failed ${this.formatConversationForLog(conversation)}: ${String(error)}`,
+      );
+      return null;
+    }
+  }
+
   private resolveLocalConversationTarget(conversation: ConversationTarget): ConversationTarget {
     const generalFallback = toTelegramGeneralTopicFallback(conversation);
     if (!generalFallback) {
@@ -858,6 +895,19 @@ export class CodexPluginController {
         return { handled: false };
       }
       const conversation = this.resolveLocalConversationTarget(inboundConversation);
+      const rawLocalBinding = this.store.getBinding(inboundConversation);
+      const resolvedLocalBinding =
+        buildConversationKey(conversation) === buildConversationKey(inboundConversation)
+          ? rawLocalBinding
+          : this.store.getBinding(conversation);
+      const rawRuntimeBinding = this.resolveRuntimeBinding(inboundConversation);
+      const resolvedRuntimeBinding =
+        buildConversationKey(conversation) === buildConversationKey(inboundConversation)
+          ? rawRuntimeBinding
+          : this.resolveRuntimeBinding(conversation);
+      this.api.logger.debug?.(
+        `codex inbound diag raw=${this.formatConversationForLog(inboundConversation)} resolved=${this.formatConversationForLog(conversation)} rawLocal=${rawLocalBinding ? "yes" : "no"} resolvedLocal=${resolvedLocalBinding ? "yes" : "no"} rawRuntime=${this.describeRuntimeBindingForLog(rawRuntimeBinding)} resolvedRuntime=${this.describeRuntimeBindingForLog(resolvedRuntimeBinding)} prompt="${summarizeTextForLog(event.content)}"`,
+      );
       const activeKey = buildConversationKey(conversation);
       const active = this.activeRuns.get(activeKey);
       if (active) {
@@ -901,7 +951,7 @@ export class CodexPluginController {
       const hydratedBinding = existingBinding ? null : await this.hydrateApprovedBinding(conversation);
       const resolvedBinding = existingBinding ?? hydratedBinding?.binding ?? null;
       this.api.logger.debug?.(
-        `codex inbound claim channel=${conversation.channel} account=${conversation.accountId} conversation=${conversation.conversationId} parent=${conversation.parentConversationId ?? "<none>"} local=${resolvedBinding ? "yes" : "no"}`,
+        `codex inbound claim channel=${conversation.channel} account=${conversation.accountId} conversation=${conversation.conversationId} parent=${conversation.parentConversationId ?? "<none>"} local=${resolvedBinding ? "yes" : "no"} runtime=${this.describeRuntimeBindingForLog(resolvedRuntimeBinding)}`,
       );
       if (!resolvedBinding) {
         return { handled: false };
@@ -1174,6 +1224,11 @@ export class CodexPluginController {
       rawConversation && bindingApi.getCurrentConversationBinding
         ? await bindingApi.getCurrentConversationBinding()
         : null;
+    const rawRuntimeBinding = this.resolveRuntimeBinding(rawConversation);
+    const resolvedRuntimeBinding =
+      conversation && rawConversation && buildConversationKey(conversation) !== buildConversationKey(rawConversation)
+        ? this.resolveRuntimeBinding(conversation)
+        : rawRuntimeBinding;
     const pendingBind = conversation ? this.store.getPendingBind(conversation) : null;
     const existingBinding =
       conversation && (currentBinding || isTelegramChannel(conversation.channel))
@@ -1188,6 +1243,10 @@ export class CodexPluginController {
     if (isDiscordChannel(ctx.channel)) {
       this.api.logger.debug(
         `codex discord command /${commandName} from=${ctx.from ?? "<none>"} to=${ctx.to ?? "<none>"} conversation=${conversation?.conversationId ?? "<none>"}`,
+      );
+    } else if (isTelegramChannel(ctx.channel)) {
+      this.api.logger.debug?.(
+        `codex telegram command /${commandName} from=${ctx.from ?? "<none>"} to=${ctx.to ?? "<none>"} raw=${rawConversation ? this.formatConversationForLog(rawConversation) : "<none>"} resolved=${conversation ? this.formatConversationForLog(conversation) : "<none>"} threadId=${ctx.messageThreadId == null ? "<none>" : String(ctx.messageThreadId)} current=${currentBinding ? "yes" : "no"} rawRuntime=${this.describeRuntimeBindingForLog(rawRuntimeBinding)} resolvedRuntime=${this.describeRuntimeBindingForLog(resolvedRuntimeBinding)} pending=${pendingBind ? "yes" : "no"} local=${binding ? "yes" : "no"}`,
       );
     }
 
@@ -3815,17 +3874,20 @@ export class CodexPluginController {
     if (topicId !== "1") {
       return;
     }
+    const runtimeConversation = {
+      ...binding.conversation,
+      threadId: 1,
+    };
+    const targetSessionKey = buildRuntimePluginBindingSessionKey(runtimeConversation);
+    const existingBinding = this.resolveRuntimeBinding(runtimeConversation);
+    this.api.logger.debug?.(
+      `codex runtime binding sync start ${this.formatConversationForLog(runtimeConversation)} expected=${targetSessionKey} existing=${this.describeRuntimeBindingForLog(existingBinding)} thread=${binding.threadId}`,
+    );
     await bindingsApi.bind({
-      targetSessionKey: buildRuntimePluginBindingSessionKey({
-        ...binding.conversation,
-        threadId: 1,
-      }),
+      targetSessionKey,
       targetKind: "session",
       placement: "current",
-      conversation: toConversationRef({
-        ...binding.conversation,
-        threadId: 1,
-      }),
+      conversation: toConversationRef(runtimeConversation),
       metadata: {
         pluginBindingOwner: "plugin",
         pluginId: PLUGIN_ID,
@@ -3833,6 +3895,10 @@ export class CodexPluginController {
         pluginRoot: PLUGIN_ROOT,
       },
     });
+    const refreshedBinding = this.resolveRuntimeBinding(runtimeConversation);
+    this.api.logger.debug?.(
+      `codex runtime binding sync complete ${this.formatConversationForLog(runtimeConversation)} expected=${targetSessionKey} actual=${this.describeRuntimeBindingForLog(refreshedBinding)} thread=${binding.threadId}`,
+    );
   }
 
   private async hydrateApprovedBinding(
@@ -4320,20 +4386,55 @@ export class CodexPluginController {
       await this.unpinStoredBindingMessage(binding);
     }
     const bindingsApi = this.api.runtime.channel.bindings;
-    if (binding && bindingsApi && isTelegramChannel(binding.conversation.channel) && binding.conversation.conversationId.includes(":topic:1")) {
+    if (binding && bindingsApi && isTelegramGeneralTopicConversation(binding.conversation)) {
+      const runtimeConversation = {
+        ...binding.conversation,
+        threadId: 1,
+      };
+      const targetSessionKey = buildRuntimePluginBindingSessionKey(runtimeConversation);
+      this.api.logger.debug?.(
+        `codex runtime binding unbind start ${this.formatConversationForLog(runtimeConversation)} expected=${targetSessionKey} existing=${this.describeRuntimeBindingForLog(this.resolveRuntimeBinding(runtimeConversation))}`,
+      );
       await bindingsApi.unbind({
-        targetSessionKey: buildRuntimePluginBindingSessionKey({
-          ...binding.conversation,
-          threadId: 1,
-        }),
+        targetSessionKey,
         reason: "plugin-detach",
       }).catch(() => undefined);
+      this.api.logger.debug?.(
+        `codex runtime binding unbind complete ${this.formatConversationForLog(runtimeConversation)} expected=${targetSessionKey} remaining=${this.describeRuntimeBindingForLog(this.resolveRuntimeBinding(runtimeConversation))}`,
+      );
     }
     await this.store.removeBinding(conversation);
   }
 
   private async reconcileBindings(): Promise<void> {
-    return;
+    const bindingsApi = this.api.runtime.channel.bindings;
+    if (!bindingsApi) {
+      this.api.logger.debug?.("codex binding reconcile skipped: runtime.channel.bindings unavailable");
+      return;
+    }
+    const bindings = this.store.listBindings().filter((binding) =>
+      isTelegramGeneralTopicConversation(binding.conversation),
+    );
+    if (bindings.length === 0) {
+      return;
+    }
+    this.api.logger.debug?.(`codex binding reconcile start count=${bindings.length}`);
+    for (const binding of bindings) {
+      const runtimeConversation = {
+        ...binding.conversation,
+        threadId: 1,
+      };
+      const expected = buildRuntimePluginBindingSessionKey(runtimeConversation);
+      const existing = this.resolveRuntimeBinding(runtimeConversation);
+      this.api.logger.debug?.(
+        `codex binding reconcile candidate ${this.formatConversationForLog(runtimeConversation)} expected=${expected} existing=${this.describeRuntimeBindingForLog(existing)} localThread=${binding.threadId}`,
+      );
+      if (existing?.targetSessionKey?.trim() === expected) {
+        continue;
+      }
+      await this.syncRuntimeConversationBinding(binding);
+    }
+    this.api.logger.debug?.("codex binding reconcile complete");
   }
 
   private async startTypingLease(conversation: ConversationTarget): Promise<{
