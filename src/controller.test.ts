@@ -1427,6 +1427,92 @@ describe("Discord controller flows", () => {
     );
   });
 
+  it("binds Telegram #General as topic 1 for cas_resume when messageThreadId is present", async () => {
+    const { controller, sendMessageTelegram } = await createControllerHarness();
+
+    await controller.handleCommand(
+      "cas_resume",
+      buildTelegramCommandContext({
+        args: "thread-1",
+        commandBody: "/cas_resume thread-1",
+        messageThreadId: 1,
+      }),
+    );
+
+    expect(
+      (controller as any).store.getBinding({
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123:topic:1",
+        parentConversationId: "123",
+      }),
+    ).toEqual(
+      expect.objectContaining({
+        threadId: "thread-1",
+        workspaceDir: "/repo/openclaw",
+      }),
+    );
+    expect(sendMessageTelegram).toHaveBeenCalledWith(
+      "123",
+      expect.stringContaining("Thread ID: thread-1"),
+      expect.objectContaining({ accountId: "default", messageThreadId: 1 }),
+    );
+  });
+
+  it("shows cas_status as active for Telegram #General topic bindings", async () => {
+    const { controller } = await createControllerHarness();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123:topic:1",
+        parentConversationId: "123",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      threadTitle: "Discord Thread",
+      updatedAt: Date.now(),
+    });
+
+    const reply = await controller.handleCommand(
+      "cas_status",
+      buildTelegramCommandContext({
+        commandBody: "/cas_status",
+        messageThreadId: 1,
+        getCurrentConversationBinding: vi.fn(async () => ({ bindingId: "b1" })),
+      }),
+    );
+
+    expect(reply.text).toContain("Binding: active");
+    expect(reply.text).toContain("Project folder: /repo/openclaw");
+  });
+
+  it("falls back to chat-level Telegram binding when messageThreadId is missing on cas_resume", async () => {
+    const { controller } = await createControllerHarness();
+
+    await controller.handleCommand(
+      "cas_resume",
+      buildTelegramCommandContext({
+        args: "thread-1",
+        commandBody: "/cas_resume thread-1",
+      }),
+    );
+
+    expect(
+      (controller as any).store.getBinding({
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      }),
+    ).toEqual(
+      expect.objectContaining({
+        threadId: "thread-1",
+        workspaceDir: "/repo/openclaw",
+      }),
+    );
+  });
+
   it("pins the Telegram binding summary message on resume and unpins it on detach", async () => {
     const { controller } = await createControllerHarness();
     const fetchMock = vi.mocked(fetch);

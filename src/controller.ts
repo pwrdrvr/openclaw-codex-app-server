@@ -281,6 +281,9 @@ function toConversationTargetFromCommand(ctx: PluginCommandContext): Conversatio
     return {
       channel: "telegram",
       accountId: ctx.accountId ?? "default",
+      // PluginCommandContext does not currently expose Telegram forum metadata
+      // (for example `isForum`), so we can only distinguish topics when
+      // messageThreadId is present (including #General as topic id `1`).
       conversationId:
         typeof ctx.messageThreadId === "number" ? `${chatId}:topic:${ctx.messageThreadId}` : chatId,
       parentConversationId: typeof ctx.messageThreadId === "number" ? chatId : undefined,
