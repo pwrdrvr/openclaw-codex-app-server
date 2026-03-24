@@ -154,7 +154,7 @@ describe("formatCodexStatusText", () => {
     expect(text).toContain("Context usage: unavailable until Codex emits a token-usage update");
     expect(text).toContain("Permissions: Default");
     expect(text).toContain("Account: huntharo@gmail.com (pro)");
-    expect(text).toContain("Session: 019cc00d-6cf4-7c11-afcd-2673db349a21");
+    expect(text).toContain("Thread: 019cc00d-6cf4-7c11-afcd-2673db349a21");
     expect(text).toContain("Rate limits timezone:");
     expect(text).toContain("5h limit: 85% left");
     expect(text).toContain("Weekly limit: 85% left");
@@ -436,7 +436,7 @@ describe("formatThreadPickerIntro", () => {
       fallbackToGlobal: true,
     });
 
-    expect(text).toContain("No threads in this workspace. Showing recent sessions from all projects.");
+    expect(text).toContain("No threads in this workspace. Showing recent threads from all projects.");
   });
 
   it("does not show fallback message for normal global listing", () => {
@@ -448,7 +448,7 @@ describe("formatThreadPickerIntro", () => {
     });
 
     expect(text).not.toContain("No threads in this workspace");
-    expect(text).toContain("Showing recent Codex sessions across all projects.");
+    expect(text).toContain("Showing recent Codex threads across all projects.");
   });
 });
 

@@ -133,6 +133,13 @@ async function createControllerHarness() {
         updatedAt: Date.now() - 30_000,
       },
     ]),
+    startThread: vi.fn(async () => ({
+      threadId: "thread-new",
+      threadName: "New Thread",
+      model: "openai/gpt-5.4",
+      cwd: "/repo/openclaw",
+      serviceTier: "default",
+    })),
     listModels: vi.fn(async () => [
       { id: "openai/gpt-5.4", current: true },
       { id: "openai/gpt-5.3" },
@@ -312,12 +319,215 @@ describe("Discord controller flows", () => {
     expect(sendComponentMessage).toHaveBeenCalledWith(
       "channel:chan-1",
       expect.objectContaining({
-        text: expect.stringContaining("Showing recent Codex sessions"),
+        text: expect.stringContaining("Showing recent Codex threads"),
       }),
       expect.objectContaining({
         accountId: "default",
       }),
     );
+  });
+
+  it("offers a New button on /cas_resume and flips into the new-thread project picker", async () => {
+    const { controller } = await createControllerHarness();
+
+    const reply = await controller.handleCommand(
+      "cas_resume",
+      buildTelegramCommandContext({
+        commandBody: "/cas_resume",
+      }),
+    );
+
+    const buttons = (reply.channelData as any)?.telegram?.buttons;
+    expect(buttons?.flat().some((button: { text: string }) => button.text === "Projects")).toBe(true);
+    expect(buttons?.flat().some((button: { text: string }) => button.text === "Browse Projects")).toBe(false);
+    const newButton = buttons?.flat().find((button: { text: string }) => button.text === "New");
+    expect(newButton?.callback_data).toBeTruthy();
+    const token = (newButton?.callback_data as string).split(":").pop() ?? "";
+    const callback = (controller as any).store.getCallback(token);
+    expect(callback).toEqual(expect.objectContaining({
+      kind: "picker-view",
+      view: expect.objectContaining({
+        mode: "projects",
+        action: "start-new-thread",
+      }),
+    }));
+
+    const editMessage = vi.fn(async () => {});
+    await controller.handleTelegramInteractive({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123:topic:456",
+      parentConversationId: "123",
+      threadId: 456,
+      callback: {
+        payload: token,
+      },
+      respond: {
+        clearButtons: vi.fn(async () => {}),
+        reply: vi.fn(async () => {}),
+        editMessage,
+      },
+    } as any);
+
+    expect(editMessage).toHaveBeenCalledWith(expect.objectContaining({
+      text: expect.stringContaining("Choose a project for the new Codex thread"),
+      buttons: expect.arrayContaining([
+        expect.arrayContaining([
+          expect.objectContaining({
+            text: expect.stringContaining("openclaw"),
+          }),
+        ]),
+        expect.arrayContaining([
+          expect.objectContaining({
+            text: "Recent Threads",
+          }),
+        ]),
+      ]),
+    }));
+  });
+
+  it("shows a project picker for /cas_resume --new without args", async () => {
+    const { controller } = await createControllerHarness();
+
+    const reply = await controller.handleCommand(
+      "cas_resume",
+      buildTelegramCommandContext({
+        args: "--new",
+        commandBody: "/cas_resume --new",
+      }),
+    );
+
+    expect(reply.text).toContain("Choose a project for the new Codex thread");
+    const buttons = (reply.channelData as any)?.telegram?.buttons;
+    expect(buttons?.[0]?.[0]?.text).toContain("openclaw");
+    expect(buttons?.flat().some((button: { text: string }) => button.text === "Recent Threads")).toBe(true);
+    const callbackData = buttons?.[0]?.[0]?.callback_data as string;
+    const token = callbackData.split(":").pop() ?? "";
+    const callback = (controller as any).store.getCallback(token);
+    expect(callback?.kind).toBe("start-new-thread");
+  });
+
+  it("starts a new thread directly for /cas_resume --new <project>", async () => {
+    const { controller, clientMock } = await createControllerHarness();
+    const requestConversationBinding = vi.fn(async () => ({ status: "bound" as const }));
+
+    const reply = await controller.handleCommand(
+      "cas_resume",
+      buildTelegramCommandContext({
+        args: "--new openclaw",
+        commandBody: "/cas_resume --new openclaw",
+        requestConversationBinding,
+      }),
+    );
+
+    expect(reply).toEqual({});
+    expect(clientMock.startThread).toHaveBeenCalledWith({
+      sessionKey: undefined,
+      workspaceDir: "/repo/openclaw",
+      model: undefined,
+    });
+    expect(requestConversationBinding).toHaveBeenCalledWith(
+      expect.objectContaining({
+        summary: expect.stringContaining("Bind this conversation to Codex thread"),
+      }),
+    );
+  });
+
+  it("keeps grouped project names in the /cas_resume --new picker and disambiguates after selection", async () => {
+    const { controller, clientMock } = await createControllerHarness();
+    clientMock.listThreads.mockResolvedValue([
+      {
+        threadId: "thread-a",
+        title: "Customer A",
+        projectKey: "/work/customer-a/app",
+        createdAt: Date.now() - 60_000,
+        updatedAt: Date.now() - 30_000,
+      },
+      {
+        threadId: "thread-b",
+        title: "Customer B",
+        projectKey: "/work/customer-b/app",
+        createdAt: Date.now() - 50_000,
+        updatedAt: Date.now() - 20_000,
+      },
+    ]);
+
+    const reply = await controller.handleCommand(
+      "cas_resume",
+      buildTelegramCommandContext({
+        args: "--new app",
+        commandBody: "/cas_resume --new app",
+      }),
+    );
+
+    expect(clientMock.startThread).not.toHaveBeenCalled();
+    const buttons = (reply.channelData as any)?.telegram?.buttons;
+    expect(buttons?.[0]?.[0]?.text).toBe("app (2)");
+    const token = (buttons?.[0]?.[0]?.callback_data as string).split(":").pop() ?? "";
+    expect((controller as any).store.getCallback(token)).toEqual(expect.objectContaining({
+      kind: "picker-view",
+      view: expect.objectContaining({
+        mode: "workspaces",
+        projectName: "app",
+      }),
+    }));
+
+    const editMessage = vi.fn(async () => {});
+    await controller.handleTelegramInteractive({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123:topic:456",
+      parentConversationId: "123",
+      threadId: 456,
+      callback: {
+        payload: token,
+      },
+      respond: {
+        clearButtons: vi.fn(async () => {}),
+        reply: vi.fn(async () => {}),
+        editMessage,
+      },
+    } as any);
+
+    expect(editMessage).toHaveBeenCalledWith(expect.objectContaining({
+      text: expect.stringContaining("Multiple workspaces matched app"),
+      buttons: expect.arrayContaining([
+        expect.arrayContaining([
+          expect.objectContaining({
+            text: expect.stringContaining("/work/customer-b/app"),
+          }),
+        ]),
+        expect.arrayContaining([
+          expect.objectContaining({
+            text: "Projects",
+          }),
+          expect.objectContaining({
+            text: "Recent Threads",
+          }),
+        ]),
+      ]),
+    }));
+  });
+
+  it("expands home-relative paths for /cas_resume --new positional workspace args", async () => {
+    const { controller, clientMock } = await createControllerHarness();
+    const requestConversationBinding = vi.fn(async () => ({ status: "bound" as const }));
+
+    const reply = await controller.handleCommand(
+      "cas_resume",
+      buildTelegramCommandContext({
+        args: "--new ~/github/openclaw",
+        commandBody: "/cas_resume --new ~/github/openclaw",
+        requestConversationBinding,
+      }),
+    );
+
+    expect(reply).toEqual({});
+    expect(clientMock.startThread).toHaveBeenCalledWith({
+      sessionKey: undefined,
+      workspaceDir: path.join(os.homedir(), "github/openclaw"),
+      model: undefined,
+    });
   });
 
   it("rejects resume when the thread worktree path no longer exists on disk", async () => {
@@ -372,7 +582,7 @@ describe("Discord controller flows", () => {
     expect(sendComponentMessage).toHaveBeenCalledWith(
       "channel:chan-1",
       expect.objectContaining({
-        text: expect.stringContaining("Showing recent Codex sessions"),
+        text: expect.stringContaining("Showing recent Codex threads"),
       }),
       expect.objectContaining({
         accountId: "default",
@@ -595,7 +805,7 @@ describe("Discord controller flows", () => {
       "channel:chan-1",
       "message-1",
       expect.objectContaining({
-        text: expect.stringContaining("Choose a project to filter recent Codex sessions"),
+        text: expect.stringContaining("Choose a project to filter recent Codex threads"),
       }),
       expect.objectContaining({ accountId: "default" }),
     );
@@ -1672,6 +1882,49 @@ describe("Discord controller flows", () => {
       456,
       "Discord Thread (openclaw)",
       expect.objectContaining({ accountId: "default" }),
+    );
+  });
+
+  it("dispatches start-new-thread callbacks through thread creation and binding", async () => {
+    const { controller, clientMock } = await createControllerHarness();
+    const callback = await (controller as any).store.putCallback({
+      kind: "start-new-thread",
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123:topic:456",
+        parentConversationId: "123",
+      },
+      workspaceDir: "/repo/openclaw",
+    });
+    const requestConversationBinding = vi.fn(async () => ({ status: "bound" as const }));
+
+    await controller.handleTelegramInteractive({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123:topic:456",
+      parentConversationId: "123",
+      threadId: 456,
+      requestConversationBinding,
+      callback: {
+        payload: callback.token,
+      },
+      respond: {
+        clearButtons: vi.fn(async () => {}),
+        reply: vi.fn(async () => {}),
+        editMessage: vi.fn(async () => {}),
+      },
+    } as any);
+
+    expect(clientMock.startThread).toHaveBeenCalledWith({
+      sessionKey: undefined,
+      workspaceDir: "/repo/openclaw",
+      model: undefined,
+    });
+    expect(requestConversationBinding).toHaveBeenCalledWith(
+      expect.objectContaining({
+        summary: expect.stringContaining("Bind this conversation to Codex thread"),
+      }),
     );
   });
 

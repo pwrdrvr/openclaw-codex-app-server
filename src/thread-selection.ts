@@ -5,6 +5,7 @@ import type { ThreadSummary } from "./types.js";
 export type ParsedThreadSelectionArgs = {
   includeAll: boolean;
   listProjects: boolean;
+  startNew: boolean;
   syncTopic: boolean;
   cwd?: string;
   query: string;
@@ -28,6 +29,7 @@ export function parseThreadSelectionArgs(args: string): ParsedThreadSelectionArg
     .filter(Boolean);
   let includeAll = false;
   let listProjects = false;
+  let startNew = false;
   let syncTopic = false;
   let cwd: string | undefined;
   const queryTokens: string[] = [];
@@ -40,6 +42,10 @@ export function parseThreadSelectionArgs(args: string): ParsedThreadSelectionArg
     }
     if (token === "--projects" || token === "--project" || token === "-p") {
       listProjects = true;
+      continue;
+    }
+    if (token === "--new") {
+      startNew = true;
       continue;
     }
     if (token === "--sync") {
@@ -60,13 +66,14 @@ export function parseThreadSelectionArgs(args: string): ParsedThreadSelectionArg
   return {
     includeAll,
     listProjects,
+    startNew,
     syncTopic,
     cwd,
     query: queryTokens.join(" ").trim(),
   };
 }
 
-function expandHomeDir(value: string): string {
+export function expandHomeDir(value: string): string {
   if (value === "~") {
     return os.homedir();
   }
