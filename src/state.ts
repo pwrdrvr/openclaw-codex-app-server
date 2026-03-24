@@ -6,6 +6,8 @@ import type {
   CallbackAction,
   CollaborationMode,
   ConversationTarget,
+  ConversationPreferences,
+  PermissionsMode,
   StoreSnapshot,
   StoredBinding,
   StoredPendingBind,
@@ -164,6 +166,96 @@ function cloneSnapshot(value?: Partial<StoreSnapshot>): StoreSnapshot {
   };
 }
 
+function normalizePermissionsMode(value?: string | null): PermissionsMode | undefined {
+  return value === "full-access" ? "full-access" : value === "default" ? "default" : undefined;
+}
+
+function inferPermissionsModeFromLegacyFields(params: {
+  permissionsMode?: string | null;
+  appServerProfile?: string | null;
+  preferredApprovalPolicy?: string | null;
+  preferredSandbox?: string | null;
+}): PermissionsMode {
+  const explicit =
+    normalizePermissionsMode(params.permissionsMode) ??
+    normalizePermissionsMode(params.appServerProfile);
+  if (explicit) {
+    return explicit;
+  }
+  const approval = params.preferredApprovalPolicy?.trim();
+  const sandbox = params.preferredSandbox?.trim();
+  if (approval === "never" && sandbox === "danger-full-access") {
+    return "full-access";
+  }
+  return "default";
+}
+
+function normalizeConversationPreferences(
+  value: (ConversationPreferences & {
+    preferredApprovalPolicy?: string;
+    preferredSandbox?: string;
+  }) | undefined,
+): ConversationPreferences | undefined {
+  if (!value) {
+    return undefined;
+  }
+  return {
+    preferredModel: value.preferredModel,
+    preferredReasoningEffort: value.preferredReasoningEffort,
+    preferredServiceTier: value.preferredServiceTier,
+    updatedAt: value.updatedAt,
+  };
+}
+
+function normalizeSnapshot(value?: Partial<StoreSnapshot>): StoreSnapshot {
+  const snapshot = cloneSnapshot(value);
+  snapshot.version = STORE_VERSION;
+  snapshot.bindings = snapshot.bindings.map((binding) => {
+    const legacyPreferences = binding.preferences as
+      | (ConversationPreferences & {
+          preferredApprovalPolicy?: string;
+          preferredSandbox?: string;
+        })
+      | undefined;
+    return {
+      ...binding,
+      permissionsMode: inferPermissionsModeFromLegacyFields({
+        permissionsMode: (binding as StoredBinding & { permissionsMode?: string }).permissionsMode,
+        appServerProfile: (binding as StoredBinding & { appServerProfile?: string }).appServerProfile,
+        preferredApprovalPolicy: legacyPreferences?.preferredApprovalPolicy,
+        preferredSandbox: legacyPreferences?.preferredSandbox,
+      }),
+      pendingPermissionsMode:
+        normalizePermissionsMode(
+          (binding as StoredBinding & { pendingPermissionsMode?: string }).pendingPermissionsMode,
+        ) ??
+        normalizePermissionsMode(
+          (binding as StoredBinding & { pendingAppServerProfile?: string }).pendingAppServerProfile,
+        ),
+      preferences: normalizeConversationPreferences(legacyPreferences),
+    };
+  });
+  snapshot.pendingBinds = snapshot.pendingBinds.map((entry) => {
+    const legacyPreferences = entry.preferences as
+      | (ConversationPreferences & {
+          preferredApprovalPolicy?: string;
+          preferredSandbox?: string;
+        })
+      | undefined;
+    return {
+      ...entry,
+      permissionsMode: inferPermissionsModeFromLegacyFields({
+        permissionsMode: (entry as StoredPendingBind & { permissionsMode?: string }).permissionsMode,
+        appServerProfile: (entry as StoredPendingBind & { appServerProfile?: string }).appServerProfile,
+        preferredApprovalPolicy: legacyPreferences?.preferredApprovalPolicy,
+        preferredSandbox: legacyPreferences?.preferredSandbox,
+      }),
+      preferences: normalizeConversationPreferences(legacyPreferences),
+    };
+  });
+  return snapshot;
+}
+
 export class PluginStateStore {
   private snapshot = cloneSnapshot();
 
@@ -182,7 +274,7 @@ export class PluginStateStore {
     try {
       const raw = await fs.readFile(this.filePath, "utf8");
       const parsed = JSON.parse(raw) as Partial<StoreSnapshot>;
-      this.snapshot = cloneSnapshot(parsed);
+      this.snapshot = normalizeSnapshot(parsed);
       this.pruneExpired();
       await this.save();
     } catch (error) {

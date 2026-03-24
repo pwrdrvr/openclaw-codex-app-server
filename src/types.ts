@@ -2,14 +2,14 @@ import type { ConversationRef, PluginInteractiveButtons } from "openclaw/plugin-
 
 export const PLUGIN_ID = "openclaw-codex-app-server";
 export const INTERACTIVE_NAMESPACE = "codexapp";
-export const STORE_VERSION = 1;
+export const STORE_VERSION = 2;
 export const CALLBACK_TOKEN_BYTES = 9;
 export const CALLBACK_TTL_MS = 30 * 60_000;
 export const PENDING_INPUT_TTL_MS = 7 * 24 * 60 * 60_000;
 export const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 
 export type CodexTransport = "stdio" | "websocket";
-export type AppServerProfile = "default" | "full-access";
+export type PermissionsMode = "default" | "full-access";
 
 export type PluginSettings = {
   enabled: boolean;
@@ -200,8 +200,6 @@ export type ConversationPreferences = {
   preferredModel?: string;
   preferredReasoningEffort?: string;
   preferredServiceTier: string | null;
-  preferredApprovalPolicy?: string;
-  preferredSandbox?: string;
   updatedAt: number;
 };
 
@@ -263,8 +261,8 @@ export type StoredBinding = {
   sessionKey: string;
   threadId: string;
   workspaceDir: string;
-  appServerProfile?: AppServerProfile;
-  pendingAppServerProfile?: AppServerProfile;
+  permissionsMode?: PermissionsMode;
+  pendingPermissionsMode?: PermissionsMode;
   threadTitle?: string;
   pinnedBindingMessage?:
     | {
@@ -286,7 +284,7 @@ export type StoredPendingBind = {
   conversation: ConversationRef;
   threadId: string;
   workspaceDir: string;
-  appServerProfile?: AppServerProfile;
+  permissionsMode?: PermissionsMode;
   threadTitle?: string;
   syncTopic?: boolean;
   notifyBound?: boolean;

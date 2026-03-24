@@ -608,11 +608,9 @@ describe("Discord controller flows", () => {
       accountId: "default",
       conversationId: "channel:chan-1",
     });
-    expect(binding?.appServerProfile).toBe("full-access");
+    expect(binding?.permissionsMode).toBe("full-access");
     expect(binding?.preferences?.preferredModel).toBe("gpt-5.4");
     expect(binding?.preferences?.preferredServiceTier).toBe("fast");
-    expect(binding?.preferences?.preferredApprovalPolicy).toBe("never");
-    expect(binding?.preferences?.preferredSandbox).toBe("danger-full-access");
   });
 
   it("resolves channel identity from ctx.to when ctx.from is a slash identity in a new Discord thread", async () => {
@@ -1500,12 +1498,11 @@ describe("Discord controller flows", () => {
       sessionKey: "session-1",
       threadId: "thread-1",
       workspaceDir: "/repo/openclaw",
+      permissionsMode: "full-access",
       preferences: {
         preferredModel: "openai/gpt-5.3-codex",
         preferredReasoningEffort: "high",
         preferredServiceTier: "fast",
-        preferredApprovalPolicy: "never",
-        preferredSandbox: "workspace-write",
         updatedAt: Date.now(),
       },
       updatedAt: Date.now(),
@@ -1521,7 +1518,7 @@ describe("Discord controller flows", () => {
 
     expect(reply.text).toContain("Model: openai/gpt-5.3-codex · reasoning high");
     expect(reply.text).toContain("Fast mode: off");
-    expect(reply.text).toContain("Permissions: Custom (workspace-write, never)");
+    expect(reply.text).toContain("Permissions: Full Access");
   });
 
   it("sends the status card directly to Discord with interactive controls", async () => {
@@ -1590,11 +1587,9 @@ describe("Discord controller flows", () => {
       accountId: "default",
       conversationId: "123",
     });
-    expect(binding?.appServerProfile).toBe("full-access");
+    expect(binding?.permissionsMode).toBe("full-access");
     expect(binding?.preferences?.preferredModel).toBe("gpt-5.4");
     expect(binding?.preferences?.preferredServiceTier).toBe("fast");
-    expect(binding?.preferences?.preferredApprovalPolicy).toBe("never");
-    expect(binding?.preferences?.preferredSandbox).toBe("danger-full-access");
     expect(clientMock.setThreadModel).toHaveBeenCalledWith({
       profile: "full-access",
       sessionKey: "session-1",
@@ -3266,12 +3261,11 @@ describe("Discord controller flows", () => {
         sessionKey: "session-1",
         threadId: "thread-1",
         workspaceDir: "/repo/openclaw",
+        permissionsMode: "full-access",
         preferences: {
           preferredModel: "gpt-5.4",
           preferredReasoningEffort: "high",
           preferredServiceTier: "fast",
-          preferredApprovalPolicy: "never",
-          preferredSandbox: "workspace-write",
           updatedAt: Date.now(),
         },
         updatedAt: Date.now(),
@@ -3289,7 +3283,7 @@ describe("Discord controller flows", () => {
         reasoningEffort: "high",
         serviceTier: "fast",
         approvalPolicy: "never",
-        sandbox: "workspace-write",
+        sandbox: "danger-full-access",
       }),
     );
   });
@@ -3322,12 +3316,11 @@ describe("Discord controller flows", () => {
         sessionKey: "session-1",
         threadId: "thread-1",
         workspaceDir: "/repo/openclaw",
+        permissionsMode: "full-access",
         preferences: {
           preferredModel: "gpt-5.4",
           preferredReasoningEffort: "high",
           preferredServiceTier: "fast",
-          preferredApprovalPolicy: "never",
-          preferredSandbox: "workspace-write",
           updatedAt: Date.now(),
         },
         updatedAt: Date.now(),
@@ -3345,7 +3338,7 @@ describe("Discord controller flows", () => {
         reasoningEffort: "high",
         serviceTier: "fast",
         approvalPolicy: "never",
-        sandbox: "workspace-write",
+        sandbox: "danger-full-access",
       }),
     );
   });
@@ -3378,12 +3371,11 @@ describe("Discord controller flows", () => {
         sessionKey: "session-1",
         threadId: "thread-1",
         workspaceDir: "/repo/openclaw",
+        permissionsMode: "full-access",
         preferences: {
           preferredModel: "gpt-5.4",
           preferredReasoningEffort: "high",
           preferredServiceTier: "fast",
-          preferredApprovalPolicy: "never",
-          preferredSandbox: "workspace-write",
           updatedAt: Date.now(),
         },
         updatedAt: Date.now(),
@@ -3401,7 +3393,7 @@ describe("Discord controller flows", () => {
         reasoningEffort: "high",
         serviceTier: "fast",
         approvalPolicy: "never",
-        sandbox: "workspace-write",
+        sandbox: "danger-full-access",
         collaborationMode: {
           mode: "plan",
           settings: {
@@ -3708,7 +3700,7 @@ describe("Discord controller flows", () => {
       sessionKey: "session-1",
       threadId: "thread-1",
       workspaceDir: "/repo/openclaw",
-      appServerProfile: "default",
+      permissionsMode: "default",
       updatedAt: Date.now(),
     });
     const editMessage = vi.fn(async (_payload: any) => {});
@@ -3738,9 +3730,7 @@ describe("Discord controller flows", () => {
       accountId: "default",
       conversationId: "123",
     });
-    expect(binding?.appServerProfile).toBe("full-access");
-    expect(binding?.preferences?.preferredApprovalPolicy).toBe("never");
-    expect(binding?.preferences?.preferredSandbox).toBe("danger-full-access");
+    expect(binding?.permissionsMode).toBe("full-access");
     expect(clientMock.setThreadPermissions).toHaveBeenNthCalledWith(1, {
       profile: "full-access",
       sessionKey: "session-1",
@@ -3779,9 +3769,7 @@ describe("Discord controller flows", () => {
       accountId: "default",
       conversationId: "123",
     });
-    expect(binding?.appServerProfile).toBe("default");
-    expect(binding?.preferences?.preferredApprovalPolicy).toBe("on-request");
-    expect(binding?.preferences?.preferredSandbox).toBe("workspace-write");
+    expect(binding?.permissionsMode).toBe("default");
     expect(clientMock.setThreadPermissions).toHaveBeenNthCalledWith(2, {
       profile: "default",
       sessionKey: "session-1",
@@ -3807,12 +3795,7 @@ describe("Discord controller flows", () => {
       sessionKey: "session-1",
       threadId: "thread-1",
       workspaceDir: "/repo/openclaw",
-      appServerProfile: "default",
-      preferences: {
-        preferredApprovalPolicy: "on-request",
-        preferredSandbox: "workspace-write",
-        updatedAt: Date.now(),
-      },
+      permissionsMode: "default",
       updatedAt: Date.now(),
     });
     const interrupt = vi.fn(async () => {
@@ -3864,10 +3847,8 @@ describe("Discord controller flows", () => {
       accountId: "default",
       conversationId: "123",
     });
-    expect(binding?.appServerProfile).toBe("default");
-    expect(binding?.pendingAppServerProfile).toBe("full-access");
-    expect(binding?.preferences?.preferredApprovalPolicy).toBe("never");
-    expect(binding?.preferences?.preferredSandbox).toBe("danger-full-access");
+    expect(binding?.permissionsMode).toBe("default");
+    expect(binding?.pendingPermissionsMode).toBe("full-access");
     expect(clientMock.setThreadPermissions).not.toHaveBeenCalled();
     expect(editMessage).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -3961,12 +3942,7 @@ describe("Discord controller flows", () => {
       sessionKey: "session-1",
       threadId: "thread-1",
       workspaceDir: "/repo/openclaw",
-      appServerProfile: "default",
-      preferences: {
-        preferredApprovalPolicy: "on-request",
-        preferredSandbox: "workspace-write",
-        updatedAt: Date.now(),
-      },
+      permissionsMode: "default",
       updatedAt: Date.now(),
     });
     const callback = await (controller as any).store.putCallback({
@@ -3996,9 +3972,7 @@ describe("Discord controller flows", () => {
       accountId: "default",
       conversationId: "123",
     });
-    expect(binding?.preferences?.preferredApprovalPolicy).toBe("on-request");
-    expect(binding?.preferences?.preferredSandbox).toBe("workspace-write");
-    expect(binding?.appServerProfile).toBe("default");
+    expect(binding?.permissionsMode).toBe("default");
     expect(clientMock.setThreadPermissions).not.toHaveBeenCalled();
     expect(editMessage).toHaveBeenCalledWith(
       expect.objectContaining({

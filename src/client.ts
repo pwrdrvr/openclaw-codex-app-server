@@ -10,7 +10,6 @@ import {
   CALLBACK_TTL_MS,
   PENDING_INPUT_TTL_MS,
   type AccountSummary,
-  type AppServerProfile,
   type CollaborationMode,
   type CompactProgress,
   type CompactResult,
@@ -21,6 +20,7 @@ import {
   type PendingInputAction,
   type PendingInputState,
   type PluginSettings,
+  type PermissionsMode,
   type RateLimitSummary,
   type ReviewResult,
   type ReviewTarget,
@@ -3749,10 +3749,10 @@ export class CodexAppServerClient {
   }
 }
 
-type ProfiledParams<T> = T & { profile?: AppServerProfile };
+type ProfiledParams<T> = T & { profile?: PermissionsMode };
 
-export class CodexAppServerProfileClient {
-  private readonly clients: Record<AppServerProfile, CodexAppServerClient | null>;
+export class CodexAppServerModeClient {
+  private readonly clients: Record<PermissionsMode, CodexAppServerClient | null>;
 
   constructor(
     settings: PluginSettings,
@@ -3765,15 +3765,15 @@ export class CodexAppServerProfileClient {
     };
   }
 
-  hasProfile(profile: AppServerProfile): boolean {
+  hasProfile(profile: PermissionsMode): boolean {
     return this.clients[profile] != null;
   }
 
-  private getClient(profile: AppServerProfile | undefined): CodexAppServerClient {
+  private getClient(profile: PermissionsMode | undefined): CodexAppServerClient {
     const resolvedProfile = profile ?? "default";
     const client = this.clients[resolvedProfile];
     if (!client) {
-      throw new Error(`Codex app-server profile unavailable: ${resolvedProfile}`);
+      throw new Error(`Codex app-server mode unavailable: ${resolvedProfile}`);
     }
     return client;
   }
