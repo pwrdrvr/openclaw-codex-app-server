@@ -467,10 +467,22 @@ function formatFastModeValue(value: string | undefined): string {
 
 function normalizePreferenceServiceTier(value: string | undefined | null): string | null {
   const normalized = normalizeServiceTier(value);
-  if (!normalized || normalized === "default" || normalized === "auto") {
+  if (!normalized || normalized === "auto" || normalized === "flex") {
     return null;
   }
   return normalized;
+}
+
+function requestServiceTierFromPreference(value: string | undefined | null): string | null {
+  const normalized = normalizePreferenceServiceTier(value);
+  if (!normalized || normalized === "default") {
+    return null;
+  }
+  return normalized;
+}
+
+function preferredServiceTierFromRequest(value: string | null): string {
+  return normalizePreferenceServiceTier(value) ?? "default";
 }
 
 function isFullAutoPermissions(approvalPolicy?: string, sandbox?: string): boolean {
@@ -2035,16 +2047,16 @@ export class CodexPluginController {
       return { text: `Fast mode is ${formatFastModeValue(currentTier)}.` };
     }
     const nextTier =
-      action === "toggle" ? (currentTier === "fast" ? "flex" : "fast")
+      action === "toggle" ? (currentTier === "fast" ? null : "fast")
       : action === "on" ? "fast"
-      : "flex";
+      : null;
     const updated = await this.client.setThreadServiceTier({
       profile,
       sessionKey: binding.sessionKey,
       threadId: binding.threadId,
       serviceTier: nextTier,
     });
-    const preferredServiceTier = normalizePreferenceServiceTier(nextTier);
+    const preferredServiceTier = preferredServiceTierFromRequest(nextTier);
     const updatedBinding: StoredBinding = {
       ...binding,
       preferences: {
@@ -2059,10 +2071,10 @@ export class CodexPluginController {
     };
     await this.store.upsertBinding(updatedBinding);
     this.api.logger.debug?.(
-      `codex fast command requested=${nextTier} responseTier=${updated.serviceTier?.trim() || "<none>"} ${formatBindingPreferencesForLog(updatedBinding)}`,
+      `codex fast command requested=${nextTier ?? "<none>"} responseTier=${updated.serviceTier?.trim() || "<none>"} ${formatBindingPreferencesForLog(updatedBinding)}`,
     );
     return {
-      text: `Fast mode set to ${formatFastModeValue(nextTier)}.`,
+      text: `Fast mode set to ${formatFastModeValue(preferredServiceTier)}.`,
     };
   }
 
@@ -2112,7 +2124,7 @@ export class CodexPluginController {
     const preferredModel = args.trim();
     const nextPreferredServiceTier = modelSupportsFast(preferredModel)
       ? binding.preferences?.preferredServiceTier ?? null
-      : null;
+      : "default";
     const nextState =
       !modelSupportsFast(preferredModel) && normalizeServiceTier(state.serviceTier) === "fast"
         ? await this.client
@@ -2120,9 +2132,9 @@ export class CodexPluginController {
               profile,
               sessionKey: binding.sessionKey,
               threadId: binding.threadId,
-              serviceTier: "flex",
+              serviceTier: null,
             })
-            .catch(() => ({ ...state, serviceTier: "flex" }))
+            .catch(() => ({ ...state, serviceTier: "default" }))
         : state;
     const updatedBinding: StoredBinding = {
       ...binding,
@@ -2390,7 +2402,7 @@ export class CodexPluginController {
       ),
       serviceTier:
         modelSupportsFast(params.binding?.preferences?.preferredModel?.trim() || this.settings.defaultModel)
-          ? normalizePreferenceServiceTier(params.binding?.preferences?.preferredServiceTier) ??
+          ? requestServiceTierFromPreference(params.binding?.preferences?.preferredServiceTier) ??
             undefined
           : undefined,
       approvalPolicy: params.binding?.preferences?.preferredApprovalPolicy?.trim(),
@@ -3997,14 +4009,14 @@ export class CodexPluginController {
         return;
       }
       const currentTier = normalizeServiceTier(threadState?.serviceTier);
-      const nextTier = currentTier === "fast" ? "flex" : "fast";
+      const nextTier = currentTier === "fast" ? null : "fast";
       const updatedState = await this.client.setThreadServiceTier({
         profile,
         sessionKey: binding.sessionKey,
         threadId: binding.threadId,
         serviceTier: nextTier,
       });
-      const preferredServiceTier = normalizePreferenceServiceTier(nextTier);
+      const preferredServiceTier = preferredServiceTierFromRequest(nextTier);
       const updatedBinding: StoredBinding = {
         ...binding,
         preferences: {
@@ -4019,7 +4031,7 @@ export class CodexPluginController {
       };
       await this.store.upsertBinding(updatedBinding);
       this.api.logger.debug?.(
-        `codex status control toggle-fast conversation=${this.formatConversationForLog(callback.conversation)} requested=${nextTier} raw=${formatThreadStateForLog(updatedState)} effective=${formatThreadStateForLog(applyBindingPreferencesToThreadState(updatedState, updatedBinding))} ${formatBindingPreferencesForLog(updatedBinding)}`,
+        `codex status control toggle-fast conversation=${this.formatConversationForLog(callback.conversation)} requested=${nextTier ?? "<none>"} raw=${formatThreadStateForLog(updatedState)} effective=${formatThreadStateForLog(applyBindingPreferencesToThreadState(updatedState, updatedBinding))} ${formatBindingPreferencesForLog(updatedBinding)}`,
       );
       const statusCard = await this.buildStatusCard(
         {
@@ -4270,7 +4282,7 @@ export class CodexPluginController {
       });
       const nextPreferredServiceTier = modelSupportsFast(callback.model)
         ? binding.preferences?.preferredServiceTier ?? null
-        : null;
+        : "default";
       const nextState =
         !modelSupportsFast(callback.model) && normalizeServiceTier(state.serviceTier) === "fast"
           ? await this.client
@@ -4278,9 +4290,9 @@ export class CodexPluginController {
                 profile,
                 sessionKey: binding.sessionKey,
                 threadId: binding.threadId,
-                serviceTier: "flex",
+                serviceTier: null,
               })
-              .catch(() => ({ ...state, serviceTier: "flex" }))
+              .catch(() => ({ ...state, serviceTier: "default" }))
           : state;
       const updatedBinding: StoredBinding = {
         ...binding,
@@ -4736,7 +4748,7 @@ export class CodexPluginController {
           profile,
           sessionKey: binding.sessionKey,
           threadId: binding.threadId,
-          serviceTier: preferredServiceTier,
+          serviceTier: requestServiceTierFromPreference(preferredServiceTier),
         });
       } catch (error) {
         this.api.logger.warn(`codex failed to restore preferred service tier: ${String(error)}`);
