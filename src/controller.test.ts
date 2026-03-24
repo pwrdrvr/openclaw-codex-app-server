@@ -2390,6 +2390,89 @@ describe("Discord controller flows", () => {
     expect(result).toEqual({ handled: false });
   });
 
+  it("claims inbound Telegram #General messages when the hook omits threadId", async () => {
+    const { controller } = await createControllerHarness();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123:topic:1",
+        parentConversationId: "123",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+    const startTurn = vi.spyOn(controller as any, "startTurn").mockResolvedValue(undefined);
+
+    const result = await controller.handleInboundClaim({
+      content: "who are you?",
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+      isGroup: true,
+    });
+
+    expect(result).toEqual({ handled: true });
+    expect(startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversation: expect.objectContaining({
+          channel: "telegram",
+          accountId: "default",
+          conversationId: "123:topic:1",
+          parentConversationId: "123",
+          threadId: 1,
+        }),
+        binding: expect.objectContaining({
+          threadId: "thread-1",
+          workspaceDir: "/repo/openclaw",
+        }),
+      }),
+    );
+  });
+
+  it("queues inbound Telegram #General messages onto the active topic run when the hook omits threadId", async () => {
+    const { controller } = await createControllerHarness();
+    const queueMessage = vi.fn(async () => true);
+    const interrupt = vi.fn(async () => {});
+    (controller as any).activeRuns.set("telegram::default::123:topic:1::123", {
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123:topic:1",
+        parentConversationId: "123",
+        threadId: 1,
+      },
+      workspaceDir: "/repo/openclaw",
+      mode: "default",
+      handle: {
+        result: Promise.resolve({ threadId: "thread-1", text: "stale" }),
+        queueMessage,
+        getThreadId: () => "thread-1",
+        interrupt,
+        isAwaitingInput: () => false,
+        submitPendingInput: vi.fn(async () => false),
+        submitPendingInputPayload: vi.fn(async () => false),
+      },
+    });
+    const startTurn = vi.fn();
+    (controller as any).client.startTurn = startTurn;
+
+    const result = await controller.handleInboundClaim({
+      content: "who are you?",
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+      isGroup: true,
+    });
+
+    expect(result).toEqual({ handled: true });
+    expect(queueMessage).toHaveBeenCalledWith("who are you?");
+    expect(interrupt).not.toHaveBeenCalled();
+    expect(startTurn).not.toHaveBeenCalled();
+  });
+
   it("uses a raw Discord channel id for the typing lease on inbound claims", async () => {
     const { controller, discordTypingStart } = await createControllerHarness();
     await (controller as any).store.upsertBinding({

@@ -359,6 +359,31 @@ function toConversationTargetFromInbound(event: {
             ? Number(event.threadId)
             : undefined
           : undefined,
+    };
+}
+
+function toTelegramGeneralTopicFallback(
+  conversation: ConversationTarget,
+): ConversationTarget | null {
+  if (!isTelegramChannel(conversation.channel)) {
+    return null;
+  }
+  const conversationId = conversation.conversationId.trim();
+  if (
+    !conversationId ||
+    conversation.parentConversationId?.trim() ||
+    conversation.threadId != null ||
+    conversationId.includes(":topic:")
+  ) {
+    return null;
+  }
+  return {
+    ...conversation,
+    // OpenClaw's Telegram inbound hook omits threadId for forum #General, so
+    // recover the same local binding key that /cas_resume stores for topic 1.
+    conversationId: `${conversationId}:topic:1`,
+    parentConversationId: conversationId,
+    threadId: 1,
   };
 }
 
@@ -747,6 +772,27 @@ export class CodexPluginController {
     ].join(" ");
   }
 
+  private resolveInboundConversationTarget(conversation: ConversationTarget): ConversationTarget {
+    const generalFallback = toTelegramGeneralTopicFallback(conversation);
+    if (!generalFallback) {
+      return conversation;
+    }
+    const hasExactLocalState =
+      this.activeRuns.has(buildConversationKey(conversation)) ||
+      Boolean(this.store.getBinding(conversation)) ||
+      Boolean(this.store.getPendingBind(conversation)) ||
+      Boolean(this.store.getPendingRequestByConversation(conversation));
+    if (hasExactLocalState) {
+      return conversation;
+    }
+    const hasGeneralLocalState =
+      this.activeRuns.has(buildConversationKey(generalFallback)) ||
+      Boolean(this.store.getBinding(generalFallback)) ||
+      Boolean(this.store.getPendingBind(generalFallback)) ||
+      Boolean(this.store.getPendingRequestByConversation(generalFallback));
+    return hasGeneralLocalState ? generalFallback : conversation;
+  }
+
   async handleInboundClaim(event: {
     content: string;
     channel: string;
@@ -762,10 +808,11 @@ export class CodexPluginController {
         return { handled: false };
       }
       await this.start();
-      const conversation = toConversationTargetFromInbound(event);
-      if (!conversation) {
+      const inboundConversation = toConversationTargetFromInbound(event);
+      if (!inboundConversation) {
         return { handled: false };
       }
+      const conversation = this.resolveInboundConversationTarget(inboundConversation);
       const activeKey = buildConversationKey(conversation);
       const active = this.activeRuns.get(activeKey);
       if (active) {
