@@ -1435,6 +1435,40 @@ describe("Discord controller flows", () => {
     );
   });
 
+  it("renders saved conversation preferences in cas_status even if thread reads lag behind", async () => {
+    const { controller } = await createControllerHarness();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      preferences: {
+        preferredModel: "openai/gpt-5.3-codex",
+        preferredServiceTier: "fast",
+        preferredApprovalPolicy: "never",
+        preferredSandbox: "workspace-write",
+        updatedAt: Date.now(),
+      },
+      updatedAt: Date.now(),
+    });
+
+    const reply = await controller.handleCommand(
+      "cas_status",
+      buildTelegramCommandContext({
+        commandBody: "/cas_status",
+        getCurrentConversationBinding: vi.fn(async () => ({ bindingId: "b1" })),
+      }),
+    );
+
+    expect(reply.text).toContain("Model: openai/gpt-5.3-codex");
+    expect(reply.text).toContain("Fast mode: on");
+    expect(reply.text).toContain("Permissions: Custom (workspace-write, never)");
+  });
+
   it("sends the status card directly to Discord with interactive controls", async () => {
     const { controller, sendComponentMessage } = await createControllerHarness();
     await (controller as any).store.upsertBinding({
@@ -2993,6 +3027,7 @@ describe("Discord controller flows", () => {
     });
 
     await flushAsyncWork();
+    await new Promise((resolve) => setTimeout(resolve, 10));
     expect(sendMessageTelegram).toHaveBeenCalledWith(
       "8460800771",
       "Codex authentication failed on this machine. Run `codex logout` and `codex login`, then try again.",
@@ -3089,6 +3124,63 @@ describe("Discord controller flows", () => {
       sessionKey: "session-1",
       refreshToken: true,
     });
+  });
+
+  it("passes saved conversation preferences into the next Codex turn", async () => {
+    const { controller } = await createControllerHarness();
+    const startTurn = vi.fn(() => ({
+      result: Promise.resolve({
+        threadId: "thread-1",
+        text: "done",
+      }),
+      getThreadId: () => "thread-1",
+      queueMessage: vi.fn(async () => false),
+      interrupt: vi.fn(async () => {}),
+      isAwaitingInput: () => false,
+      submitPendingInput: vi.fn(async () => false),
+      submitPendingInputPayload: vi.fn(async () => false),
+    }));
+    (controller as any).client.startTurn = startTurn;
+
+    await (controller as any).startTurn({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "8460800771",
+      },
+      binding: {
+        conversation: {
+          channel: "telegram",
+          accountId: "default",
+          conversationId: "8460800771",
+        },
+        sessionKey: "session-1",
+        threadId: "thread-1",
+        workspaceDir: "/repo/openclaw",
+        preferences: {
+          preferredModel: "gpt-5.3-codex",
+          preferredServiceTier: "fast",
+          preferredApprovalPolicy: "never",
+          preferredSandbox: "workspace-write",
+          updatedAt: Date.now(),
+        },
+        updatedAt: Date.now(),
+      },
+      workspaceDir: "/repo/openclaw",
+      prompt: "who are you?",
+      reason: "inbound",
+    });
+
+    expect(startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: "session-1",
+        existingThreadId: "thread-1",
+        model: "gpt-5.3-codex",
+        serviceTier: "fast",
+        approvalPolicy: "never",
+        sandbox: "workspace-write",
+      }),
+    );
   });
 
   it("keeps empty completed turns generic instead of inferring an auth failure", async () => {
@@ -3284,6 +3376,12 @@ describe("Discord controller flows", () => {
       sessionKey: "session-1",
       threadId: "thread-1",
       approvalPolicy: "never",
+      sandbox: "workspace-write",
+    });
+    expect(clientMock.setThreadPermissions).toHaveBeenNthCalledWith(2, {
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      approvalPolicy: "never",
       sandbox: "danger-full-access",
     });
     expect(editMessage).toHaveBeenLastCalledWith(
@@ -3319,7 +3417,7 @@ describe("Discord controller flows", () => {
     });
     expect(binding?.preferences?.preferredApprovalPolicy).toBe("on-request");
     expect(binding?.preferences?.preferredSandbox).toBe("workspace-write");
-    expect(clientMock.setThreadPermissions).toHaveBeenNthCalledWith(2, {
+    expect(clientMock.setThreadPermissions).toHaveBeenNthCalledWith(3, {
       sessionKey: "session-1",
       threadId: "thread-1",
       approvalPolicy: "on-request",

@@ -1002,7 +1002,10 @@ function buildThreadResumePayloads(params: {
   approvalPolicy?: string;
   sandbox?: string;
 }): Array<Record<string, unknown>> {
-  const base: Record<string, unknown> = { threadId: params.threadId };
+  const base: Record<string, unknown> = {
+    threadId: params.threadId,
+    persistExtendedHistory: false,
+  };
   if (params.model?.trim()) {
     base.model = params.model.trim();
   }
@@ -1019,6 +1022,27 @@ function buildThreadResumePayloads(params: {
     base.sandbox = params.sandbox.trim();
   }
   return [base];
+}
+
+function normalizeSandboxMode(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const normalized = trimmed.toLowerCase();
+  if (normalized === "workspacewrite" || normalized === "workspace_write") {
+    return "workspace-write";
+  }
+  if (normalized === "readonly" || normalized === "read_only") {
+    return "read-only";
+  }
+  if (normalized === "dangerfullaccess" || normalized === "danger_full_access") {
+    return "danger-full-access";
+  }
+  if (normalized === "externalsandbox" || normalized === "external_sandbox") {
+    return "external-sandbox";
+  }
+  return trimmed;
 }
 
 function buildTurnInput(prompt: string): Array<Record<string, unknown>> {
@@ -1081,6 +1105,7 @@ function buildTurnStartPayloads(params: {
   threadId: string;
   prompt: string;
   model?: string;
+  serviceTier?: string;
   collaborationMode?: CollaborationMode;
   collaborationFallbackModel?: string;
 }): unknown[] {
@@ -1090,6 +1115,9 @@ function buildTurnStartPayloads(params: {
   };
   if (params.model?.trim()) {
     base.model = params.model.trim();
+  }
+  if (params.serviceTier?.trim()) {
+    base.serviceTier = params.serviceTier.trim();
   }
   if (!params.collaborationMode) {
     return [base];
@@ -1677,7 +1705,7 @@ function extractMcpServerSummaries(value: unknown): McpServerSummary[] {
 
 function summarizeSandboxPolicy(value: unknown): string | undefined {
   if (typeof value === "string") {
-    return value.trim() || undefined;
+    return normalizeSandboxMode(value);
   }
   const record = asRecord(value);
   if (!record) {
@@ -1695,7 +1723,7 @@ function summarizeSandboxPolicy(value: unknown): string | undefined {
   if ("externalSandbox" in record || "external_sandbox" in record) {
     return "external-sandbox";
   }
-  return pickString(record, ["mode", "type", "kind", "name"]);
+  return normalizeSandboxMode(pickString(record, ["mode", "type", "kind", "name"]));
 }
 
 function extractThreadState(value: unknown): ThreadState {
@@ -3164,6 +3192,9 @@ export class CodexAppServerClient {
     runId: string;
     existingThreadId?: string;
     model?: string;
+    serviceTier?: string;
+    approvalPolicy?: string;
+    sandbox?: string;
     collaborationMode?: CollaborationMode;
     onPendingInput?: (state: PendingInputState | null) => Promise<void> | void;
     onFileEdits?: (text: string) => Promise<void> | void;
@@ -3429,11 +3460,34 @@ export class CodexAppServerClient {
           this.logger.debug(
             `codex turn thread created run=${params.runId} thread=${threadId} model=${threadModel || "<none>"} reasoningEffort=${threadReasoningEffort || "<none>"}`,
           );
+          if (params.serviceTier || params.approvalPolicy || params.sandbox) {
+            const resumed = await requestWithFallbacks({
+              client,
+              methods: ["thread/resume"],
+              payloads: buildThreadResumePayloads({
+                threadId,
+                serviceTier: params.serviceTier,
+                approvalPolicy: params.approvalPolicy,
+                sandbox: params.sandbox,
+              }),
+              timeoutMs: this.settings.requestTimeoutMs,
+            });
+            const resumedState = extractThreadState(resumed);
+            threadModel = resumedState.model?.trim() || threadModel;
+            threadReasoningEffort =
+              resumedState.reasoningEffort?.trim() || threadReasoningEffort;
+          }
         } else {
           const resumed = await requestWithFallbacks({
             client,
             methods: ["thread/resume"],
-            payloads: [{ threadId }],
+            payloads: buildThreadResumePayloads({
+              threadId,
+              model: params.model,
+              serviceTier: params.serviceTier,
+              approvalPolicy: params.approvalPolicy,
+              sandbox: params.sandbox,
+            }),
             timeoutMs: this.settings.requestTimeoutMs,
           }).catch(() => undefined);
           const resumedState = resumed ? extractThreadState(resumed) : undefined;
@@ -3453,6 +3507,7 @@ export class CodexAppServerClient {
           threadId,
           prompt: params.prompt,
           model: params.model,
+          serviceTier: params.serviceTier,
           collaborationMode,
           collaborationFallbackModel: params.model?.trim() || threadModel,
         });

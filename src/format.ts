@@ -315,10 +315,10 @@ function formatCodexFastModeValue(value: string | undefined): string {
   if (!normalized) {
     return "off";
   }
-  if (normalized === "default" || normalized === "auto") {
+  if (normalized === "default" || normalized === "auto" || normalized === "flex") {
     return "off";
   }
-  if (normalized === "fast" || normalized === "priority") {
+  if (normalized === "fast") {
     return "on";
   }
   return normalized;

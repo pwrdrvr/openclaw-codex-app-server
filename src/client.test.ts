@@ -139,6 +139,7 @@ describe("buildThreadResumePayloads", () => {
     ).toEqual([
       {
         threadId: "thread-123",
+        persistExtendedHistory: false,
         model: "gpt-5.4",
         cwd: "/tmp/workspace",
         serviceTier: "default",
@@ -192,6 +193,7 @@ describe("CodexAppServerClient.setThreadModel", () => {
       {
         threadId: "thread-123",
         model: "gpt-5.4",
+        persistExtendedHistory: false,
       },
       1_000,
     );
@@ -246,6 +248,7 @@ describe("CodexAppServerClient.setThreadPermissions", () => {
         threadId: "thread-123",
         approvalPolicy: "never",
         sandbox: "danger-full-access",
+        persistExtendedHistory: false,
       },
       1_000,
     );

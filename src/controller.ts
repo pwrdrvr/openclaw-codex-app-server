@@ -443,10 +443,10 @@ function normalizeServiceTier(value: string | undefined | null): string | undefi
 
 function formatFastModeValue(value: string | undefined): string {
   const normalized = normalizeServiceTier(value);
-  if (!normalized || normalized === "default" || normalized === "auto") {
+  if (!normalized || normalized === "default" || normalized === "auto" || normalized === "flex") {
     return "off";
   }
-  if (normalized === "fast" || normalized === "priority") {
+  if (normalized === "fast") {
     return "on";
   }
   return normalized;
@@ -454,14 +454,39 @@ function formatFastModeValue(value: string | undefined): string {
 
 function normalizePreferenceServiceTier(value: string | undefined | null): string | null {
   const normalized = normalizeServiceTier(value);
-  if (!normalized || normalized === "default" || normalized === "auto") {
+  if (!normalized || normalized === "default" || normalized === "auto" || normalized === "flex") {
     return null;
   }
   return normalized;
 }
 
 function isFullAutoPermissions(approvalPolicy?: string, sandbox?: string): boolean {
-  return approvalPolicy?.trim() === "never" && sandbox?.trim() === "danger-full-access";
+  return approvalPolicy?.trim() === "never" || sandbox?.trim() === "danger-full-access";
+}
+
+function applyBindingPreferencesToThreadState(
+  threadState: import("./types.js").ThreadState | undefined,
+  binding: StoredBinding | null,
+): import("./types.js").ThreadState | undefined {
+  if (!threadState && !binding) {
+    return undefined;
+  }
+  const preferredModel = binding?.preferences?.preferredModel?.trim();
+  const preferredServiceTier = normalizePreferenceServiceTier(
+    binding?.preferences?.preferredServiceTier,
+  );
+  const preferredApprovalPolicy = binding?.preferences?.preferredApprovalPolicy?.trim();
+  const preferredSandbox = binding?.preferences?.preferredSandbox?.trim();
+  const baseState = threadState ?? {
+    threadId: binding?.threadId ?? "",
+  };
+  return {
+    ...baseState,
+    model: preferredModel || baseState.model,
+    serviceTier: preferredServiceTier ?? baseState.serviceTier,
+    approvalPolicy: preferredApprovalPolicy || baseState.approvalPolicy,
+    sandbox: preferredSandbox || baseState.sandbox,
+  };
 }
 
 const PLAN_PROGRESS_DELAY_MS = 12_000;
@@ -1787,9 +1812,9 @@ export class CodexPluginController {
       return { text: `Fast mode is ${formatFastModeValue(currentTier)}.` };
     }
     const nextTier =
-      action === "toggle" ? (currentTier === "fast" || currentTier === "priority" ? null : "fast")
+      action === "toggle" ? (currentTier === "fast" ? "flex" : "fast")
       : action === "on" ? "fast"
-      : null;
+      : "flex";
     const updated = await this.client.setThreadServiceTier({
       sessionKey: binding.sessionKey,
       threadId: binding.threadId,
@@ -1885,7 +1910,7 @@ export class CodexPluginController {
     ]);
     return {
       text:
-        `${formatThreadState(state, binding)}\n\n${formatAccountSummary(account, limits)}`.trim(),
+        `${formatThreadState(applyBindingPreferencesToThreadState(state, binding) ?? state, binding)}\n\n${formatAccountSummary(account, limits)}`.trim(),
     };
   }
 
@@ -2096,7 +2121,12 @@ export class CodexPluginController {
       prompt: params.prompt,
       runId: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
       existingThreadId: params.binding?.threadId,
-      model: this.settings.defaultModel,
+      model: params.binding?.preferences?.preferredModel?.trim() || this.settings.defaultModel,
+      serviceTier:
+        normalizePreferenceServiceTier(params.binding?.preferences?.preferredServiceTier) ??
+        undefined,
+      approvalPolicy: params.binding?.preferences?.preferredApprovalPolicy?.trim(),
+      sandbox: params.binding?.preferences?.preferredSandbox?.trim(),
       collaborationMode: params.collaborationMode,
       onPendingInput: async (state) => {
         this.api.logger.debug?.(
@@ -3657,7 +3687,7 @@ export class CodexPluginController {
         threadId: binding.threadId,
       });
       const currentTier = normalizeServiceTier(threadState.serviceTier);
-      const nextTier = currentTier === "fast" || currentTier === "priority" ? null : "fast";
+      const nextTier = currentTier === "fast" ? "flex" : "fast";
       const updatedState = await this.client.setThreadServiceTier({
         sessionKey: binding.sessionKey,
         threadId: binding.threadId,
@@ -3710,6 +3740,20 @@ export class CodexPluginController {
         threadState.sandbox?.trim() ||
         "workspace-write";
       const nextIsFullAuto = !isFullAutoPermissions(currentApproval, currentSandbox);
+      let updatedState = await this.client.setThreadPermissions({
+        sessionKey: binding.sessionKey,
+        threadId: binding.threadId,
+        approvalPolicy: nextIsFullAuto ? "never" : "on-request",
+        sandbox: "workspace-write",
+      });
+      if (nextIsFullAuto) {
+        updatedState = await this.client.setThreadPermissions({
+          sessionKey: binding.sessionKey,
+          threadId: binding.threadId,
+          approvalPolicy: updatedState.approvalPolicy?.trim() || "never",
+          sandbox: "danger-full-access",
+        }).catch(() => updatedState);
+      }
       const updatedBinding: StoredBinding = {
         ...binding,
         preferences: {
@@ -3717,18 +3761,12 @@ export class CodexPluginController {
             preferredServiceTier: null,
             updatedAt: Date.now(),
           }),
-          preferredApprovalPolicy: nextIsFullAuto ? "never" : "on-request",
-          preferredSandbox: nextIsFullAuto ? "danger-full-access" : "workspace-write",
+          preferredApprovalPolicy: updatedState.approvalPolicy?.trim() || undefined,
+          preferredSandbox: updatedState.sandbox?.trim() || undefined,
           updatedAt: Date.now(),
         },
         updatedAt: Date.now(),
       };
-      await this.client.setThreadPermissions({
-        sessionKey: binding.sessionKey,
-        threadId: binding.threadId,
-        approvalPolicy: updatedBinding.preferences?.preferredApprovalPolicy ?? "on-request",
-        sandbox: updatedBinding.preferences?.preferredSandbox ?? "workspace-write",
-      });
       await this.store.upsertBinding(updatedBinding);
       const statusCard = await this.buildStatusCard(
         {
@@ -4257,7 +4295,7 @@ export class CodexPluginController {
 
     return formatCodexStatusText({
       pluginVersion: PLUGIN_VERSION,
-      threadState,
+      threadState: applyBindingPreferencesToThreadState(threadState, binding),
       account,
       rateLimits: limits,
       bindingActive,
