@@ -1428,7 +1428,7 @@ describe("Discord controller flows", () => {
   });
 
   it("binds Telegram #General as topic 1 for cas_resume when messageThreadId is present", async () => {
-    const { controller, sendMessageTelegram } = await createControllerHarness();
+    const { controller, api, sendMessageTelegram } = await createControllerHarness();
 
     await controller.handleCommand(
       "cas_resume",
@@ -1456,6 +1456,24 @@ describe("Discord controller flows", () => {
       "123",
       expect.stringContaining("Thread ID: thread-1"),
       expect.objectContaining({ accountId: "default", messageThreadId: 1 }),
+    );
+    expect(api.runtime.channel.bindings.bind).toHaveBeenCalledWith(
+      expect.objectContaining({
+        targetSessionKey: expect.stringMatching(/^plugin-binding:openclaw-codex-app-server:[0-9a-f]{24}$/),
+        targetKind: "session",
+        placement: "current",
+        conversation: {
+          channel: "telegram",
+          accountId: "default",
+          conversationId: "123:topic:1",
+          parentConversationId: "123",
+        },
+        metadata: expect.objectContaining({
+          pluginBindingOwner: "plugin",
+          pluginId: "openclaw-codex-app-server",
+          pluginName: "OpenClaw Plugin For Codex App Server",
+        }),
+      }),
     );
   });
 
@@ -1576,7 +1594,7 @@ describe("Discord controller flows", () => {
   });
 
   it("detaches Telegram #General bindings when commands omit messageThreadId", async () => {
-    const { controller } = await createControllerHarness();
+    const { controller, api } = await createControllerHarness();
     await (controller as any).store.upsertBinding({
       conversation: {
         channel: "telegram",
@@ -1601,6 +1619,12 @@ describe("Discord controller flows", () => {
     );
 
     expect(reply).toEqual({ text: "Detached this conversation from Codex." });
+    expect(api.runtime.channel.bindings.unbind).toHaveBeenCalledWith(
+      expect.objectContaining({
+        targetSessionKey: expect.stringMatching(/^plugin-binding:openclaw-codex-app-server:[0-9a-f]{24}$/),
+        reason: "plugin-detach",
+      }),
+    );
     expect(
       (controller as any).store.getBinding({
         channel: "telegram",

@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import crypto from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -90,6 +91,8 @@ type ActiveRunRecord = {
 
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
+const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const PLUGIN_NAME = "OpenClaw Plugin For Codex App Server";
 const PLUGIN_VERSION = (() => {
   try {
     const packageJson = require("../package.json") as { version?: unknown };
@@ -400,6 +403,33 @@ function toTelegramGeneralTopicFallback(
     parentConversationId: conversationId,
     threadId: 1,
   };
+}
+
+function toConversationRef(conversation: ConversationTarget): ConversationRef {
+  return {
+    channel: conversation.channel,
+    accountId: conversation.accountId,
+    conversationId: conversation.conversationId,
+    parentConversationId: conversation.parentConversationId,
+  };
+}
+
+function buildRuntimePluginBindingSessionKey(
+  conversation: ConversationTarget,
+): string {
+  const hash = crypto
+    .createHash("sha256")
+    .update(
+      JSON.stringify({
+        pluginId: PLUGIN_ID,
+        channel: conversation.channel.trim().toLowerCase(),
+        accountId: conversation.accountId,
+        conversationId: conversation.conversationId,
+      }),
+    )
+    .digest("hex")
+    .slice(0, 24);
+  return `plugin-binding:${PLUGIN_ID}:${hash}`;
 }
 
 function buildReplyWithButtons(text: string, buttons?: PluginInteractiveButtons): ReplyPayload {
@@ -3768,7 +3798,41 @@ export class CodexPluginController {
       updatedAt: Date.now(),
     };
     await this.store.upsertBinding(record);
+    await this.syncRuntimeConversationBinding(record).catch((error) => {
+      this.api.logger.warn(`codex runtime binding sync failed: ${String(error)}`);
+    });
     return record;
+  }
+
+  private async syncRuntimeConversationBinding(binding: StoredBinding): Promise<void> {
+    const bindingsApi = this.api.runtime.channel.bindings;
+    if (!bindingsApi || !isTelegramChannel(binding.conversation.channel)) {
+      return;
+    }
+    const topicId = binding.conversation.conversationId.includes(":topic:")
+      ? binding.conversation.conversationId.split(":topic:").at(-1)?.trim()
+      : "";
+    if (topicId !== "1") {
+      return;
+    }
+    await bindingsApi.bind({
+      targetSessionKey: buildRuntimePluginBindingSessionKey({
+        ...binding.conversation,
+        threadId: 1,
+      }),
+      targetKind: "session",
+      placement: "current",
+      conversation: toConversationRef({
+        ...binding.conversation,
+        threadId: 1,
+      }),
+      metadata: {
+        pluginBindingOwner: "plugin",
+        pluginId: PLUGIN_ID,
+        pluginName: PLUGIN_NAME,
+        pluginRoot: PLUGIN_ROOT,
+      },
+    });
   }
 
   private async hydrateApprovedBinding(
@@ -4254,6 +4318,16 @@ export class CodexPluginController {
     const binding = this.store.getBinding(conversation);
     if (binding?.pinnedBindingMessage) {
       await this.unpinStoredBindingMessage(binding);
+    }
+    const bindingsApi = this.api.runtime.channel.bindings;
+    if (binding && bindingsApi && isTelegramChannel(binding.conversation.channel) && binding.conversation.conversationId.includes(":topic:1")) {
+      await bindingsApi.unbind({
+        targetSessionKey: buildRuntimePluginBindingSessionKey({
+          ...binding.conversation,
+          threadId: 1,
+        }),
+        reason: "plugin-detach",
+      }).catch(() => undefined);
     }
     await this.store.removeBinding(conversation);
   }
