@@ -196,12 +196,27 @@ function normalizeTelegramChatId(raw: string | undefined): string | undefined {
   if (!raw) {
     return undefined;
   }
-  const trimmed = raw.trim();
+  let trimmed = raw.trim();
   if (!trimmed) {
     return undefined;
   }
-  if (trimmed.startsWith("telegram:")) {
-    return trimmed.slice("telegram:".length);
+  while (true) {
+    const next = (() => {
+      if (trimmed.startsWith("telegram:")) {
+        return trimmed.slice("telegram:".length);
+      }
+      if (trimmed.startsWith("tg:")) {
+        return trimmed.slice("tg:".length);
+      }
+      if (trimmed.startsWith("group:")) {
+        return trimmed.slice("group:".length);
+      }
+      return trimmed;
+    })().trim();
+    if (next === trimmed) {
+      break;
+    }
+    trimmed = next;
   }
   return trimmed;
 }

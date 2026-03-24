@@ -1516,6 +1516,36 @@ describe("Discord controller flows", () => {
     expect(reply.text).toContain("Project folder: /repo/openclaw");
   });
 
+  it("shows cas_status as active for Telegram #General with telegram:group targets", async () => {
+    const { controller } = await createControllerHarness();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "-100123:topic:1",
+        parentConversationId: "-100123",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      threadTitle: "Discord Thread",
+      updatedAt: Date.now(),
+    });
+
+    const reply = await controller.handleCommand(
+      "cas_status",
+      buildTelegramCommandContext({
+        commandBody: "/cas_status",
+        from: "telegram:group:-100123",
+        to: "telegram:group:-100123",
+        getCurrentConversationBinding: vi.fn(async () => null),
+      }),
+    );
+
+    expect(reply.text).toContain("Binding: active");
+    expect(reply.text).toContain("Project folder: /repo/openclaw");
+  });
+
   it("detaches Telegram #General bindings when commands omit messageThreadId", async () => {
     const { controller } = await createControllerHarness();
     await (controller as any).store.upsertBinding({
