@@ -174,6 +174,11 @@ async function createControllerHarness() {
       threadState.serviceTier = params.serviceTier ?? "default";
       return { ...threadState };
     }),
+    setThreadPermissions: vi.fn(async (params: { approvalPolicy: string; sandbox: string }) => {
+      threadState.approvalPolicy = params.approvalPolicy;
+      threadState.sandbox = params.sandbox;
+      return { ...threadState };
+    }),
     readAccount: vi.fn(async () => ({
       email: "test@example.com",
       planType: "pro",
@@ -1233,7 +1238,7 @@ describe("Discord controller flows", () => {
   });
 
   it("hydrates a pending approved binding when status is requested after core approval", async () => {
-    const { controller } = await createControllerHarness();
+    const { controller, sendComponentMessage } = await createControllerHarness();
     await (controller as any).store.upsertPendingBind({
       conversation: {
         channel: "discord",
@@ -1251,7 +1256,16 @@ describe("Discord controller flows", () => {
       getCurrentConversationBinding: vi.fn(async () => ({ bindingId: "b1" })),
     }));
 
-    expect(reply.text).toContain("Binding: active");
+    expect(reply).toEqual({
+      text: "Sent Codex status controls to this Discord conversation.",
+    });
+    expect(sendComponentMessage).toHaveBeenCalledWith(
+      "channel:chan-1",
+      expect.objectContaining({
+        text: expect.stringContaining("Binding: active"),
+      }),
+      expect.objectContaining({ accountId: "default" }),
+    );
     expect((controller as any).store.getBinding({
       channel: "discord",
       accountId: "default",
@@ -1327,7 +1341,7 @@ describe("Discord controller flows", () => {
   });
 
   it("shows plan mode on in cas_status when the bound conversation has an active plan run", async () => {
-    const { controller } = await createControllerHarness();
+    const { controller, sendComponentMessage } = await createControllerHarness();
     await (controller as any).store.upsertBinding({
       conversation: {
         channel: "discord",
@@ -1364,8 +1378,23 @@ describe("Discord controller flows", () => {
       getCurrentConversationBinding: vi.fn(async () => ({ bindingId: "b1" })),
     }));
 
-    expect(reply.text).toContain("Binding: active");
-    expect(reply.text).toContain("Plan mode: on");
+    expect(reply).toEqual({
+      text: "Sent Codex status controls to this Discord conversation.",
+    });
+    expect(sendComponentMessage).toHaveBeenCalledWith(
+      "channel:chan-1",
+      expect.objectContaining({
+        text: expect.stringContaining("Binding: active"),
+      }),
+      expect.objectContaining({ accountId: "default" }),
+    );
+    expect(sendComponentMessage).toHaveBeenCalledWith(
+      "channel:chan-1",
+      expect.objectContaining({
+        text: expect.stringContaining("Plan mode: on"),
+      }),
+      expect.objectContaining({ accountId: "default" }),
+    );
   });
 
   it("returns status control buttons when a binding exists", async () => {
@@ -1403,6 +1432,44 @@ describe("Discord controller flows", () => {
     });
     expect(kinds).toEqual(
       expect.arrayContaining(["show-model-picker", "toggle-fast", "toggle-permissions"]),
+    );
+  });
+
+  it("sends the status card directly to Discord with interactive controls", async () => {
+    const { controller, sendComponentMessage } = await createControllerHarness();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:chan-1",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+
+    const reply = await controller.handleCommand("cas_status", buildDiscordCommandContext({
+      commandBody: "/cas_status",
+      getCurrentConversationBinding: vi.fn(async () => ({ bindingId: "b1" })),
+    }));
+
+    expect(reply).toEqual({
+      text: "Sent Codex status controls to this Discord conversation.",
+    });
+    expect(sendComponentMessage).toHaveBeenCalledWith(
+      "channel:chan-1",
+      expect.objectContaining({
+        text: expect.stringContaining("Binding: active"),
+        blocks: expect.arrayContaining([
+          expect.objectContaining({
+            buttons: expect.arrayContaining([
+              expect.objectContaining({ label: "Select Model" }),
+            ]),
+          }),
+        ]),
+      }),
+      expect.objectContaining({ accountId: "default" }),
     );
   });
 
@@ -3172,7 +3239,7 @@ describe("Discord controller flows", () => {
   });
 
   it("cycles permissions mode from standard to full auto and back", async () => {
-    const { controller } = await createControllerHarness();
+    const { controller, clientMock } = await createControllerHarness();
     await (controller as any).store.upsertBinding({
       conversation: {
         channel: "telegram",
@@ -3213,6 +3280,12 @@ describe("Discord controller flows", () => {
     });
     expect(binding?.preferences?.preferredApprovalPolicy).toBe("never");
     expect(binding?.preferences?.preferredSandbox).toBe("danger-full-access");
+    expect(clientMock.setThreadPermissions).toHaveBeenNthCalledWith(1, {
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+    });
     expect(editMessage).toHaveBeenLastCalledWith(
       expect.objectContaining({
         text: expect.stringContaining("Permissions: Full Access"),
@@ -3246,6 +3319,12 @@ describe("Discord controller flows", () => {
     });
     expect(binding?.preferences?.preferredApprovalPolicy).toBe("on-request");
     expect(binding?.preferences?.preferredSandbox).toBe("workspace-write");
+    expect(clientMock.setThreadPermissions).toHaveBeenNthCalledWith(2, {
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      approvalPolicy: "on-request",
+      sandbox: "workspace-write",
+    });
     expect(editMessage).toHaveBeenLastCalledWith(
       expect.objectContaining({
         text: expect.stringContaining("Permissions: Default"),
@@ -3292,7 +3371,64 @@ describe("Discord controller flows", () => {
     expect(lastCall?.text).toContain("Current model");
     expect(Array.isArray(lastCall?.buttons)).toBe(true);
     const firstToken = String(lastCall?.buttons?.[0]?.[0]?.callback_data ?? "").split(":").pop() ?? "";
-    expect((controller as any).store.getCallback(firstToken)?.kind).toBe("set-model");
+    expect((controller as any).store.getCallback(firstToken)).toEqual(
+      expect.objectContaining({
+        kind: "set-model",
+        returnToStatus: true,
+      }),
+    );
+  });
+
+  it("sets the model from the status picker and returns to the updated status card", async () => {
+    const { controller, clientMock } = await createControllerHarness();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+    const callback = await (controller as any).store.putCallback({
+      kind: "set-model",
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      model: "openai/gpt-5.3",
+      returnToStatus: true,
+    });
+    const reply = vi.fn(async () => {});
+    const editMessage = vi.fn(async (_payload: any) => {});
+
+    await controller.handleTelegramInteractive({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+      callback: { payload: callback.token },
+      respond: {
+        clearButtons: vi.fn(async () => {}),
+        reply,
+        editMessage,
+      },
+    } as any);
+
+    expect(clientMock.setThreadModel).toHaveBeenCalledWith({
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      model: "openai/gpt-5.3",
+    });
+    expect(reply).not.toHaveBeenCalled();
+    expect(editMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("Model: openai/gpt-5.3"),
+        buttons: expect.any(Array),
+      }),
+    );
   });
 
   it("dismisses the picker when cancel-picker callback is pressed", async () => {

@@ -199,6 +199,61 @@ describe("CodexAppServerClient.setThreadModel", () => {
   });
 });
 
+describe("CodexAppServerClient.setThreadPermissions", () => {
+  it("passes approval policy and sandbox through thread/resume", async () => {
+    const request = vi.fn(async () => ({
+      threadId: "thread-123",
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+    }));
+    const client = new CodexAppServerClient(
+      {
+        enabled: true,
+        transport: "stdio",
+        command: "codex",
+        args: [],
+        requestTimeoutMs: 1_000,
+      },
+      {
+        debug: vi.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      },
+    );
+    (client as any).ensureConnected = vi.fn(async () => ({
+      client: {
+        connect: vi.fn(),
+        close: vi.fn(),
+        notify: vi.fn(),
+        request,
+        setNotificationHandler: vi.fn(),
+        setRequestHandler: vi.fn(),
+      },
+      initializeResult: {},
+    }));
+
+    const state = await client.setThreadPermissions({
+      sessionKey: "session-123",
+      threadId: "thread-123",
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+    });
+
+    expect(request).toHaveBeenCalledWith(
+      "thread/resume",
+      {
+        threadId: "thread-123",
+        approvalPolicy: "never",
+        sandbox: "danger-full-access",
+      },
+      1_000,
+    );
+    expect(state.approvalPolicy).toBe("never");
+    expect(state.sandbox).toBe("danger-full-access");
+  });
+});
+
 describe("extractStartupProbeInfo", () => {
   it("extracts server info from initialize responses without losing CLI probe details", () => {
     expect(

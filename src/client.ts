@@ -999,6 +999,8 @@ function buildThreadResumePayloads(params: {
   model?: string;
   cwd?: string;
   serviceTier?: string | null;
+  approvalPolicy?: string;
+  sandbox?: string;
 }): Array<Record<string, unknown>> {
   const base: Record<string, unknown> = { threadId: params.threadId };
   if (params.model?.trim()) {
@@ -1009,6 +1011,12 @@ function buildThreadResumePayloads(params: {
   }
   if (params.serviceTier !== undefined) {
     base.serviceTier = params.serviceTier;
+  }
+  if (params.approvalPolicy?.trim()) {
+    base.approvalPolicy = params.approvalPolicy.trim();
+  }
+  if (params.sandbox?.trim()) {
+    base.sandbox = params.sandbox.trim();
   }
   return [base];
 }
@@ -2730,6 +2738,30 @@ export class CodexAppServerClient {
           payloads: buildThreadResumePayloads({
             threadId: params.threadId,
             serviceTier: params.serviceTier,
+          }),
+          timeoutMs: settings.requestTimeoutMs,
+        });
+        return extractThreadState(result);
+      },
+    );
+  }
+
+  async setThreadPermissions(params: {
+    sessionKey?: string;
+    threadId: string;
+    approvalPolicy: string;
+    sandbox: string;
+  }): Promise<ThreadState> {
+    return await this.withClient(
+      { sessionKey: params.sessionKey },
+      async ({ client, settings }) => {
+        const result = await requestWithFallbacks({
+          client,
+          methods: ["thread/resume"],
+          payloads: buildThreadResumePayloads({
+            threadId: params.threadId,
+            approvalPolicy: params.approvalPolicy,
+            sandbox: params.sandbox,
           }),
           timeoutMs: settings.requestTimeoutMs,
         });

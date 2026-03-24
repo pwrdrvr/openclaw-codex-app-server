@@ -408,6 +408,7 @@ export type CallbackAction =
       kind: "set-model";
       conversation: ConversationRef;
       model: string;
+      returnToStatus?: boolean;
       createdAt: number;
       expiresAt: number;
     }

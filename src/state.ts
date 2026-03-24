@@ -94,6 +94,7 @@ type PutCallbackInput =
       kind: "set-model";
       conversation: ConversationTarget;
       model: string;
+      returnToStatus?: boolean;
       token?: string;
       ttlMs?: number;
     }
@@ -357,6 +358,7 @@ export class PluginStateStore {
                     kind: "set-model",
                     conversation: callback.conversation,
                     model: callback.model,
+                    returnToStatus: callback.returnToStatus,
                   token: callback.token ?? this.createCallbackToken(),
                   createdAt: now,
                   expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),

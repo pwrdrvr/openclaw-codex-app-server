@@ -106,6 +106,11 @@ type PickerRender = {
   buttons: PluginInteractiveButtons | undefined;
 };
 
+type StatusCardRender = {
+  text: string;
+  buttons?: PluginInteractiveButtons;
+};
+
 type PickerResponders = {
   conversation: ConversationTarget;
   clear: () => Promise<void>;
@@ -1396,11 +1401,23 @@ export class CodexPluginController {
     binding: StoredBinding | null,
     bindingActive: boolean,
   ): Promise<ReplyPayload> {
-    const text = await this.buildStatusText(conversation, binding, bindingActive);
-    if (!conversation || !binding || !bindingActive) {
-      return { text };
+    const card = await this.buildStatusCard(conversation, binding, bindingActive);
+    if (!card.buttons || !conversation) {
+      return { text: card.text };
     }
-    return buildReplyWithButtons(text, await this.buildStatusControlButtons(conversation));
+    if (isDiscordChannel(conversation.channel)) {
+      try {
+        await this.sendReply(conversation, {
+          text: card.text,
+          buttons: card.buttons,
+        });
+        return { text: "Sent Codex status controls to this Discord conversation." };
+      } catch (error) {
+        this.api.logger.warn(`codex discord status card send failed: ${String(error)}`);
+        return { text: card.text };
+      }
+    }
+    return buildReplyWithButtons(card.text, card.buttons);
   }
 
   private async buildStatusControlButtons(
@@ -1443,6 +1460,9 @@ export class CodexPluginController {
   private async buildModelPicker(
     conversation: ConversationTarget,
     binding: StoredBinding,
+    opts?: {
+      returnToStatus?: boolean;
+    },
   ): Promise<PickerRender> {
     const [models, state] = await Promise.all([
       this.client.listModels({ sessionKey: binding.sessionKey }),
@@ -1457,6 +1477,7 @@ export class CodexPluginController {
         kind: "set-model",
         conversation,
         model: model.id,
+        returnToStatus: opts?.returnToStatus,
       });
       buttons.push([
         {
@@ -1468,6 +1489,21 @@ export class CodexPluginController {
     return {
       text: formatModels(models, state),
       buttons,
+    };
+  }
+
+  private async buildStatusCard(
+    conversation: ConversationTarget | null,
+    binding: StoredBinding | null,
+    bindingActive: boolean,
+  ): Promise<StatusCardRender> {
+    const text = await this.buildStatusText(conversation, binding, bindingActive);
+    if (!conversation || !binding || !bindingActive) {
+      return { text };
+    }
+    return {
+      text,
+      buttons: await this.buildStatusControlButtons(conversation),
     };
   }
 
@@ -1815,6 +1851,18 @@ export class CodexPluginController {
       sessionKey: binding.sessionKey,
       threadId: binding.threadId,
       model: args.trim(),
+    });
+    await this.store.upsertBinding({
+      ...binding,
+      preferences: {
+        ...(binding.preferences ?? {
+          preferredServiceTier: null,
+          updatedAt: Date.now(),
+        }),
+        preferredModel: state.model || args.trim(),
+        updatedAt: Date.now(),
+      },
+      updatedAt: Date.now(),
     });
     return { text: `Codex model set to ${state.model || args.trim()}.` };
   }
@@ -3628,7 +3676,7 @@ export class CodexPluginController {
         updatedAt: Date.now(),
       };
       await this.store.upsertBinding(updatedBinding);
-      const statusReply = await this.handleStatusCommand(
+      const statusCard = await this.buildStatusCard(
         {
           ...callback.conversation,
           threadId: responders.conversation.threadId,
@@ -3637,8 +3685,8 @@ export class CodexPluginController {
         true,
       );
       await responders.editPicker({
-        text: statusReply.text ?? "Updated Codex status.",
-        buttons: extractReplyButtons(statusReply),
+        text: statusCard.text,
+        buttons: statusCard.buttons,
       });
       return;
     }
@@ -3675,8 +3723,14 @@ export class CodexPluginController {
         },
         updatedAt: Date.now(),
       };
+      await this.client.setThreadPermissions({
+        sessionKey: binding.sessionKey,
+        threadId: binding.threadId,
+        approvalPolicy: updatedBinding.preferences?.preferredApprovalPolicy ?? "on-request",
+        sandbox: updatedBinding.preferences?.preferredSandbox ?? "workspace-write",
+      });
       await this.store.upsertBinding(updatedBinding);
-      const statusReply = await this.handleStatusCommand(
+      const statusCard = await this.buildStatusCard(
         {
           ...callback.conversation,
           threadId: responders.conversation.threadId,
@@ -3685,8 +3739,8 @@ export class CodexPluginController {
         true,
       );
       await responders.editPicker({
-        text: statusReply.text ?? "Updated Codex status.",
-        buttons: extractReplyButtons(statusReply),
+        text: statusCard.text,
+        buttons: statusCard.buttons,
       });
       return;
     }
@@ -3703,12 +3757,14 @@ export class CodexPluginController {
           threadId: responders.conversation.threadId,
         },
         binding,
+        {
+          returnToStatus: true,
+        },
       );
       await responders.editPicker(picker);
       return;
     }
     if (callback.kind === "set-model") {
-      await responders.clear().catch(() => undefined);
       const binding = this.store.getBinding(callback.conversation);
       await this.store.removeCallback(callback.token);
       if (!binding) {
@@ -3720,7 +3776,7 @@ export class CodexPluginController {
         threadId: binding.threadId,
         model: callback.model,
       });
-      await this.store.upsertBinding({
+      const updatedBinding: StoredBinding = {
         ...binding,
         preferences: {
           ...(binding.preferences ?? {
@@ -3731,7 +3787,24 @@ export class CodexPluginController {
           updatedAt: Date.now(),
         },
         updatedAt: Date.now(),
-      });
+      };
+      await this.store.upsertBinding(updatedBinding);
+      if (callback.returnToStatus) {
+        const statusCard = await this.buildStatusCard(
+          {
+            ...callback.conversation,
+            threadId: responders.conversation.threadId,
+          },
+          updatedBinding,
+          true,
+        );
+        await responders.editPicker({
+          text: statusCard.text,
+          buttons: statusCard.buttons,
+        });
+        return;
+      }
+      await responders.clear().catch(() => undefined);
       await responders.reply(`Codex model set to ${state.model || callback.model}.`);
       return;
     }
@@ -4068,6 +4141,27 @@ export class CodexPluginController {
         this.api.logger.warn(`codex failed to restore preferred service tier: ${String(error)}`);
       }
     }
+    const preferredApprovalPolicy = binding.preferences?.preferredApprovalPolicy?.trim();
+    const preferredSandbox = binding.preferences?.preferredSandbox?.trim();
+    if (
+      preferredApprovalPolicy &&
+      preferredSandbox &&
+      (
+        preferredApprovalPolicy !== state.approvalPolicy?.trim() ||
+        preferredSandbox !== state.sandbox?.trim()
+      )
+    ) {
+      try {
+        state = await this.client.setThreadPermissions({
+          sessionKey: binding.sessionKey,
+          threadId: binding.threadId,
+          approvalPolicy: preferredApprovalPolicy,
+          sandbox: preferredSandbox,
+        });
+      } catch (error) {
+        this.api.logger.warn(`codex failed to restore preferred permissions: ${String(error)}`);
+      }
+    }
 
     const nextBinding =
       (state.threadName && state.threadName !== binding.threadTitle) ||
@@ -4161,25 +4255,9 @@ export class CodexPluginController {
       `codex status snapshot bindingActive=${bindingActive ? "yes" : "no"} activeRun=${activeRun?.mode ?? "none"} boundThread=${binding?.threadId ?? "<none>"} threadModel=${threadState?.model?.trim() || "<none>"} threadCwd=${threadState?.cwd?.trim() || "<none>"}`,
     );
 
-    const preferredApprovalPolicy = binding?.preferences?.preferredApprovalPolicy?.trim();
-    const preferredSandbox = binding?.preferences?.preferredSandbox?.trim();
-    const statusThreadState = threadState
-      ? {
-          ...threadState,
-          approvalPolicy: preferredApprovalPolicy || threadState.approvalPolicy,
-          sandbox: preferredSandbox || threadState.sandbox,
-        }
-      : binding
-        ? {
-            threadId: binding.threadId,
-            approvalPolicy: preferredApprovalPolicy,
-            sandbox: preferredSandbox,
-          }
-        : undefined;
-
     return formatCodexStatusText({
       pluginVersion: PLUGIN_VERSION,
-      threadState: statusThreadState,
+      threadState,
       account,
       rateLimits: limits,
       bindingActive,
