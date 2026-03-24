@@ -9,6 +9,7 @@ import {
   CALLBACK_TTL_MS,
   PENDING_INPUT_TTL_MS,
   type AccountSummary,
+  type AppServerProfile,
   type CollaborationMode,
   type CompactProgress,
   type CompactResult,
@@ -2382,6 +2383,22 @@ export function isMissingThreadError(error: unknown): boolean {
   );
 }
 
+function buildFullAccessPluginSettings(settings: PluginSettings): PluginSettings | null {
+  if (settings.transport !== "stdio") {
+    return null;
+  }
+  return {
+    ...settings,
+    args: [
+      ...settings.args,
+      "-c",
+      'approval_policy="never"',
+      "-c",
+      'sandbox_mode="danger-full-access"',
+    ],
+  };
+}
+
 export class CodexAppServerClient {
   private connectionPromise:
     | Promise<{
@@ -3693,6 +3710,139 @@ export class CodexAppServerClient {
       isAwaitingInput: () => awaitingInput,
       getThreadId: () => threadId || undefined,
     };
+  }
+}
+
+type ProfiledParams<T> = T & { profile?: AppServerProfile };
+
+export class CodexAppServerProfileClient {
+  private readonly clients: Record<AppServerProfile, CodexAppServerClient | null>;
+
+  constructor(
+    settings: PluginSettings,
+    logger: PluginLogger,
+  ) {
+    const fullAccessSettings = buildFullAccessPluginSettings(settings);
+    this.clients = {
+      default: new CodexAppServerClient(settings, logger),
+      "full-access": fullAccessSettings ? new CodexAppServerClient(fullAccessSettings, logger) : null,
+    };
+  }
+
+  hasProfile(profile: AppServerProfile): boolean {
+    return this.clients[profile] != null;
+  }
+
+  private getClient(profile: AppServerProfile | undefined): CodexAppServerClient {
+    const resolvedProfile = profile ?? "default";
+    const client = this.clients[resolvedProfile];
+    if (!client) {
+      throw new Error(`Codex app-server profile unavailable: ${resolvedProfile}`);
+    }
+    return client;
+  }
+
+  async logStartupProbe(): Promise<void> {
+    await this.getClient("default").logStartupProbe();
+    if (this.hasProfile("full-access")) {
+      await this.getClient("full-access").logStartupProbe();
+    }
+  }
+
+  async close(): Promise<void> {
+    await Promise.all(
+      (Object.values(this.clients).filter(Boolean) as CodexAppServerClient[]).map((client) =>
+        client.close().catch(() => undefined),
+      ),
+    );
+  }
+
+  async listThreads(params: ProfiledParams<Parameters<CodexAppServerClient["listThreads"]>[0]>) {
+    return await this.getClient(params.profile).listThreads(params);
+  }
+
+  async startThread(params: ProfiledParams<Parameters<CodexAppServerClient["startThread"]>[0]>) {
+    return await this.getClient(params.profile).startThread(params);
+  }
+
+  async listModels(params: ProfiledParams<Parameters<CodexAppServerClient["listModels"]>[0]>) {
+    return await this.getClient(params.profile).listModels(params);
+  }
+
+  async listSkills(params: ProfiledParams<Parameters<CodexAppServerClient["listSkills"]>[0]>) {
+    return await this.getClient(params.profile).listSkills(params);
+  }
+
+  async listExperimentalFeatures(
+    params: ProfiledParams<Parameters<CodexAppServerClient["listExperimentalFeatures"]>[0]>,
+  ) {
+    return await this.getClient(params.profile).listExperimentalFeatures(params);
+  }
+
+  async listMcpServers(
+    params: ProfiledParams<Parameters<CodexAppServerClient["listMcpServers"]>[0]>,
+  ) {
+    return await this.getClient(params.profile).listMcpServers(params);
+  }
+
+  async readRateLimits(
+    params: ProfiledParams<Parameters<CodexAppServerClient["readRateLimits"]>[0]>,
+  ) {
+    return await this.getClient(params.profile).readRateLimits(params);
+  }
+
+  async readAccount(params: ProfiledParams<Parameters<CodexAppServerClient["readAccount"]>[0]>) {
+    return await this.getClient(params.profile).readAccount(params);
+  }
+
+  async readThreadState(
+    params: ProfiledParams<Parameters<CodexAppServerClient["readThreadState"]>[0]>,
+  ) {
+    return await this.getClient(params.profile).readThreadState(params);
+  }
+
+  async setThreadName(
+    params: ProfiledParams<Parameters<CodexAppServerClient["setThreadName"]>[0]>,
+  ) {
+    return await this.getClient(params.profile).setThreadName(params);
+  }
+
+  async setThreadModel(
+    params: ProfiledParams<Parameters<CodexAppServerClient["setThreadModel"]>[0]>,
+  ) {
+    return await this.getClient(params.profile).setThreadModel(params);
+  }
+
+  async setThreadServiceTier(
+    params: ProfiledParams<Parameters<CodexAppServerClient["setThreadServiceTier"]>[0]>,
+  ) {
+    return await this.getClient(params.profile).setThreadServiceTier(params);
+  }
+
+  async setThreadPermissions(
+    params: ProfiledParams<Parameters<CodexAppServerClient["setThreadPermissions"]>[0]>,
+  ) {
+    return await this.getClient(params.profile).setThreadPermissions(params);
+  }
+
+  async compactThread(
+    params: ProfiledParams<Parameters<CodexAppServerClient["compactThread"]>[0]>,
+  ) {
+    return await this.getClient(params.profile).compactThread(params);
+  }
+
+  async readThreadContext(
+    params: ProfiledParams<Parameters<CodexAppServerClient["readThreadContext"]>[0]>,
+  ) {
+    return await this.getClient(params.profile).readThreadContext(params);
+  }
+
+  startReview(params: ProfiledParams<Parameters<CodexAppServerClient["startReview"]>[0]>) {
+    return this.getClient(params.profile).startReview(params);
+  }
+
+  startTurn(params: ProfiledParams<Parameters<CodexAppServerClient["startTurn"]>[0]>) {
+    return this.getClient(params.profile).startTurn(params);
   }
 }
 

@@ -500,6 +500,7 @@ export function formatCodexStatusText(params: {
   bindingActive?: boolean;
   contextUsage?: ContextUsageSnapshot;
   planMode?: boolean;
+  permissionNote?: string;
 }): string {
   const lines = [];
   lines.push(`Binding: ${params.bindingActive ? "active" : "none"}`);
@@ -532,6 +533,9 @@ export function formatCodexStatusText(params: {
   });
   if (permissions) {
     lines.push(`Permissions: ${permissions}`);
+  }
+  if (params.permissionNote?.trim()) {
+    lines.push(params.permissionNote.trim());
   }
   lines.push(`Account: ${formatCodexAccountText(params.account)}`);
   const threadId = params.threadState?.threadId?.trim();

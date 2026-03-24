@@ -85,6 +85,12 @@ type PutCallbackInput =
       ttlMs?: number;
     }
   | {
+      kind: "stop-run";
+      conversation: ConversationTarget;
+      token?: string;
+      ttlMs?: number;
+    }
+  | {
       kind: "show-model-picker";
       conversation: ConversationTarget;
       token?: string;
@@ -379,6 +385,14 @@ export class PluginStateStore {
                         createdAt: now,
                         expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
                       }
+                    : callback.kind === "stop-run"
+                      ? {
+                          kind: "stop-run",
+                          conversation: callback.conversation,
+                          token: callback.token ?? this.createCallbackToken(),
+                          createdAt: now,
+                          expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
+                        }
                     : callback.kind === "show-model-picker"
                       ? {
                           kind: "show-model-picker",
