@@ -14,7 +14,7 @@ Use this skill for manual regression passes of this plugin against a real local 
 - Use [$agent-browser](https://github.com/vercel-labs/agent-browser) only as fallback. Read [references/agent-browser.md](references/agent-browser.md) only if you intentionally choose that path.
 - If Telegram Web or Discord is not logged in, stop and ask the user to complete login.
 - Prefer a low-risk Codex thread unless the user asks otherwise. In this repo, `discrawl` and `dupcanon` are safe defaults for resume tests.
-- Know whether the plugin under test has both Codex app-server profiles configured. If the full-access profile is absent, treat `Permissions: toggle` as an availability check and expect the status card to stay in Default mode with an explanatory note.
+- Treat `Permissions: toggle` as switching between `Default` and `Full Access`. If Full Access is unavailable in the current Codex Desktop session, expect the status card to stay in Default mode with an explanatory note.
 
 ## Canonical State Files
 
@@ -98,15 +98,15 @@ Treat the state files as diagnostic evidence, not as a thing to hand-edit.
 - If the current model does not support fast mode:
   - use `Select Model` to switch to a fast-capable model before testing the fast toggle
 - Click `Permissions: toggle`.
-- If both app-server profiles are configured and no turn is active:
+- If Full Access is available and no turn is active:
   - expect the same message to update `Permissions:` between `Default` and `Full Access`
   - run `/cas_status` again and confirm the new permissions mode persisted
 - If a turn is active:
   - expect the same message to stay on the current mode and add a note that the requested permissions mode will apply after the current turn ends
   - after the run finishes, run `/cas_status` again and confirm the pending profile migration actually applied
-- If the full-access profile is not configured:
+- If Full Access is unavailable in the current session:
   - expect the status message to remain on `Permissions: Default`
-  - expect an explanatory note that Full Access is unavailable or refused for the current session
+  - expect an explanatory note that Full Access is unavailable for the current session
 
 5. Verify approval rendering in Default mode.
 
@@ -126,7 +126,7 @@ I want you to run `npm view dive` and make sure to ask to exit the sandbox as it
 
 6. Verify full-access execution path when enabled.
 
-- Use the status card to switch into `Permissions: Full Access` only if the full-access profile is configured.
+- Use the status card to switch into `Permissions: Full Access` when it is available in the current session.
 - Send this exact prompt as plain text:
 
 ```text
@@ -217,7 +217,7 @@ Use a flat results table while testing:
 | Status controls | `✅` or `❌` | Same message edits in place for model, reasoning, fast when supported, permissions, compact, and stop | Record extra messages as a bug |
 | `/cas_status` flags | `✅` or `❌` | `--model`, `--fast` or `--no-fast`, `--yolo` or `--no-yolo` refresh the binding and status card | Note unsupported fast-model cases separately |
 | Approval dialog | `✅` | Real execution approval with trimmed `npm view dive` | Approve after verifying |
-| Full Access execution | `✅`, `❌`, or `➖` | `npm view dive version` runs without approval | Use `➖` if no full-access profile is configured |
+| Full Access execution | `✅`, `❌`, or `➖` | `npm view dive version` runs without approval | Use `➖` if Full Access is unavailable in the current session |
 | Permission migration | `✅` or `❌` | Default vs Full Access persists across `/cas_status` | Note pending migration if toggled mid-run |
 | Stop button | `✅` or `❌` | Active run interrupts and status refreshes | Record whether refresh was in-place |
 | `/cas_review` | `✅` or `❌` | Long-running review | Wait 30s between checks |

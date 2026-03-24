@@ -3350,6 +3350,70 @@ describe("Discord controller flows", () => {
     );
   });
 
+  it("passes saved conversation preferences into plan runs", async () => {
+    const { controller } = await createControllerHarness();
+    const startTurn = vi.fn(() => ({
+      result: new Promise(() => {}),
+      getThreadId: () => "thread-1",
+      queueMessage: vi.fn(async () => false),
+      interrupt: vi.fn(async () => {}),
+      isAwaitingInput: () => false,
+      submitPendingInput: vi.fn(async () => false),
+      submitPendingInputPayload: vi.fn(async () => false),
+    }));
+    (controller as any).client.startTurn = startTurn;
+
+    await (controller as any).startPlan({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "8460800771",
+      },
+      binding: {
+        conversation: {
+          channel: "telegram",
+          accountId: "default",
+          conversationId: "8460800771",
+        },
+        sessionKey: "session-1",
+        threadId: "thread-1",
+        workspaceDir: "/repo/openclaw",
+        preferences: {
+          preferredModel: "gpt-5.4",
+          preferredReasoningEffort: "high",
+          preferredServiceTier: "fast",
+          preferredApprovalPolicy: "never",
+          preferredSandbox: "workspace-write",
+          updatedAt: Date.now(),
+        },
+        updatedAt: Date.now(),
+      },
+      workspaceDir: "/repo/openclaw",
+      prompt: "plan this",
+      announceStart: false,
+    });
+
+    expect(startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: "session-1",
+        existingThreadId: "thread-1",
+        model: "gpt-5.4",
+        reasoningEffort: "high",
+        serviceTier: "fast",
+        approvalPolicy: "never",
+        sandbox: "workspace-write",
+        collaborationMode: {
+          mode: "plan",
+          settings: {
+            model: "gpt-5.4",
+            reasoningEffort: "high",
+            developerInstructions: null,
+          },
+        },
+      }),
+    );
+  });
+
   it("keeps empty completed turns generic instead of inferring an auth failure", async () => {
     const { controller, clientMock, sendMessageTelegram } = await createControllerHarness();
     (controller as any).client.startTurn = vi.fn(() => ({
@@ -3885,7 +3949,7 @@ describe("Discord controller flows", () => {
     );
   });
 
-  it("keeps default permissions and explains when no full-access profile is available", async () => {
+  it("keeps default permissions and explains when Full Access is unavailable", async () => {
     const { controller, clientMock } = await createControllerHarness();
     clientMock.hasProfile.mockImplementation((profile: string) => profile === "default");
     await (controller as any).store.upsertBinding({
@@ -3945,7 +4009,7 @@ describe("Discord controller flows", () => {
     expect(editMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         text: expect.stringContaining(
-          "Permissions note: Full Access was refused by the current Codex Desktop session",
+          "Permissions note: Full Access is unavailable in the current Codex Desktop session",
         ),
       }),
     );

@@ -76,12 +76,12 @@ Pre-release packages are published on matching npm dist-tags instead of `latest`
 | `/cas_resume --sync` | Resume and try to sync the chat/topic name to the Codex thread. | You can combine this with other flags. |
 | `/cas_resume --model gpt-5.4` | Resume or create a thread with a preferred model. | The preference is saved on the binding and reused on later turns. |
 | `/cas_resume --fast`, `/cas_resume --no-fast` | Set fast mode while binding or creating a thread. | Fast mode is only available on supported models such as GPT-5.4+. |
-| `/cas_resume --yolo`, `/cas_resume --no-yolo` | Set permissions mode while binding or creating a thread. | `--yolo` selects Full Access when a full-access app-server profile is configured. |
+| `/cas_resume --yolo`, `/cas_resume --no-yolo` | Set permissions mode while binding or creating a thread. | `--yolo` selects Full Access. |
 | `/cas_resume release-fix` | Resume a matching thread by title or id. | If more than one thread matches, you get buttons to choose. |
 | `/cas_status` | Show the current binding, thread state, and interactive controls. | Includes model, reasoning, fast mode, permissions, compact, and stop buttons. |
 | `/cas_status --model gpt-5.4` | Change the preferred model and refresh the status card. | Works on the current binding. |
 | `/cas_status --fast`, `/cas_status --no-fast` | Change fast mode and refresh the status card. | Fast mode is only available on supported models such as GPT-5.4+. |
-| `/cas_status --yolo`, `/cas_status --no-yolo` | Change permissions mode and refresh the status card. | `--yolo` selects Full Access when a full-access app-server profile is configured. |
+| `/cas_status --yolo`, `/cas_status --no-yolo` | Change permissions mode and refresh the status card. | `--yolo` selects Full Access. |
 | `/cas_detach` | Unbind this conversation from Codex. | Stops routing plain text from this conversation into the bound thread. |
 | `/cas_stop` | Interrupt the active Codex run. | Only applies when a turn is currently in progress. |
 | `/cas_steer <message>` | Send follow-up steer text to an active run. | Example: `/cas_steer focus on the failing tests first` |

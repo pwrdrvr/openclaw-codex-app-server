@@ -42,7 +42,6 @@ import {
   formatSkills,
   formatThreadButtonLabel,
   formatThreadPickerIntro,
-  formatThreadState,
   formatTurnCompletion,
 } from "./format.js";
 import {
@@ -56,6 +55,8 @@ import type {
   AccountSummary,
   AppServerProfile,
   CollaborationMode,
+  ConversationPreferences,
+  ThreadState,
   TurnTerminalError,
 } from "./types.js";
 import {
@@ -122,6 +123,15 @@ type PickerRender = {
 type StatusCardRender = {
   text: string;
   buttons?: PluginInteractiveButtons;
+};
+
+type DesiredThreadConfiguration = {
+  effectiveState: ThreadState | undefined;
+  model?: string;
+  reasoningEffort?: ReturnType<typeof normalizeReasoningEffort>;
+  serviceTier: string | null;
+  approvalPolicy?: string;
+  sandbox?: string;
 };
 
 type PickerResponders = {
@@ -436,33 +446,9 @@ function extractReplyButtons(reply: ReplyPayload): PluginInteractiveButtons | un
   return rows.length > 0 ? rows : undefined;
 }
 
-function parseFastAction(
-  argsText: string,
-): "toggle" | "on" | "off" | "status" | { error: string } {
-  const normalized = argsText.trim().toLowerCase();
-  if (!normalized) {
-    return "toggle";
-  }
-  if (normalized === "on" || normalized === "off" || normalized === "status") {
-    return normalized;
-  }
-  return { error: "Usage: /cas_fast [on|off|status]" };
-}
-
 function normalizeServiceTier(value: string | undefined | null): string | undefined {
   const normalized = value?.trim().toLowerCase();
   return normalized ? normalized : undefined;
-}
-
-function formatFastModeValue(value: string | undefined): string {
-  const normalized = normalizeServiceTier(value);
-  if (!normalized || normalized === "default" || normalized === "auto" || normalized === "flex") {
-    return "off";
-  }
-  if (normalized === "fast") {
-    return "on";
-  }
-  return normalized;
 }
 
 function normalizePreferenceServiceTier(value: string | undefined | null): string | null {
@@ -485,8 +471,13 @@ function preferredServiceTierFromRequest(value: string | null): string {
   return normalizePreferenceServiceTier(value) ?? "default";
 }
 
-function isFullAutoPermissions(approvalPolicy?: string, sandbox?: string): boolean {
-  return approvalPolicy?.trim() === "never" || sandbox?.trim() === "danger-full-access";
+function getPermissionsForProfile(profile: AppServerProfile): {
+  approvalPolicy: string;
+  sandbox: string;
+} {
+  return profile === "full-access"
+    ? { approvalPolicy: "never", sandbox: "danger-full-access" }
+    : { approvalPolicy: "on-request", sandbox: "workspace-write" };
 }
 
 function normalizeAppServerProfile(value?: string | null): AppServerProfile {
@@ -503,9 +494,9 @@ function getBindingPendingAppServerProfile(binding: StoredBinding | null): AppSe
 }
 
 function applyBindingPreferencesToThreadState(
-  threadState: import("./types.js").ThreadState | undefined,
+  threadState: ThreadState | undefined,
   binding: StoredBinding | null,
-): import("./types.js").ThreadState | undefined {
+): ThreadState | undefined {
   if (!threadState && !binding) {
     return undefined;
   }
@@ -521,7 +512,7 @@ function applyBindingPreferencesToThreadState(
   const baseState = threadState ?? {
     threadId: binding?.threadId ?? "",
   };
-  const nextState: import("./types.js").ThreadState = {
+  const nextState: ThreadState = {
     ...baseState,
     model: preferredModel || baseState.model,
     serviceTier: preferredServiceTier ?? baseState.serviceTier,
@@ -533,6 +524,25 @@ function applyBindingPreferencesToThreadState(
     nextState.serviceTier = "default";
   }
   return nextState;
+}
+
+function buildDesiredThreadConfiguration(
+  threadState: ThreadState | undefined,
+  binding: StoredBinding | null,
+  modelFallback?: string,
+): DesiredThreadConfiguration {
+  const effectiveState = applyBindingPreferencesToThreadState(threadState, binding) ?? threadState;
+  const model = effectiveState?.model?.trim() || modelFallback;
+  return {
+    effectiveState,
+    model,
+    reasoningEffort: normalizeReasoningEffort(effectiveState?.reasoningEffort),
+    serviceTier: modelSupportsFast(model)
+      ? requestServiceTierFromPreference(effectiveState?.serviceTier)
+      : null,
+    approvalPolicy: effectiveState?.approvalPolicy?.trim(),
+    sandbox: effectiveState?.sandbox?.trim(),
+  };
 }
 
 function formatThreadStateForLog(
@@ -561,7 +571,7 @@ function formatBindingPreferencesForLog(binding: StoredBinding | null): string {
 }
 
 function buildPermissionsUnavailableNote(): string {
-  return "Permissions note: Full Access was refused by the current Codex Desktop session, so this thread remains in Default mode.";
+  return "Permissions note: Full Access is unavailable in the current Codex Desktop session, so this thread remains in Default mode.";
 }
 
 function buildPendingPermissionsMigrationNote(profile: AppServerProfile): string {
@@ -718,9 +728,9 @@ function hasCommandPreferenceOverrides(overrides: CommandPreferenceOverrides): b
 }
 
 function mergeConversationPreferences(
-  existing: import("./types.js").ConversationPreferences | undefined,
-  updates: Partial<import("./types.js").ConversationPreferences>,
-): import("./types.js").ConversationPreferences | undefined {
+  existing: ConversationPreferences | undefined,
+  updates: Partial<ConversationPreferences>,
+): ConversationPreferences | undefined {
   if (Object.keys(updates).length === 0) {
     return existing;
   }
@@ -735,9 +745,9 @@ function mergeConversationPreferences(
 }
 
 function normalizePreferencesForModel(
-  preferences: import("./types.js").ConversationPreferences | undefined,
+  preferences: ConversationPreferences | undefined,
   model: string | undefined,
-): import("./types.js").ConversationPreferences | undefined {
+): ConversationPreferences | undefined {
   if (!preferences) {
     return preferences;
   }
@@ -1486,7 +1496,7 @@ export class CodexPluginController {
       return { text: parsed.error };
     }
     if (parsed.requestedYolo && !this.hasFullAccessProfile()) {
-      return { text: "Full Access is unavailable because no full-access Codex app-server profile is configured." };
+      return { text: "Full Access is unavailable in the current Codex Desktop session." };
     }
     if (parsed.requestedFast && parsed.requestedModel && !modelSupportsFast(parsed.requestedModel)) {
       return {
@@ -1709,7 +1719,11 @@ export class CodexPluginController {
             ? await this.persistBindingProfile(updatedBindingBase, currentProfile, targetProfile)
             : await this.migrateBindingProfile(updatedBindingBase, targetProfile)
           : (await this.store.upsertBinding(updatedBindingBase), updatedBindingBase);
-      await this.applyStatusOverridesToLiveThread(binding, overrides, effectiveModel);
+      await this.reconcileThreadConfiguration(binding, {
+        applyPermissions: !(active && targetProfile !== currentProfile),
+        modelFallback: effectiveModel,
+        context: "apply status overrides",
+      });
       if (active && targetProfile !== currentProfile) {
         note = buildPendingPermissionsMigrationNote(targetProfile);
       }
@@ -1758,8 +1772,8 @@ export class CodexPluginController {
   }
 
   private async readEffectiveThreadState(binding: StoredBinding): Promise<{
-    state: import("./types.js").ThreadState | undefined;
-    effectiveState: import("./types.js").ThreadState | undefined;
+    state: ThreadState | undefined;
+    effectiveState: ThreadState | undefined;
   }> {
     const profile = this.getClientProfile(binding);
     const state = await this.client.readThreadState({
@@ -1767,9 +1781,10 @@ export class CodexPluginController {
       sessionKey: binding.sessionKey,
       threadId: binding.threadId,
     }).catch(() => undefined);
+    const desired = buildDesiredThreadConfiguration(state, binding);
     return {
       state,
-      effectiveState: applyBindingPreferencesToThreadState(state, binding) ?? state,
+      effectiveState: desired.effectiveState,
     };
   }
 
@@ -1785,8 +1800,8 @@ export class CodexPluginController {
 
   private buildPreferenceUpdatesFromOverrides(
     overrides: CommandPreferenceOverrides,
-  ): Partial<import("./types.js").ConversationPreferences> {
-    const updates: Partial<import("./types.js").ConversationPreferences> = {};
+  ): Partial<ConversationPreferences> {
+    const updates: Partial<ConversationPreferences> = {};
     if (overrides.requestedModel?.trim()) {
       updates.preferredModel = overrides.requestedModel.trim();
     }
@@ -1794,75 +1809,100 @@ export class CodexPluginController {
       updates.preferredServiceTier = overrides.requestedFast ? "fast" : "default";
     }
     if (typeof overrides.requestedYolo === "boolean") {
-      updates.preferredApprovalPolicy = overrides.requestedYolo ? "never" : "on-request";
-      updates.preferredSandbox = overrides.requestedYolo ? "danger-full-access" : "workspace-write";
+      const permissions = getPermissionsForProfile(
+        overrides.requestedYolo ? "full-access" : "default",
+      );
+      updates.preferredApprovalPolicy = permissions.approvalPolicy;
+      updates.preferredSandbox = permissions.sandbox;
     }
     return updates;
   }
 
   private buildBindingPreferencesWithOverrides(
-    existing: import("./types.js").ConversationPreferences | undefined,
+    existing: ConversationPreferences | undefined,
     overrides: CommandPreferenceOverrides,
     modelHint?: string,
-  ): import("./types.js").ConversationPreferences | undefined {
+  ): ConversationPreferences | undefined {
     return normalizePreferencesForModel(
       mergeConversationPreferences(existing, this.buildPreferenceUpdatesFromOverrides(overrides)),
       overrides.requestedModel?.trim() || modelHint,
     );
   }
 
-  private async applyStatusOverridesToLiveThread(
+  private async reconcileThreadConfiguration(
     binding: StoredBinding,
-    overrides: CommandPreferenceOverrides,
-    modelHint?: string,
-  ): Promise<void> {
-    if (!overrides.requestedModel?.trim() && typeof overrides.requestedFast !== "boolean") {
-      return;
-    }
+    opts?: {
+      threadState?: ThreadState;
+      applyPermissions?: boolean;
+      modelFallback?: string;
+      context?: string;
+    },
+  ): Promise<ThreadState | undefined> {
     const profile = this.getClientProfile(binding);
-    let state = await this.client.readThreadState({
-      profile,
-      sessionKey: binding.sessionKey,
-      threadId: binding.threadId,
-    }).catch(() => undefined);
-    const requestedModel = overrides.requestedModel?.trim();
-    if (requestedModel && requestedModel !== state?.model?.trim()) {
+    let state =
+      opts?.threadState ??
+      (await this.client.readThreadState({
+        profile,
+        sessionKey: binding.sessionKey,
+        threadId: binding.threadId,
+      }).catch(() => undefined));
+    let desired = buildDesiredThreadConfiguration(state, binding, opts?.modelFallback);
+    if (desired.model && desired.model !== state?.model?.trim()) {
       try {
         state = await this.client.setThreadModel({
           profile,
           sessionKey: binding.sessionKey,
           threadId: binding.threadId,
-          model: requestedModel,
+          model: desired.model,
         });
+        desired = buildDesiredThreadConfiguration(state, binding, opts?.modelFallback);
       } catch (error) {
-        this.api.logger.warn(`codex failed to apply status model override: ${String(error)}`);
+        this.api.logger.warn(
+          `codex failed to ${opts?.context ?? "reconcile thread settings"} model: ${String(error)}`,
+        );
       }
     }
-    const effectiveModel = requestedModel || state?.model?.trim() || modelHint;
-    const currentTier = normalizeServiceTier(state?.serviceTier) ?? "default";
-    const requestedTier =
-      !modelSupportsFast(effectiveModel)
-        ? currentTier === "fast" || typeof overrides.requestedFast === "boolean"
-          ? null
-          : undefined
-        : typeof overrides.requestedFast === "boolean"
-          ? overrides.requestedFast
-            ? "fast"
-            : null
-          : undefined;
-    const desiredTier = requestedTier ?? "default";
-    if (requestedTier !== undefined && desiredTier !== currentTier) {
+    const currentServiceTier = normalizePreferenceServiceTier(state?.serviceTier);
+    const desiredServiceTier = normalizePreferenceServiceTier(desired.effectiveState?.serviceTier);
+    if (desiredServiceTier !== currentServiceTier) {
       try {
-        await this.client.setThreadServiceTier({
+        state = await this.client.setThreadServiceTier({
           profile,
           sessionKey: binding.sessionKey,
           threadId: binding.threadId,
-          serviceTier: requestedTier,
+          serviceTier: desired.serviceTier,
         });
+        desired = buildDesiredThreadConfiguration(state, binding, opts?.modelFallback);
       } catch (error) {
-        this.api.logger.warn(`codex failed to apply status fast override: ${String(error)}`);
+        this.api.logger.warn(
+          `codex failed to ${opts?.context ?? "reconcile thread settings"} fast mode: ${String(error)}`,
+        );
       }
     }
+    if (
+      opts?.applyPermissions !== false &&
+      desired.approvalPolicy &&
+      desired.sandbox &&
+      (
+        desired.approvalPolicy !== state?.approvalPolicy?.trim() ||
+        desired.sandbox !== state?.sandbox?.trim()
+      )
+    ) {
+      try {
+        state = await this.client.setThreadPermissions({
+          profile,
+          sessionKey: binding.sessionKey,
+          threadId: binding.threadId,
+          approvalPolicy: desired.approvalPolicy,
+          sandbox: desired.sandbox,
+        });
+      } catch (error) {
+        this.api.logger.warn(
+          `codex failed to ${opts?.context ?? "reconcile thread settings"} permissions: ${String(error)}`,
+        );
+      }
+    }
+    return state;
   }
 
   private async buildStatusControlButtons(
@@ -2321,141 +2361,6 @@ export class CodexPluginController {
     };
   }
 
-  private async handleFastCommand(binding: StoredBinding | null, args: string): Promise<ReplyPayload> {
-    if (!binding) {
-      return { text: "Bind this conversation to a Codex thread before toggling fast mode." };
-    }
-    const action = parseFastAction(args);
-    if (typeof action === "object") {
-      return { text: action.error };
-    }
-    const profile = this.getClientProfile(binding);
-    const state = await this.client.readThreadState({
-      profile,
-      sessionKey: binding.sessionKey,
-      threadId: binding.threadId,
-    });
-    const effectiveState = applyBindingPreferencesToThreadState(state, binding) ?? state;
-    const currentModel = effectiveState.model?.trim() || binding.preferences?.preferredModel?.trim();
-    if (!modelSupportsFast(currentModel)) {
-      return {
-        text: `Fast mode is unavailable for ${currentModel ?? "the current model"}. Use a GPT-5.4+ model to enable it.`,
-      };
-    }
-    const currentTier = normalizeServiceTier(state.serviceTier);
-    if (action === "status") {
-      return { text: `Fast mode is ${formatFastModeValue(currentTier)}.` };
-    }
-    const nextTier =
-      action === "toggle" ? (currentTier === "fast" ? null : "fast")
-      : action === "on" ? "fast"
-      : null;
-    const updated = await this.client.setThreadServiceTier({
-      profile,
-      sessionKey: binding.sessionKey,
-      threadId: binding.threadId,
-      serviceTier: nextTier,
-    });
-    const preferredServiceTier = preferredServiceTierFromRequest(nextTier);
-    const updatedBinding: StoredBinding = {
-      ...binding,
-      preferences: {
-        ...(binding.preferences ?? {
-          preferredServiceTier: null,
-          updatedAt: Date.now(),
-        }),
-        preferredServiceTier,
-        updatedAt: Date.now(),
-      },
-      updatedAt: Date.now(),
-    };
-    await this.store.upsertBinding(updatedBinding);
-    this.api.logger.debug?.(
-      `codex fast command requested=${nextTier ?? "<none>"} responseTier=${updated.serviceTier?.trim() || "<none>"} ${formatBindingPreferencesForLog(updatedBinding)}`,
-    );
-    return {
-      text: `Fast mode set to ${formatFastModeValue(preferredServiceTier)}.`,
-    };
-  }
-
-  private async handleModelCommand(
-    conversation: ConversationTarget | null,
-    binding: StoredBinding | null,
-    args: string,
-  ): Promise<ReplyPayload> {
-    if (!binding) {
-      const models = await this.client.listModels({ profile: "default" });
-      return { text: formatModels(models) };
-    }
-    const profile = this.getClientProfile(binding);
-    if (!args.trim()) {
-      if (!conversation) {
-        const [models, state] = await Promise.all([
-          this.client.listModels({ profile, sessionKey: binding.sessionKey }),
-          this.client.readThreadState({
-            profile,
-            sessionKey: binding.sessionKey,
-            threadId: binding.threadId,
-          }),
-        ]);
-        return { text: formatModels(models, state) };
-      }
-      const picker = await this.buildModelPicker(conversation, binding);
-      if (isDiscordChannel(conversation.channel) && (picker.buttons?.length ?? 0) > 0) {
-        try {
-          await this.sendReply(conversation, {
-            text: picker.text,
-            buttons: picker.buttons,
-          });
-          return { text: "Sent Codex model choices to this Discord conversation." };
-        } catch (error) {
-          this.api.logger.warn(`codex discord model picker send failed: ${String(error)}`);
-          return { text: picker.text };
-        }
-      }
-      return buildReplyWithButtons(picker.text, picker.buttons);
-    }
-    const state = await this.client.setThreadModel({
-      profile,
-      sessionKey: binding.sessionKey,
-      threadId: binding.threadId,
-      model: args.trim(),
-    });
-    const preferredModel = args.trim();
-    const nextPreferredServiceTier = modelSupportsFast(preferredModel)
-      ? binding.preferences?.preferredServiceTier ?? null
-      : "default";
-    const nextState =
-      !modelSupportsFast(preferredModel) && normalizeServiceTier(state.serviceTier) === "fast"
-        ? await this.client
-            .setThreadServiceTier({
-              profile,
-              sessionKey: binding.sessionKey,
-              threadId: binding.threadId,
-              serviceTier: null,
-            })
-            .catch(() => ({ ...state, serviceTier: "default" }))
-        : state;
-    const updatedBinding: StoredBinding = {
-      ...binding,
-      preferences: {
-        ...(binding.preferences ?? {
-          preferredServiceTier: null,
-          updatedAt: Date.now(),
-        }),
-        preferredModel,
-        preferredServiceTier: nextPreferredServiceTier,
-        updatedAt: Date.now(),
-      },
-      updatedAt: Date.now(),
-    };
-    await this.store.upsertBinding(updatedBinding);
-    this.api.logger.debug?.(
-      `codex model command requested=${preferredModel} responseModel=${nextState.model?.trim() || "<none>"} ${formatBindingPreferencesForLog(updatedBinding)}`,
-    );
-    return { text: `Codex model set to ${preferredModel}.` };
-  }
-
   private async handlePromptAlias(
     conversation: ConversationTarget | null,
     binding: StoredBinding | null,
@@ -2665,6 +2570,11 @@ export class CodexPluginController {
     this.api.logger.debug?.(
       `codex turn starting app-server run ${this.formatConversationForLog(params.conversation)} typing=${typing ? "yes" : "no"} session=${params.binding?.sessionKey ?? "<none>"} existingThread=${params.binding?.threadId ?? "<none>"} profile=${profile} mode=${params.collaborationMode?.mode ?? "default"}`,
     );
+    const desired = buildDesiredThreadConfiguration(
+      undefined,
+      params.binding,
+      this.settings.defaultModel,
+    );
     const run = this.client.startTurn({
       profile,
       sessionKey: params.binding?.sessionKey,
@@ -2672,17 +2582,11 @@ export class CodexPluginController {
       prompt: params.prompt,
       runId: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
       existingThreadId: params.binding?.threadId,
-      model: params.binding?.preferences?.preferredModel?.trim() || this.settings.defaultModel,
-      reasoningEffort: normalizeReasoningEffort(
-        params.binding?.preferences?.preferredReasoningEffort,
-      ),
-      serviceTier:
-        modelSupportsFast(params.binding?.preferences?.preferredModel?.trim() || this.settings.defaultModel)
-          ? requestServiceTierFromPreference(params.binding?.preferences?.preferredServiceTier) ??
-            undefined
-          : undefined,
-      approvalPolicy: params.binding?.preferences?.preferredApprovalPolicy?.trim(),
-      sandbox: params.binding?.preferences?.preferredSandbox?.trim(),
+      model: desired.model,
+      reasoningEffort: desired.reasoningEffort,
+      serviceTier: desired.serviceTier ?? undefined,
+      approvalPolicy: desired.approvalPolicy,
+      sandbox: desired.sandbox,
       collaborationMode: params.collaborationMode,
       onPendingInput: async (state) => {
         this.api.logger.debug?.(
@@ -2916,7 +2820,12 @@ export class CodexPluginController {
       clearTimeout(progressTimer);
       progressTimer = null;
     };
-    const effectiveThreadState = applyBindingPreferencesToThreadState(threadState ?? undefined, params.binding) ?? threadState;
+    const desired = buildDesiredThreadConfiguration(
+      threadState ?? undefined,
+      params.binding,
+      this.settings.defaultModel,
+    );
+    const effectiveThreadState = desired.effectiveState;
     const run = this.client.startTurn({
       profile,
       sessionKey: params.binding?.sessionKey,
@@ -2924,17 +2833,16 @@ export class CodexPluginController {
       prompt: params.prompt,
       runId: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
       existingThreadId: params.binding?.threadId,
-      model: effectiveThreadState?.model || this.settings.defaultModel,
-      reasoningEffort: normalizeReasoningEffort(
-        params.binding?.preferences?.preferredReasoningEffort ?? effectiveThreadState?.reasoningEffort,
-      ),
+      model: desired.model,
+      reasoningEffort: desired.reasoningEffort,
+      serviceTier: desired.serviceTier ?? undefined,
+      approvalPolicy: desired.approvalPolicy,
+      sandbox: desired.sandbox,
       collaborationMode: {
         mode: "plan",
         settings: {
-          model: effectiveThreadState?.model || this.settings.defaultModel,
-          reasoningEffort: normalizeReasoningEffort(
-            params.binding?.preferences?.preferredReasoningEffort ?? effectiveThreadState?.reasoningEffort,
-          ),
+          model: desired.model || this.settings.defaultModel,
+          reasoningEffort: desired.reasoningEffort,
           developerInstructions: null,
         },
       },
@@ -2994,10 +2902,8 @@ export class CodexPluginController {
             collaborationMode: {
               mode: "default",
               settings: {
-                model: effectiveThreadState?.model || this.settings.defaultModel,
-                reasoningEffort: normalizeReasoningEffort(
-                  params.binding?.preferences?.preferredReasoningEffort ?? effectiveThreadState?.reasoningEffort,
-                ),
+                model: desired.model || this.settings.defaultModel,
+                reasoningEffort: desired.reasoningEffort,
                 developerInstructions: null,
               },
             },
@@ -3103,24 +3009,22 @@ export class CodexPluginController {
         threadId: params.binding.threadId,
       })
       .catch(() => undefined);
-    const effectiveThreadState =
-      applyBindingPreferencesToThreadState(threadState ?? undefined, params.binding) ?? threadState;
-    const effectiveModel = effectiveThreadState?.model?.trim() || this.settings.defaultModel;
+    const desired = buildDesiredThreadConfiguration(
+      threadState ?? undefined,
+      params.binding,
+      this.settings.defaultModel,
+    );
     const run = this.client.startReview({
       profile,
       sessionKey: params.binding.sessionKey,
       workspaceDir: params.workspaceDir,
       threadId: params.binding.threadId,
       runId: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-      model: effectiveModel,
-      reasoningEffort: normalizeReasoningEffort(
-        params.binding.preferences?.preferredReasoningEffort ?? effectiveThreadState?.reasoningEffort,
-      ),
-      serviceTier: modelSupportsFast(effectiveModel)
-        ? requestServiceTierFromPreference(effectiveThreadState?.serviceTier)
-        : null,
-      approvalPolicy: effectiveThreadState?.approvalPolicy?.trim(),
-      sandbox: effectiveThreadState?.sandbox?.trim(),
+      model: desired.model,
+      reasoningEffort: desired.reasoningEffort,
+      serviceTier: desired.serviceTier,
+      approvalPolicy: desired.approvalPolicy,
+      sandbox: desired.sandbox,
       target: params.target,
       onPendingInput: async (state) => {
         if (state) {
@@ -4484,15 +4388,14 @@ export class CodexPluginController {
       }
       const currentProfile = this.getClientProfile(binding);
       const nextProfile = currentProfile === "full-access" ? "default" : "full-access";
-      const requestedApproval = nextProfile === "full-access" ? "never" : "on-request";
-      const requestedSandbox = nextProfile === "full-access" ? "danger-full-access" : "workspace-write";
+      const requestedPermissions = getPermissionsForProfile(nextProfile);
       const nextPreferences: NonNullable<StoredBinding["preferences"]> = {
         ...(binding.preferences ?? {
           preferredServiceTier: null,
           updatedAt: Date.now(),
         }),
-        preferredApprovalPolicy: requestedApproval,
-        preferredSandbox: requestedSandbox,
+        preferredApprovalPolicy: requestedPermissions.approvalPolicy,
+        preferredSandbox: requestedPermissions.sandbox,
         updatedAt: Date.now(),
       };
       if (nextProfile === "full-access" && !this.hasFullAccessProfile()) {
@@ -4866,19 +4769,16 @@ export class CodexPluginController {
     profile: AppServerProfile,
   ): Promise<StoredBinding> {
     if (profile === "full-access" && !this.hasFullAccessProfile()) {
-      throw new Error("Full Access is unavailable because no full-access Codex app-server profile is configured.");
+      throw new Error("Full Access is unavailable in the current Codex Desktop session.");
     }
-    const preferredApprovalPolicy =
-      profile === "full-access" ? "never" : "on-request";
-    const preferredSandbox =
-      profile === "full-access" ? "danger-full-access" : "workspace-write";
+    const preferredPermissions = getPermissionsForProfile(profile);
     const state = await this.client
       .setThreadPermissions({
         profile,
         sessionKey: binding.sessionKey,
         threadId: binding.threadId,
-        approvalPolicy: preferredApprovalPolicy,
-        sandbox: preferredSandbox,
+        approvalPolicy: preferredPermissions.approvalPolicy,
+        sandbox: preferredPermissions.sandbox,
       })
       .catch(() =>
         this.client.readThreadState({
@@ -5099,58 +4999,11 @@ export class CodexPluginController {
         threadId: binding.threadId,
       }).catch(() => ({ lastUserMessage: undefined, lastAssistantMessage: undefined })),
     ]);
-    let state = initialState;
-    const preferredModel = binding.preferences?.preferredModel?.trim();
-    if (preferredModel && preferredModel !== state.model?.trim()) {
-      try {
-        state = await this.client.setThreadModel({
-          profile,
-          sessionKey: binding.sessionKey,
-          threadId: binding.threadId,
-          model: preferredModel,
-        });
-      } catch (error) {
-        this.api.logger.warn(`codex failed to restore preferred model: ${String(error)}`);
-      }
-    }
-    const preferredServiceTier = normalizePreferenceServiceTier(
-      binding.preferences?.preferredServiceTier,
-    );
-    const currentServiceTier = normalizePreferenceServiceTier(state.serviceTier);
-    if (preferredServiceTier !== currentServiceTier) {
-      try {
-        state = await this.client.setThreadServiceTier({
-          profile,
-          sessionKey: binding.sessionKey,
-          threadId: binding.threadId,
-          serviceTier: requestServiceTierFromPreference(preferredServiceTier),
-        });
-      } catch (error) {
-        this.api.logger.warn(`codex failed to restore preferred service tier: ${String(error)}`);
-      }
-    }
-    const preferredApprovalPolicy = binding.preferences?.preferredApprovalPolicy?.trim();
-    const preferredSandbox = binding.preferences?.preferredSandbox?.trim();
-    if (
-      preferredApprovalPolicy &&
-      preferredSandbox &&
-      (
-        preferredApprovalPolicy !== state.approvalPolicy?.trim() ||
-        preferredSandbox !== state.sandbox?.trim()
-      )
-    ) {
-      try {
-        state = await this.client.setThreadPermissions({
-          profile,
-          sessionKey: binding.sessionKey,
-          threadId: binding.threadId,
-          approvalPolicy: preferredApprovalPolicy,
-          sandbox: preferredSandbox,
-        });
-      } catch (error) {
-        this.api.logger.warn(`codex failed to restore preferred permissions: ${String(error)}`);
-      }
-    }
+    const state =
+      (await this.reconcileThreadConfiguration(binding, {
+        threadState: initialState,
+        context: "restore desired thread settings",
+      })) ?? initialState;
 
     const nextBinding =
       (state.threadName && state.threadName !== binding.threadTitle) ||
@@ -5245,7 +5098,7 @@ export class CodexPluginController {
       }).catch(() => []),
       this.resolveProjectFolder(binding?.workspaceDir || workspaceDir),
     ]);
-    const effectiveThreadState = applyBindingPreferencesToThreadState(threadState, binding);
+    const effectiveThreadState = buildDesiredThreadConfiguration(threadState, binding).effectiveState;
     this.api.logger.debug?.(
       `codex status snapshot bindingActive=${bindingActive ? "yes" : "no"} activeRun=${activeRun?.mode ?? "none"} boundThread=${binding?.threadId ?? "<none>"} raw=${formatThreadStateForLog(threadState)} effective=${formatThreadStateForLog(effectiveThreadState)} ${formatBindingPreferencesForLog(binding)} threadCwd=${threadState?.cwd?.trim() || "<none>"}`,
     );
