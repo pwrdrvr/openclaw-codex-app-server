@@ -155,21 +155,21 @@ export function formatThreadPickerIntro(params: {
 }): string {
   const pageLabel = `Page ${params.page + 1}/${params.totalPages}`;
   const scopeLabel = params.fallbackToGlobal
-    ? "No threads in this workspace. Showing recent sessions from all projects."
+    ? "No threads in this workspace. Showing recent threads from all projects."
     : params.projectName
-      ? `Showing recent Codex sessions for ${params.projectName}.`
+      ? `Showing recent Codex threads for ${params.projectName}.`
       : params.includeAll
-        ? "Showing recent Codex sessions across all projects."
+        ? "Showing recent Codex threads across all projects."
         : params.workspaceDir
-          ? `Showing recent Codex sessions for ${getProjectName(params.workspaceDir) ?? "this project"}.`
-          : "Showing recent Codex sessions.";
+          ? `Showing recent Codex threads for ${getProjectName(params.workspaceDir) ?? "this project"}.`
+          : "Showing recent Codex threads.";
   return [
     `${scopeLabel} ${pageLabel}.`,
     "Legend: 🌿 worktree, ✏️ uncommitted changes, U updated, C created.",
     params.syncTopic
-      ? "Choosing a session will also try to sync the current channel/topic name."
+      ? "Choosing a thread will also try to sync the current channel/topic name."
       : "",
-    `Tap a session to resume it. Use Projects to browse by project or \`--cwd /path/to/project\` to narrow to one workspace.`,
+    `Tap a thread to resume it. Use Projects to browse by project or \`--cwd /path/to/project\` to narrow to one workspace.`,
     params.totalItems === 0 ? "No matching Codex threads found." : "",
   ]
     .filter(Boolean)
@@ -190,12 +190,12 @@ export function formatProjectPickerIntro(params: {
         : "Choose a project for the new Codex thread."
       : params.workspaceDir
         ? `Showing projects for ${getProjectName(params.workspaceDir) ?? "this workspace"}.`
-        : "Choose a project to filter recent Codex sessions.";
+        : "Choose a project to filter recent Codex threads.";
   return [
     `${scopeLabel} Page ${params.page + 1}/${params.totalPages}.`,
     params.action === "start-new-thread"
       ? "Tap a project to start a fresh Codex thread there. Use `--cwd /path/to/project` to target one exact workspace."
-      : "Tap a project to show only that project's sessions. Use `--cwd /path/to/project` to target one exact workspace.",
+      : "Tap a project to show only that project's threads. Use `--cwd /path/to/project` to target one exact workspace.",
     params.totalItems === 0 ? "No Codex projects found." : "",
   ]
     .filter(Boolean)
@@ -534,9 +534,9 @@ export function formatCodexStatusText(params: {
     lines.push(`Permissions: ${permissions}`);
   }
   lines.push(`Account: ${formatCodexAccountText(params.account)}`);
-  const sessionId = params.threadState?.threadId?.trim();
-  if (sessionId) {
-    lines.push(`Session: ${sessionId}`);
+  const threadId = params.threadState?.threadId?.trim();
+  if (threadId) {
+    lines.push(`Thread: ${threadId}`);
   }
   const visibleRateLimits = selectVisibleCodexRateLimits({
     rateLimits: params.rateLimits,

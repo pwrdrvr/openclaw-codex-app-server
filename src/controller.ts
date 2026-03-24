@@ -3080,7 +3080,7 @@ export class CodexPluginController {
       }
     }
 
-    const recentSessions = await this.store.putCallback({
+    const recentThreads = await this.store.putCallback({
       kind: "picker-view",
       conversation,
       view: {
@@ -3097,8 +3097,8 @@ export class CodexPluginController {
     });
     buttons.push([
       {
-        text: "Recent Sessions",
-        callback_data: `${INTERACTIVE_NAMESPACE}:${recentSessions.token}`,
+        text: "Recent Threads",
+        callback_data: `${INTERACTIVE_NAMESPACE}:${recentThreads.token}`,
       },
       {
         text: "Cancel",
@@ -3203,7 +3203,7 @@ export class CodexPluginController {
         page: 0,
       },
     });
-    const recentSessions = await this.store.putCallback({
+    const recentThreads = await this.store.putCallback({
       kind: "picker-view",
       conversation,
       view: {
@@ -3224,8 +3224,8 @@ export class CodexPluginController {
         callback_data: `${INTERACTIVE_NAMESPACE}:${projects.token}`,
       },
       {
-        text: "Recent Sessions",
-        callback_data: `${INTERACTIVE_NAMESPACE}:${recentSessions.token}`,
+        text: "Recent Threads",
+        callback_data: `${INTERACTIVE_NAMESPACE}:${recentThreads.token}`,
       },
     ]);
     buttons.push([

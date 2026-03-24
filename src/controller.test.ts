@@ -319,7 +319,7 @@ describe("Discord controller flows", () => {
     expect(sendComponentMessage).toHaveBeenCalledWith(
       "channel:chan-1",
       expect.objectContaining({
-        text: expect.stringContaining("Showing recent Codex sessions"),
+        text: expect.stringContaining("Showing recent Codex threads"),
       }),
       expect.objectContaining({
         accountId: "default",
@@ -379,7 +379,7 @@ describe("Discord controller flows", () => {
         ]),
         expect.arrayContaining([
           expect.objectContaining({
-            text: "Recent Sessions",
+            text: "Recent Threads",
           }),
         ]),
       ]),
@@ -400,7 +400,7 @@ describe("Discord controller flows", () => {
     expect(reply.text).toContain("Choose a project for the new Codex thread");
     const buttons = (reply.channelData as any)?.telegram?.buttons;
     expect(buttons?.[0]?.[0]?.text).toContain("openclaw");
-    expect(buttons?.flat().some((button: { text: string }) => button.text === "Recent Sessions")).toBe(true);
+    expect(buttons?.flat().some((button: { text: string }) => button.text === "Recent Threads")).toBe(true);
     const callbackData = buttons?.[0]?.[0]?.callback_data as string;
     const token = callbackData.split(":").pop() ?? "";
     const callback = (controller as any).store.getCallback(token);
@@ -502,7 +502,7 @@ describe("Discord controller flows", () => {
             text: "Projects",
           }),
           expect.objectContaining({
-            text: "Recent Sessions",
+            text: "Recent Threads",
           }),
         ]),
       ]),
@@ -582,7 +582,7 @@ describe("Discord controller flows", () => {
     expect(sendComponentMessage).toHaveBeenCalledWith(
       "channel:chan-1",
       expect.objectContaining({
-        text: expect.stringContaining("Showing recent Codex sessions"),
+        text: expect.stringContaining("Showing recent Codex threads"),
       }),
       expect.objectContaining({
         accountId: "default",
@@ -805,7 +805,7 @@ describe("Discord controller flows", () => {
       "channel:chan-1",
       "message-1",
       expect.objectContaining({
-        text: expect.stringContaining("Choose a project to filter recent Codex sessions"),
+        text: expect.stringContaining("Choose a project to filter recent Codex threads"),
       }),
       expect.objectContaining({ accountId: "default" }),
     );
