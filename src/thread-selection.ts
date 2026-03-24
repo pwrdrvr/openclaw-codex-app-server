@@ -66,7 +66,7 @@ export function parseThreadSelectionArgs(args: string): ParsedThreadSelectionArg
   };
 }
 
-function expandHomeDir(value: string): string {
+export function expandHomeDir(value: string): string {
   if (value === "~") {
     return os.homedir();
   }

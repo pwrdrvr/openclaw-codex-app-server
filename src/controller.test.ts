@@ -411,6 +411,27 @@ describe("Discord controller flows", () => {
     expect((controller as any).store.getCallback(secondToken)?.workspaceDir).toBe("/work/customer-a/app");
   });
 
+  it("expands home-relative paths for /cas_new positional workspace args", async () => {
+    const { controller, clientMock } = await createControllerHarness();
+    const requestConversationBinding = vi.fn(async () => ({ status: "bound" as const }));
+
+    const reply = await controller.handleCommand(
+      "cas_new",
+      buildTelegramCommandContext({
+        args: "~/github/openclaw",
+        commandBody: "/cas_new ~/github/openclaw",
+        requestConversationBinding,
+      }),
+    );
+
+    expect(reply).toEqual({});
+    expect(clientMock.startThread).toHaveBeenCalledWith({
+      sessionKey: undefined,
+      workspaceDir: path.join(os.homedir(), "github/openclaw"),
+      model: undefined,
+    });
+  });
+
   it("rejects resume when the thread worktree path no longer exists on disk", async () => {
     const { controller, clientMock } = await createControllerHarness();
     const missingWorktreePath = "/tmp/worktrees/bold-bartik/repo-name";

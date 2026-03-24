@@ -61,6 +61,7 @@ import {
 } from "./state.js";
 import {
   parseThreadSelectionArgs,
+  expandHomeDir,
   selectThreadFromMatches,
 } from "./thread-selection.js";
 import {
@@ -2752,6 +2753,9 @@ export class CodexPluginController {
       query.includes("/") ||
       query.includes("\\")
     ) {
+      if (query.startsWith("~")) {
+        return expandHomeDir(query);
+      }
       return path.resolve(query);
     }
     const { threads } = await this.listPickerThreads(binding, {
