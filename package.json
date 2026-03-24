@@ -23,6 +23,7 @@
     "project:sync": "node ./.agents/skills/project-manager/scripts/sync-work-items.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
+    "smoke:app-server-permissions": "node ./scripts/app-server-permissions-smoke.mjs",
     "pack:smoke": "node ./scripts/pack-smoke.mjs",
     "release:metadata": "node ./scripts/release-metadata.mjs",
     "release:apply-version": "node ./scripts/apply-release-version.mjs"
