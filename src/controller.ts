@@ -576,32 +576,26 @@ function truncateDiscordLabel(text: string, maxChars = 80): string {
   return `${trimmed.slice(0, Math.max(1, maxChars - 1)).trimEnd()}…`;
 }
 
-type StartNewThreadWorkspaceOption = {
+type WorkspaceChoice = {
   workspaceDir: string;
-  projectName: string;
   threadCount: number;
   latestUpdatedAt?: number;
-  duplicateProjectName: boolean;
 };
 
-function listStartNewThreadWorkspaceOptions(
+function listWorkspaceChoices(
   threads: Array<{ projectKey?: string; createdAt?: number; updatedAt?: number }>,
-  query = "",
-): StartNewThreadWorkspaceOption[] {
-  const filteredQuery = query.trim().toLowerCase();
-  const grouped = new Map<string, Omit<StartNewThreadWorkspaceOption, "duplicateProjectName">>();
+  projectName?: string,
+): WorkspaceChoice[] {
+  const normalizedProjectName = projectName?.trim().toLowerCase();
+  const grouped = new Map<string, WorkspaceChoice>();
 
   for (const thread of threads) {
     const workspaceDir = thread.projectKey?.trim();
-    const projectName = getProjectName(workspaceDir);
-    if (!workspaceDir || !projectName) {
+    const threadProjectName = getProjectName(workspaceDir);
+    if (!workspaceDir || !threadProjectName) {
       continue;
     }
-    const queryMatches =
-      !filteredQuery ||
-      projectName.toLowerCase().includes(filteredQuery) ||
-      workspaceDir.toLowerCase().includes(filteredQuery);
-    if (!queryMatches) {
+    if (normalizedProjectName && threadProjectName.toLowerCase() !== normalizedProjectName) {
       continue;
     }
     const existing = grouped.get(workspaceDir);
@@ -609,7 +603,6 @@ function listStartNewThreadWorkspaceOptions(
     if (!existing) {
       grouped.set(workspaceDir, {
         workspaceDir,
-        projectName,
         threadCount: 1,
         latestUpdatedAt: updatedAt,
       });
@@ -619,16 +612,7 @@ function listStartNewThreadWorkspaceOptions(
     existing.latestUpdatedAt = Math.max(existing.latestUpdatedAt ?? 0, updatedAt ?? 0) || undefined;
   }
 
-  const duplicateCounts = new Map<string, number>();
-  for (const option of grouped.values()) {
-    duplicateCounts.set(option.projectName, (duplicateCounts.get(option.projectName) ?? 0) + 1);
-  }
-
   return [...grouped.values()]
-    .map((option) => ({
-      ...option,
-      duplicateProjectName: (duplicateCounts.get(option.projectName) ?? 0) > 1,
-    }))
     .sort((left, right) => {
       const updatedDelta = (right.latestUpdatedAt ?? 0) - (left.latestUpdatedAt ?? 0);
       if (updatedDelta !== 0) {
@@ -636,11 +620,6 @@ function listStartNewThreadWorkspaceOptions(
       }
       return left.workspaceDir.localeCompare(right.workspaceDir);
     });
-}
-
-function formatStartNewThreadWorkspaceLabel(option: StartNewThreadWorkspaceOption): string {
-  const label = option.duplicateProjectName ? option.workspaceDir : option.projectName;
-  return `${label} (${option.threadCount})`;
 }
 
 function summarizeTextForLog(text: string, maxChars = 120): string {
@@ -2762,23 +2741,19 @@ export class CodexPluginController {
       },
       filterProjectsOnly: true,
     });
-    const workspaces = listStartNewThreadWorkspaceOptions(threads);
-    const exactWorkspace = workspaces.filter(
-      (workspace) => workspace.workspaceDir.toLowerCase() === query.toLowerCase(),
+    const exactProjectName = listProjects(threads).filter(
+      (project) => project.name.trim().toLowerCase() === query.toLowerCase(),
     );
-    if (exactWorkspace.length === 1) {
-      return exactWorkspace[0]?.workspaceDir ?? null;
+    if (exactProjectName.length === 1) {
+      const workspaces = listWorkspaceChoices(threads, exactProjectName[0]?.name);
+      return workspaces.length === 1 ? workspaces[0]?.workspaceDir ?? null : null;
     }
-    const exactProjectName = workspaces.filter(
-      (workspace) => workspace.projectName.toLowerCase() === query.toLowerCase(),
-    );
-    const candidates = exactProjectName.length > 0
-      ? exactProjectName
-      : listStartNewThreadWorkspaceOptions(threads, query);
+    const candidates = listProjects(threads, query);
     if (candidates.length !== 1) {
       return null;
     }
-    return candidates[0]?.workspaceDir ?? null;
+    const workspaces = listWorkspaceChoices(threads, candidates[0]?.name);
+    return workspaces.length === 1 ? workspaces[0]?.workspaceDir ?? null : null;
   }
 
   private async listPickerThreads(
@@ -2927,7 +2902,7 @@ export class CodexPluginController {
     params.buttons.push(
       [
         {
-          text: params.projectName ? "Projects" : "Browse Projects",
+          text: "Projects",
           callback_data: `${INTERACTIVE_NAMESPACE}:${projects.token}`,
         },
         ...(newThread
@@ -3013,191 +2988,261 @@ export class CodexPluginController {
       filterProjectsOnly: true,
     });
     const buttons: PluginInteractiveButtons = [];
-    if (action === "start-new-thread") {
-      const projectOptions = paginateItems(listStartNewThreadWorkspaceOptions(threads, parsed.query), page);
-      for (const option of projectOptions.items) {
-        const callback = await this.store.putCallback({
-          kind: "start-new-thread",
-          conversation,
-          workspaceDir: option.workspaceDir,
-          syncTopic: parsed.syncTopic,
-        });
-        buttons.push([
-          {
-            text: formatStartNewThreadWorkspaceLabel(option),
-            callback_data: `${INTERACTIVE_NAMESPACE}:${callback.token}`,
-          },
-        ]);
-      }
-      if (projectOptions.totalPages > 1) {
-        const navRow: PluginInteractiveButtons[number] = [];
-        if (projectOptions.page > 0) {
-          const prev = await this.store.putCallback({
-            kind: "picker-view",
-            conversation,
-            view: {
-              mode: "projects",
-              action,
-              includeAll: true,
-              syncTopic: parsed.syncTopic,
-              workspaceDir: parsed.cwd,
-              query: parsed.query || undefined,
-              page: projectOptions.page - 1,
-            },
-          });
-          navRow.push({
-            text: "◀ Prev",
-            callback_data: `${INTERACTIVE_NAMESPACE}:${prev.token}`,
-          });
-        }
-        if (projectOptions.page + 1 < projectOptions.totalPages) {
-          const next = await this.store.putCallback({
-            kind: "picker-view",
-            conversation,
-            view: {
-              mode: "projects",
-              action,
-              includeAll: true,
-              syncTopic: parsed.syncTopic,
-              workspaceDir: parsed.cwd,
-              query: parsed.query || undefined,
-              page: projectOptions.page + 1,
-            },
-          });
-          navRow.push({
-            text: "Next ▶",
-            callback_data: `${INTERACTIVE_NAMESPACE}:${next.token}`,
-          });
-        }
-        if (navRow.length > 0) {
-          buttons.push(navRow);
-        }
-      }
-
-      const cancel = await this.store.putCallback({
-        kind: "cancel-picker",
-        conversation,
-      });
+    const projectOptions = paginateItems(listProjects(threads, parsed.query), page);
+    for (const option of projectOptions.items) {
+      const callback =
+        action === "start-new-thread"
+          ? (() => {
+              const workspaces = listWorkspaceChoices(threads, option.name);
+              if (workspaces.length === 1) {
+                return this.store.putCallback({
+                  kind: "start-new-thread",
+                  conversation,
+                  workspaceDir: workspaces[0]?.workspaceDir ?? option.name,
+                  syncTopic: parsed.syncTopic,
+                });
+              }
+              return this.store.putCallback({
+                kind: "picker-view",
+                conversation,
+                view: {
+                  mode: "workspaces",
+                  action: "start-new-thread",
+                  includeAll: true,
+                  syncTopic: parsed.syncTopic,
+                  workspaceDir: parsed.cwd,
+                  projectName: option.name,
+                  page: 0,
+                },
+              });
+            })()
+          : this.store.putCallback({
+              kind: "picker-view",
+              conversation,
+              view: {
+                mode: "threads",
+                includeAll: true,
+                syncTopic: parsed.syncTopic,
+                workspaceDir: parsed.cwd,
+                projectName: option.name,
+                page: 0,
+              },
+            });
       buttons.push([
         {
-          text: "Cancel",
-          callback_data: `${INTERACTIVE_NAMESPACE}:${cancel.token}`,
+          text: `${option.name} (${option.threadCount})`,
+          callback_data: `${INTERACTIVE_NAMESPACE}:${(await callback).token}`,
         },
       ]);
-
-      return {
-        text: formatProjectPickerIntro({
-          page: projectOptions.page,
-          totalPages: projectOptions.totalPages,
-          totalItems: projectOptions.totalItems,
-          workspaceDir,
-          action,
-        }),
-        buttons,
-      };
-    } else {
-      const projectOptions = paginateItems(listProjects(threads, parsed.query), page);
-      for (const option of projectOptions.items) {
-        const callback = await this.store.putCallback({
+    }
+    if (projectOptions.totalPages > 1) {
+      const navRow: PluginInteractiveButtons[number] = [];
+      if (projectOptions.page > 0) {
+        const prev = await this.store.putCallback({
           kind: "picker-view",
           conversation,
           view: {
-            mode: "threads",
+            mode: "projects",
+            action,
             includeAll: true,
             syncTopic: parsed.syncTopic,
             workspaceDir: parsed.cwd,
-            projectName: option.name,
-            page: 0,
+            query: parsed.query || undefined,
+            page: projectOptions.page - 1,
           },
         });
-        buttons.push([
-          {
-            text: `${option.name} (${option.threadCount})`,
-            callback_data: `${INTERACTIVE_NAMESPACE}:${callback.token}`,
+        navRow.push({
+          text: "◀ Prev",
+          callback_data: `${INTERACTIVE_NAMESPACE}:${prev.token}`,
+        });
+      }
+      if (projectOptions.page + 1 < projectOptions.totalPages) {
+        const next = await this.store.putCallback({
+          kind: "picker-view",
+          conversation,
+          view: {
+            mode: "projects",
+            action,
+            includeAll: true,
+            syncTopic: parsed.syncTopic,
+            workspaceDir: parsed.cwd,
+            query: parsed.query || undefined,
+            page: projectOptions.page + 1,
           },
-        ]);
+        });
+        navRow.push({
+          text: "Next ▶",
+          callback_data: `${INTERACTIVE_NAMESPACE}:${next.token}`,
+        });
       }
-      if (projectOptions.totalPages > 1) {
-        const navRow: PluginInteractiveButtons[number] = [];
-        if (projectOptions.page > 0) {
-          const prev = await this.store.putCallback({
-            kind: "picker-view",
-            conversation,
-            view: {
-              mode: "projects",
-              action,
-              includeAll: true,
-              syncTopic: parsed.syncTopic,
-              workspaceDir: parsed.cwd,
-              query: parsed.query || undefined,
-              page: projectOptions.page - 1,
-            },
-          });
-          navRow.push({
-            text: "◀ Prev",
-            callback_data: `${INTERACTIVE_NAMESPACE}:${prev.token}`,
-          });
-        }
-        if (projectOptions.page + 1 < projectOptions.totalPages) {
-          const next = await this.store.putCallback({
-            kind: "picker-view",
-            conversation,
-            view: {
-              mode: "projects",
-              action,
-              includeAll: true,
-              syncTopic: parsed.syncTopic,
-              workspaceDir: parsed.cwd,
-              query: parsed.query || undefined,
-              page: projectOptions.page + 1,
-            },
-          });
-          navRow.push({
-            text: "Next ▶",
-            callback_data: `${INTERACTIVE_NAMESPACE}:${next.token}`,
-          });
-        }
-        if (navRow.length > 0) {
-          buttons.push(navRow);
-        }
+      if (navRow.length > 0) {
+        buttons.push(navRow);
       }
+    }
 
-      const cancel = await this.store.putCallback({
-        kind: "cancel-picker",
+    const recentSessions = await this.store.putCallback({
+      kind: "picker-view",
+      conversation,
+      view: {
+        mode: "threads",
+        includeAll: true,
+        syncTopic: parsed.syncTopic,
+        workspaceDir: parsed.cwd,
+        page: 0,
+      },
+    });
+    const cancel = await this.store.putCallback({
+      kind: "cancel-picker",
+      conversation,
+    });
+    buttons.push([
+      {
+        text: "Recent Sessions",
+        callback_data: `${INTERACTIVE_NAMESPACE}:${recentSessions.token}`,
+      },
+      {
+        text: "Cancel",
+        callback_data: `${INTERACTIVE_NAMESPACE}:${cancel.token}`,
+      },
+    ]);
+
+    return {
+      text: formatProjectPickerIntro({
+        page: projectOptions.page,
+        totalPages: projectOptions.totalPages,
+        totalItems: projectOptions.totalItems,
+        workspaceDir,
+        action,
+      }),
+      buttons,
+    };
+  }
+
+  private async renderNewThreadWorkspacePicker(
+    conversation: ConversationTarget,
+    binding: StoredBinding | null,
+    parsed: ReturnType<typeof parseThreadSelectionArgs>,
+    page: number,
+    projectName: string,
+  ): Promise<PickerRender> {
+    const { threads } = await this.listPickerThreads(binding, {
+      parsed,
+      projectName,
+      filterProjectsOnly: true,
+    });
+    const workspaceOptions = paginateItems(listWorkspaceChoices(threads, projectName), page);
+    const buttons: PluginInteractiveButtons = [];
+    for (const option of workspaceOptions.items) {
+      const callback = await this.store.putCallback({
+        kind: "start-new-thread",
         conversation,
+        workspaceDir: option.workspaceDir,
+        syncTopic: parsed.syncTopic,
       });
       buttons.push([
         {
-          text: "Recent Sessions",
-          callback_data: `${INTERACTIVE_NAMESPACE}:${(await this.store.putCallback({
-            kind: "picker-view",
-            conversation,
-            view: {
-              mode: "threads",
-              includeAll: true,
-              syncTopic: parsed.syncTopic,
-              workspaceDir: parsed.cwd,
-              page: 0,
-            },
-          })).token}`,
-        },
-        {
-          text: "Cancel",
-          callback_data: `${INTERACTIVE_NAMESPACE}:${cancel.token}`,
+          text: `${option.workspaceDir} (${option.threadCount})`,
+          callback_data: `${INTERACTIVE_NAMESPACE}:${callback.token}`,
         },
       ]);
-
-      return {
-        text: formatProjectPickerIntro({
-          page: projectOptions.page,
-          totalPages: projectOptions.totalPages,
-          totalItems: projectOptions.totalItems,
-          workspaceDir,
-          action,
-        }),
-        buttons,
-      };
     }
+    if (workspaceOptions.totalPages > 1) {
+      const navRow: PluginInteractiveButtons[number] = [];
+      if (workspaceOptions.page > 0) {
+        const prev = await this.store.putCallback({
+          kind: "picker-view",
+          conversation,
+          view: {
+            mode: "workspaces",
+            action: "start-new-thread",
+            includeAll: true,
+            syncTopic: parsed.syncTopic,
+            workspaceDir: parsed.cwd,
+            projectName,
+            page: workspaceOptions.page - 1,
+          },
+        });
+        navRow.push({
+          text: "◀ Prev",
+          callback_data: `${INTERACTIVE_NAMESPACE}:${prev.token}`,
+        });
+      }
+      if (workspaceOptions.page + 1 < workspaceOptions.totalPages) {
+        const next = await this.store.putCallback({
+          kind: "picker-view",
+          conversation,
+          view: {
+            mode: "workspaces",
+            action: "start-new-thread",
+            includeAll: true,
+            syncTopic: parsed.syncTopic,
+            workspaceDir: parsed.cwd,
+            projectName,
+            page: workspaceOptions.page + 1,
+          },
+        });
+        navRow.push({
+          text: "Next ▶",
+          callback_data: `${INTERACTIVE_NAMESPACE}:${next.token}`,
+        });
+      }
+      if (navRow.length > 0) {
+        buttons.push(navRow);
+      }
+    }
+
+    const projects = await this.store.putCallback({
+      kind: "picker-view",
+      conversation,
+      view: {
+        mode: "projects",
+        action: "start-new-thread",
+        includeAll: true,
+        syncTopic: parsed.syncTopic,
+        workspaceDir: parsed.cwd,
+        page: 0,
+      },
+    });
+    const recentSessions = await this.store.putCallback({
+      kind: "picker-view",
+      conversation,
+      view: {
+        mode: "threads",
+        includeAll: true,
+        syncTopic: parsed.syncTopic,
+        workspaceDir: parsed.cwd,
+        page: 0,
+      },
+    });
+    const cancel = await this.store.putCallback({
+      kind: "cancel-picker",
+      conversation,
+    });
+    buttons.push([
+      {
+        text: "Projects",
+        callback_data: `${INTERACTIVE_NAMESPACE}:${projects.token}`,
+      },
+      {
+        text: "Recent Sessions",
+        callback_data: `${INTERACTIVE_NAMESPACE}:${recentSessions.token}`,
+      },
+    ]);
+    buttons.push([
+      {
+        text: "Cancel",
+        callback_data: `${INTERACTIVE_NAMESPACE}:${cancel.token}`,
+      },
+    ]);
+
+    return {
+      text: [
+        `Multiple workspaces matched ${projectName}. Page ${workspaceOptions.page + 1}/${workspaceOptions.totalPages}.`,
+        "Tap a workspace to start a fresh Codex thread there.",
+        workspaceOptions.totalItems === 0 ? "No matching workspaces found." : "",
+      ].filter(Boolean).join("\n"),
+      buttons,
+    };
   }
 
   private async sendDiscordPicker(
@@ -3527,10 +3572,14 @@ export class CodexPluginController {
       includeAll: callback.view.includeAll,
       listProjects: callback.view.mode === "projects",
       startNew:
-        callback.view.mode === "projects" && callback.view.action === "start-new-thread",
+        (callback.view.mode === "projects" && callback.view.action === "start-new-thread") ||
+        callback.view.mode === "workspaces",
       syncTopic: callback.view.syncTopic ?? false,
       cwd: callback.view.workspaceDir,
-      query: callback.view.query ?? "",
+      query:
+        callback.view.mode === "threads" || callback.view.mode === "projects"
+          ? callback.view.query ?? ""
+          : "",
     };
     const picker =
       callback.view.mode === "projects"
@@ -3541,13 +3590,21 @@ export class CodexPluginController {
             callback.view.page,
             callback.view.action ?? "resume-thread",
           )
-        : await this.renderThreadPicker(
-            responders.conversation,
-            binding,
-            parsed,
-            callback.view.page,
-            callback.view.projectName,
-          );
+        : callback.view.mode === "workspaces"
+          ? await this.renderNewThreadWorkspacePicker(
+              responders.conversation,
+              binding,
+              parsed,
+              callback.view.page,
+              callback.view.projectName,
+            )
+          : await this.renderThreadPicker(
+              responders.conversation,
+              binding,
+              parsed,
+              callback.view.page,
+              callback.view.projectName,
+            );
     await responders.editPicker(picker);
   }
 

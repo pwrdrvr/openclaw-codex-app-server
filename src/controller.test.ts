@@ -338,6 +338,8 @@ describe("Discord controller flows", () => {
     );
 
     const buttons = (reply.channelData as any)?.telegram?.buttons;
+    expect(buttons?.flat().some((button: { text: string }) => button.text === "Projects")).toBe(true);
+    expect(buttons?.flat().some((button: { text: string }) => button.text === "Browse Projects")).toBe(false);
     const newButton = buttons?.flat().find((button: { text: string }) => button.text === "New");
     expect(newButton?.callback_data).toBeTruthy();
     const token = (newButton?.callback_data as string).split(":").pop() ?? "";
@@ -375,6 +377,11 @@ describe("Discord controller flows", () => {
             text: expect.stringContaining("openclaw"),
           }),
         ]),
+        expect.arrayContaining([
+          expect.objectContaining({
+            text: "Recent Sessions",
+          }),
+        ]),
       ]),
     }));
   });
@@ -393,6 +400,7 @@ describe("Discord controller flows", () => {
     expect(reply.text).toContain("Choose a project for the new Codex thread");
     const buttons = (reply.channelData as any)?.telegram?.buttons;
     expect(buttons?.[0]?.[0]?.text).toContain("openclaw");
+    expect(buttons?.flat().some((button: { text: string }) => button.text === "Recent Sessions")).toBe(true);
     const callbackData = buttons?.[0]?.[0]?.callback_data as string;
     const token = callbackData.split(":").pop() ?? "";
     const callback = (controller as any).store.getCallback(token);
@@ -425,7 +433,7 @@ describe("Discord controller flows", () => {
     );
   });
 
-  it("forces workspace disambiguation when /cas_resume --new matches duplicate project basenames", async () => {
+  it("keeps grouped project names in the /cas_resume --new picker and disambiguates after selection", async () => {
     const { controller, clientMock } = await createControllerHarness();
     clientMock.listThreads.mockResolvedValue([
       {
@@ -454,14 +462,51 @@ describe("Discord controller flows", () => {
 
     expect(clientMock.startThread).not.toHaveBeenCalled();
     const buttons = (reply.channelData as any)?.telegram?.buttons;
-    expect(buttons?.[0]?.[0]?.text).toContain("/work/customer-b/app");
-    expect(buttons?.[1]?.[0]?.text).toContain("/work/customer-a/app");
+    expect(buttons?.[0]?.[0]?.text).toBe("app (2)");
+    const token = (buttons?.[0]?.[0]?.callback_data as string).split(":").pop() ?? "";
+    expect((controller as any).store.getCallback(token)).toEqual(expect.objectContaining({
+      kind: "picker-view",
+      view: expect.objectContaining({
+        mode: "workspaces",
+        projectName: "app",
+      }),
+    }));
 
-    const firstToken = (buttons?.[0]?.[0]?.callback_data as string).split(":").pop() ?? "";
-    const secondToken = (buttons?.[1]?.[0]?.callback_data as string).split(":").pop() ?? "";
-    expect((controller as any).store.getCallback(firstToken)?.kind).toBe("start-new-thread");
-    expect((controller as any).store.getCallback(firstToken)?.workspaceDir).toBe("/work/customer-b/app");
-    expect((controller as any).store.getCallback(secondToken)?.workspaceDir).toBe("/work/customer-a/app");
+    const editMessage = vi.fn(async () => {});
+    await controller.handleTelegramInteractive({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123:topic:456",
+      parentConversationId: "123",
+      threadId: 456,
+      callback: {
+        payload: token,
+      },
+      respond: {
+        clearButtons: vi.fn(async () => {}),
+        reply: vi.fn(async () => {}),
+        editMessage,
+      },
+    } as any);
+
+    expect(editMessage).toHaveBeenCalledWith(expect.objectContaining({
+      text: expect.stringContaining("Multiple workspaces matched app"),
+      buttons: expect.arrayContaining([
+        expect.arrayContaining([
+          expect.objectContaining({
+            text: expect.stringContaining("/work/customer-b/app"),
+          }),
+        ]),
+        expect.arrayContaining([
+          expect.objectContaining({
+            text: "Projects",
+          }),
+          expect.objectContaining({
+            text: "Recent Sessions",
+          }),
+        ]),
+      ]),
+    }));
   });
 
   it("expands home-relative paths for /cas_resume --new positional workspace args", async () => {

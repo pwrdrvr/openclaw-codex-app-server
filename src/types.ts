@@ -349,6 +349,16 @@ export type CallbackAction =
             syncTopic?: boolean;
             query?: string;
             workspaceDir?: string;
+            projectName?: string;
+          }
+        | {
+            mode: "workspaces";
+            action: "start-new-thread";
+            includeAll: boolean;
+            page: number;
+            syncTopic?: boolean;
+            workspaceDir?: string;
+            projectName: string;
           };
       createdAt: number;
       expiresAt: number;
