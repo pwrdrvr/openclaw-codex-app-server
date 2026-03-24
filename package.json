@@ -24,6 +24,7 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "smoke:app-server-permissions": "node ./scripts/app-server-permissions-smoke.mjs",
+    "smoke:app-server-thread-permissions": "node ./scripts/app-server-thread-permissions-smoke.mjs",
     "pack:smoke": "node ./scripts/pack-smoke.mjs",
     "release:metadata": "node ./scripts/release-metadata.mjs",
     "release:apply-version": "node ./scripts/apply-release-version.mjs"
