@@ -999,6 +999,7 @@ function buildThreadDiscoveryFilter(filter?: string, workspaceDir?: string): unk
 function buildThreadResumePayloads(params: {
   threadId: string;
   model?: string;
+  reasoningEffort?: string;
   cwd?: string;
   serviceTier?: string | null;
   approvalPolicy?: string;
@@ -1010,6 +1011,9 @@ function buildThreadResumePayloads(params: {
   };
   if (params.model?.trim()) {
     base.model = params.model.trim();
+  }
+  if (params.reasoningEffort?.trim()) {
+    base.reasoningEffort = params.reasoningEffort.trim();
   }
   if (params.cwd?.trim()) {
     base.cwd = params.cwd.trim();
@@ -2966,6 +2970,11 @@ export class CodexAppServerClient {
     workspaceDir: string;
     threadId: string;
     runId: string;
+    model?: string;
+    reasoningEffort?: string;
+    serviceTier?: string | null;
+    approvalPolicy?: string;
+    sandbox?: string;
     target: ReviewTarget;
     onPendingInput?: (state: PendingInputState | null) => Promise<void> | void;
     onInterrupted?: () => Promise<void> | void;
@@ -3007,7 +3016,14 @@ export class CodexAppServerClient {
         await requestWithFallbacks({
           client,
           methods: ["thread/resume"],
-          payloads: [{ threadId: reviewThreadId }],
+          payloads: buildThreadResumePayloads({
+            threadId: reviewThreadId,
+            model: params.model,
+            reasoningEffort: params.reasoningEffort,
+            serviceTier: params.serviceTier,
+            approvalPolicy: params.approvalPolicy,
+            sandbox: params.sandbox,
+          }),
           timeoutMs: this.settings.requestTimeoutMs,
         }).catch(() => undefined);
         const result = await requestWithFallbacks({

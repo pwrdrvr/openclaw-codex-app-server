@@ -1709,6 +1709,7 @@ export class CodexPluginController {
             ? await this.persistBindingProfile(updatedBindingBase, currentProfile, targetProfile)
             : await this.migrateBindingProfile(updatedBindingBase, targetProfile)
           : (await this.store.upsertBinding(updatedBindingBase), updatedBindingBase);
+      await this.applyStatusOverridesToLiveThread(binding, overrides, effectiveModel);
       if (active && targetProfile !== currentProfile) {
         note = buildPendingPermissionsMigrationNote(targetProfile);
       }
@@ -1808,6 +1809,60 @@ export class CodexPluginController {
       mergeConversationPreferences(existing, this.buildPreferenceUpdatesFromOverrides(overrides)),
       overrides.requestedModel?.trim() || modelHint,
     );
+  }
+
+  private async applyStatusOverridesToLiveThread(
+    binding: StoredBinding,
+    overrides: CommandPreferenceOverrides,
+    modelHint?: string,
+  ): Promise<void> {
+    if (!overrides.requestedModel?.trim() && typeof overrides.requestedFast !== "boolean") {
+      return;
+    }
+    const profile = this.getClientProfile(binding);
+    let state = await this.client.readThreadState({
+      profile,
+      sessionKey: binding.sessionKey,
+      threadId: binding.threadId,
+    }).catch(() => undefined);
+    const requestedModel = overrides.requestedModel?.trim();
+    if (requestedModel && requestedModel !== state?.model?.trim()) {
+      try {
+        state = await this.client.setThreadModel({
+          profile,
+          sessionKey: binding.sessionKey,
+          threadId: binding.threadId,
+          model: requestedModel,
+        });
+      } catch (error) {
+        this.api.logger.warn(`codex failed to apply status model override: ${String(error)}`);
+      }
+    }
+    const effectiveModel = requestedModel || state?.model?.trim() || modelHint;
+    const currentTier = normalizeServiceTier(state?.serviceTier) ?? "default";
+    const requestedTier =
+      !modelSupportsFast(effectiveModel)
+        ? currentTier === "fast" || typeof overrides.requestedFast === "boolean"
+          ? null
+          : undefined
+        : typeof overrides.requestedFast === "boolean"
+          ? overrides.requestedFast
+            ? "fast"
+            : null
+          : undefined;
+    const desiredTier = requestedTier ?? "default";
+    if (requestedTier !== undefined && desiredTier !== currentTier) {
+      try {
+        await this.client.setThreadServiceTier({
+          profile,
+          sessionKey: binding.sessionKey,
+          threadId: binding.threadId,
+          serviceTier: requestedTier,
+        });
+      } catch (error) {
+        this.api.logger.warn(`codex failed to apply status fast override: ${String(error)}`);
+      }
+    }
   }
 
   private async buildStatusControlButtons(
@@ -3041,12 +3096,31 @@ export class CodexPluginController {
       clearTimeout(progressTimer);
       progressTimer = null;
     };
+    const threadState = await this.client
+      .readThreadState({
+        profile,
+        sessionKey: params.binding.sessionKey,
+        threadId: params.binding.threadId,
+      })
+      .catch(() => undefined);
+    const effectiveThreadState =
+      applyBindingPreferencesToThreadState(threadState ?? undefined, params.binding) ?? threadState;
+    const effectiveModel = effectiveThreadState?.model?.trim() || this.settings.defaultModel;
     const run = this.client.startReview({
       profile,
       sessionKey: params.binding.sessionKey,
       workspaceDir: params.workspaceDir,
       threadId: params.binding.threadId,
       runId: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      model: effectiveModel,
+      reasoningEffort: normalizeReasoningEffort(
+        params.binding.preferences?.preferredReasoningEffort ?? effectiveThreadState?.reasoningEffort,
+      ),
+      serviceTier: modelSupportsFast(effectiveModel)
+        ? requestServiceTierFromPreference(effectiveThreadState?.serviceTier)
+        : null,
+      approvalPolicy: effectiveThreadState?.approvalPolicy?.trim(),
+      sandbox: effectiveThreadState?.sandbox?.trim(),
       target: params.target,
       onPendingInput: async (state) => {
         if (state) {

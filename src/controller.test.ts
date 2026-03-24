@@ -180,6 +180,15 @@ async function createControllerHarness() {
       threadState.sandbox = params.sandbox;
       return { ...threadState };
     }),
+    startReview: vi.fn(() => ({
+      result: new Promise(() => {}),
+      getThreadId: () => "thread-1",
+      queueMessage: vi.fn(async () => false),
+      interrupt: vi.fn(async () => {}),
+      isAwaitingInput: () => false,
+      submitPendingInput: vi.fn(async () => false),
+      submitPendingInputPayload: vi.fn(async () => false),
+    })),
     readAccount: vi.fn(async () => ({
       email: "test@example.com",
       planType: "pro",
@@ -1554,7 +1563,7 @@ describe("Discord controller flows", () => {
   });
 
   it("applies model, fast, and yolo flags from cas_status", async () => {
-    const { controller } = await createControllerHarness();
+    const { controller, clientMock } = await createControllerHarness();
     await (controller as any).store.upsertBinding({
       conversation: {
         channel: "telegram",
@@ -1586,6 +1595,18 @@ describe("Discord controller flows", () => {
     expect(binding?.preferences?.preferredServiceTier).toBe("fast");
     expect(binding?.preferences?.preferredApprovalPolicy).toBe("never");
     expect(binding?.preferences?.preferredSandbox).toBe("danger-full-access");
+    expect(clientMock.setThreadModel).toHaveBeenCalledWith({
+      profile: "full-access",
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      model: "gpt-5.4",
+    });
+    expect(clientMock.setThreadServiceTier).toHaveBeenCalledWith({
+      profile: "full-access",
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      serviceTier: "fast",
+    });
     expect((reply as any).text).toContain("Model: gpt-5.4");
     expect((reply as any).text).toContain("Fast mode: on");
     expect((reply as any).text).toContain("Permissions: Full Access");
@@ -3264,6 +3285,62 @@ describe("Discord controller flows", () => {
       expect.objectContaining({
         sessionKey: "session-1",
         existingThreadId: "thread-1",
+        model: "gpt-5.4",
+        reasoningEffort: "high",
+        serviceTier: "fast",
+        approvalPolicy: "never",
+        sandbox: "workspace-write",
+      }),
+    );
+  });
+
+  it("passes saved conversation preferences into review runs", async () => {
+    const { controller } = await createControllerHarness();
+    const startReview = vi.fn(() => ({
+      result: new Promise(() => {}),
+      getThreadId: () => "thread-1",
+      queueMessage: vi.fn(async () => false),
+      interrupt: vi.fn(async () => {}),
+      isAwaitingInput: () => false,
+      submitPendingInput: vi.fn(async () => false),
+      submitPendingInputPayload: vi.fn(async () => false),
+    }));
+    (controller as any).client.startReview = startReview;
+
+    await (controller as any).startReview({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "8460800771",
+      },
+      binding: {
+        conversation: {
+          channel: "telegram",
+          accountId: "default",
+          conversationId: "8460800771",
+        },
+        sessionKey: "session-1",
+        threadId: "thread-1",
+        workspaceDir: "/repo/openclaw",
+        preferences: {
+          preferredModel: "gpt-5.4",
+          preferredReasoningEffort: "high",
+          preferredServiceTier: "fast",
+          preferredApprovalPolicy: "never",
+          preferredSandbox: "workspace-write",
+          updatedAt: Date.now(),
+        },
+        updatedAt: Date.now(),
+      },
+      workspaceDir: "/repo/openclaw",
+      target: { type: "uncommittedChanges" },
+      announceStart: false,
+    });
+
+    expect(startReview).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: "session-1",
+        threadId: "thread-1",
         model: "gpt-5.4",
         reasoningEffort: "high",
         serviceTier: "fast",
