@@ -511,6 +511,52 @@ describe("Discord controller flows", () => {
     expect(callback?.kind).toBe("start-new-thread");
   });
 
+  it("collapses matching worktrees to one project root in the /cas_resume --new picker", async () => {
+    const { controller } = await createControllerHarness();
+    const canonicalWorkspaceDir = "/Users/huntharo/github/openclaw";
+
+    (controller as any).client.listThreads.mockResolvedValue([
+      {
+        threadId: "thread-a",
+        title: "Feature A",
+        projectKey: "/Users/huntharo/.codex/worktrees/7d9d/openclaw",
+        createdAt: Date.now() - 60_000,
+        updatedAt: Date.now() - 30_000,
+      },
+      {
+        threadId: "thread-b",
+        title: "Feature B",
+        projectKey: "/Users/huntharo/.codex/worktrees/1999/openclaw",
+        createdAt: Date.now() - 50_000,
+        updatedAt: Date.now() - 20_000,
+      },
+    ]);
+    (controller as any).resolveProjectFolder = vi.fn(async (workspaceDir?: string) => {
+      if (!workspaceDir?.includes("/.codex/worktrees/")) {
+        return workspaceDir;
+      }
+      return canonicalWorkspaceDir;
+    });
+
+    const reply = await controller.handleCommand(
+      "cas_resume",
+      buildTelegramCommandContext({
+        args: "--new",
+        commandBody: "/cas_resume --new",
+      }),
+    );
+
+    expect(reply.text).toContain("Choose a project for the new Codex thread");
+    const buttons = (reply.channelData as any)?.telegram?.buttons;
+    expect(buttons?.[0]?.[0]?.text).toBe("openclaw (2)");
+    const callbackData = buttons?.[0]?.[0]?.callback_data as string;
+    const token = callbackData.split(":").pop() ?? "";
+    expect((controller as any).store.getCallback(token)).toEqual(expect.objectContaining({
+      kind: "start-new-thread",
+      workspaceDir: canonicalWorkspaceDir,
+    }));
+  });
+
   it("starts a new thread directly for /cas_resume --new <project>", async () => {
     const { controller, clientMock } = await createControllerHarness();
     const requestConversationBinding = vi.fn(async () => ({ status: "bound" as const }));

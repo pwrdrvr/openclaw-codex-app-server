@@ -3840,18 +3840,19 @@ export class CodexPluginController {
       },
       filterProjectsOnly: true,
     });
-    const exactProjectName = listProjects(threads).filter(
+    const normalizedThreads = await this.normalizeNewThreadProjectThreads(threads);
+    const exactProjectName = listProjects(normalizedThreads).filter(
       (project) => project.name.trim().toLowerCase() === query.toLowerCase(),
     );
     if (exactProjectName.length === 1) {
-      const workspaces = listWorkspaceChoices(threads, exactProjectName[0]?.name);
+      const workspaces = listWorkspaceChoices(normalizedThreads, exactProjectName[0]?.name);
       return workspaces.length === 1 ? workspaces[0]?.workspaceDir ?? null : null;
     }
-    const candidates = listProjects(threads, query);
+    const candidates = listProjects(normalizedThreads, query);
     if (candidates.length !== 1) {
       return null;
     }
-    const workspaces = listWorkspaceChoices(threads, candidates[0]?.name);
+    const workspaces = listWorkspaceChoices(normalizedThreads, candidates[0]?.name);
     return workspaces.length === 1 ? workspaces[0]?.workspaceDir ?? null : null;
   }
 
@@ -3879,6 +3880,29 @@ export class CodexPluginController {
       workspaceDir,
       threads: filterThreadsByProjectName(threads, params.projectName),
     };
+  }
+
+  private async normalizeNewThreadProjectThreads<
+    T extends { projectKey?: string; createdAt?: number; updatedAt?: number },
+  >(threads: T[]): Promise<T[]> {
+    const projectFolderByWorkspace = new Map<string, Promise<string | undefined>>();
+    return await Promise.all(
+      threads.map(async (thread) => {
+        const workspaceDir = thread.projectKey?.trim();
+        if (!workspaceDir || !this.isWorktreePath(workspaceDir)) {
+          return thread;
+        }
+        let projectFolder = projectFolderByWorkspace.get(workspaceDir);
+        if (!projectFolder) {
+          projectFolder = this.resolveProjectFolder(workspaceDir);
+          projectFolderByWorkspace.set(workspaceDir, projectFolder);
+        }
+        return {
+          ...thread,
+          projectKey: (await projectFolder)?.trim() || workspaceDir,
+        };
+      }),
+    );
   }
 
   private async buildThreadPickerButtons(params: {
@@ -4105,13 +4129,15 @@ export class CodexPluginController {
       parsed,
       filterProjectsOnly: true,
     });
+    const normalizedThreads =
+      action === "start-new-thread" ? await this.normalizeNewThreadProjectThreads(threads) : threads;
     const buttons: PluginInteractiveButtons = [];
-    const projectOptions = paginateItems(listProjects(threads, parsed.query), page);
+    const projectOptions = paginateItems(listProjects(normalizedThreads, parsed.query), page);
     for (const option of projectOptions.items) {
       const callback =
         action === "start-new-thread"
           ? (() => {
-              const workspaces = listWorkspaceChoices(threads, option.name);
+              const workspaces = listWorkspaceChoices(normalizedThreads, option.name);
               if (workspaces.length === 1) {
                 return this.store.putCallback({
                   kind: "start-new-thread",
@@ -4266,7 +4292,8 @@ export class CodexPluginController {
       projectName,
       filterProjectsOnly: true,
     });
-    const workspaceOptions = paginateItems(listWorkspaceChoices(threads, projectName), page);
+    const normalizedThreads = await this.normalizeNewThreadProjectThreads(threads);
+    const workspaceOptions = paginateItems(listWorkspaceChoices(normalizedThreads, projectName), page);
     const buttons: PluginInteractiveButtons = [];
     for (const option of workspaceOptions.items) {
       const callback = await this.store.putCallback({
