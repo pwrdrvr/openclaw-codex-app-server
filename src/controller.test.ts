@@ -557,6 +557,55 @@ describe("Discord controller flows", () => {
     }));
   });
 
+  it("ignores removed worktree history when the project root still exists in the /cas_resume --new picker", async () => {
+    const { controller } = await createControllerHarness();
+    const canonicalWorkspaceParent = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-root-"));
+    const canonicalWorkspaceDir = path.join(canonicalWorkspaceParent, "openclaw");
+    fs.mkdirSync(canonicalWorkspaceDir);
+
+    (controller as any).client.listThreads.mockResolvedValue([
+      {
+        threadId: "thread-root",
+        title: "Main Root",
+        projectKey: canonicalWorkspaceDir,
+        createdAt: Date.now() - 70_000,
+        updatedAt: Date.now() - 10_000,
+      },
+      {
+        threadId: "thread-stale-a",
+        title: "Removed Worktree A",
+        projectKey: path.join(canonicalWorkspaceParent, "worktrees/fd73/openclaw"),
+        createdAt: Date.now() - 60_000,
+        updatedAt: Date.now() - 30_000,
+      },
+      {
+        threadId: "thread-stale-b",
+        title: "Removed Worktree B",
+        projectKey: path.join(canonicalWorkspaceParent, "worktrees/80de/openclaw"),
+        createdAt: Date.now() - 50_000,
+        updatedAt: Date.now() - 20_000,
+      },
+    ]);
+
+    const reply = await controller.handleCommand(
+      "cas_resume",
+      buildTelegramCommandContext({
+        args: "--new",
+        commandBody: "/cas_resume --new",
+      }),
+    );
+
+    expect(reply.text).toContain("Choose a project for the new Codex thread");
+    const buttons = (reply.channelData as any)?.telegram?.buttons;
+    expect(buttons?.[0]?.[0]?.text).toBe("openclaw (3)");
+    const callbackData = buttons?.[0]?.[0]?.callback_data as string;
+    const token = callbackData.split(":").pop() ?? "";
+    expect((controller as any).store.getCallback(token)).toEqual(expect.objectContaining({
+      kind: "start-new-thread",
+      workspaceDir: canonicalWorkspaceDir,
+    }));
+  });
+
   it("starts a new thread directly for /cas_resume --new <project>", async () => {
     const { controller, clientMock } = await createControllerHarness();
     const requestConversationBinding = vi.fn(async () => ({ status: "bound" as const }));

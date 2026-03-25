@@ -3886,23 +3886,54 @@ export class CodexPluginController {
     T extends { projectKey?: string; createdAt?: number; updatedAt?: number },
   >(threads: T[]): Promise<T[]> {
     const projectFolderByWorkspace = new Map<string, Promise<string | undefined>>();
-    return await Promise.all(
-      threads.map(async (thread) => {
-        const workspaceDir = thread.projectKey?.trim();
-        if (!workspaceDir || !this.isWorktreePath(workspaceDir)) {
-          return thread;
-        }
-        let projectFolder = projectFolderByWorkspace.get(workspaceDir);
-        if (!projectFolder) {
-          projectFolder = this.resolveProjectFolder(workspaceDir);
-          projectFolderByWorkspace.set(workspaceDir, projectFolder);
-        }
-        return {
+    const getResolvedProjectFolder = (workspaceDir: string): Promise<string | undefined> => {
+      let projectFolder = projectFolderByWorkspace.get(workspaceDir);
+      if (!projectFolder) {
+        projectFolder = this.resolveProjectFolder(workspaceDir);
+        projectFolderByWorkspace.set(workspaceDir, projectFolder);
+      }
+      return projectFolder;
+    };
+    const liveProjectRootsByName = new Map<string, Set<string>>();
+
+    for (const thread of threads) {
+      const workspaceDir = thread.projectKey?.trim();
+      const projectName = getProjectName(workspaceDir)?.trim().toLowerCase();
+      if (!workspaceDir || !projectName || !existsSync(workspaceDir)) {
+        continue;
+      }
+      const resolvedProjectRoot = this.isWorktreePath(workspaceDir)
+        ? ((await getResolvedProjectFolder(workspaceDir))?.trim() || workspaceDir)
+        : workspaceDir;
+      const projectRoots = liveProjectRootsByName.get(projectName) ?? new Set<string>();
+      projectRoots.add(resolvedProjectRoot);
+      liveProjectRootsByName.set(projectName, projectRoots);
+    }
+
+    const normalizedThreads: T[] = [];
+    for (const thread of threads) {
+      const workspaceDir = thread.projectKey?.trim();
+      if (!workspaceDir || !this.isWorktreePath(workspaceDir)) {
+        normalizedThreads.push(thread);
+        continue;
+      }
+      if (existsSync(workspaceDir)) {
+        normalizedThreads.push({
           ...thread,
-          projectKey: (await projectFolder)?.trim() || workspaceDir,
-        };
-      }),
-    );
+          projectKey: (await getResolvedProjectFolder(workspaceDir))?.trim() || workspaceDir,
+        });
+        continue;
+      }
+      const projectName = getProjectName(workspaceDir)?.trim().toLowerCase();
+      const liveProjectRoots = projectName ? liveProjectRootsByName.get(projectName) : undefined;
+      if (liveProjectRoots?.size === 1) {
+        normalizedThreads.push({
+          ...thread,
+          projectKey: [...liveProjectRoots][0],
+        });
+      }
+    }
+    return normalizedThreads;
   }
 
   private async buildThreadPickerButtons(params: {
