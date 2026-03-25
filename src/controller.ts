@@ -1774,7 +1774,7 @@ export class CodexPluginController {
       if (!binding || !conversation) {
         return { text: "Bind this conversation to Codex before changing status settings." };
       }
-      const { effectiveState } = await this.readEffectiveThreadState(binding);
+      const { state: currentThreadState, effectiveState } = await this.readEffectiveThreadState(binding);
       const effectiveModel =
         parsed.requestedModel?.trim() ||
         (await this.resolveCurrentModelHint(binding, effectiveState));
@@ -1816,10 +1816,13 @@ export class CodexPluginController {
                 currentPermissionsMode,
                 targetPermissionsMode,
               )
-            : await this.migrateBindingPermissionsMode(updatedBindingBase, targetPermissionsMode)
+            : currentThreadState
+              ? await this.migrateBindingPermissionsMode(updatedBindingBase, targetPermissionsMode)
+              : await this.persistBindingPermissionsMode(updatedBindingBase, targetPermissionsMode)
           : (await this.store.upsertBinding(updatedBindingBase), updatedBindingBase);
       await this.reconcileThreadConfiguration(binding, {
-        applyPermissions: !(active && targetPermissionsMode !== currentPermissionsMode),
+        applyPermissions:
+          Boolean(currentThreadState) && !(active && targetPermissionsMode !== currentPermissionsMode),
         modelFallback: effectiveModel,
         context: "apply status overrides",
       });
@@ -4955,6 +4958,7 @@ export class CodexPluginController {
         return;
       }
       const active = this.activeRuns.get(buildConversationKey(callback.conversation));
+      const { state: currentThreadState } = await this.readEffectiveThreadState(binding);
       const updatedBindingBase: StoredBinding = {
         ...binding,
         permissionsMode: active ? currentProfile : nextProfile,
@@ -4963,7 +4967,9 @@ export class CodexPluginController {
       };
       const updatedBinding = active
         ? await this.persistBindingPermissionsMode(updatedBindingBase, currentProfile, nextProfile)
-        : await this.migrateBindingPermissionsMode(updatedBindingBase, nextProfile);
+        : currentThreadState
+          ? await this.migrateBindingPermissionsMode(updatedBindingBase, nextProfile)
+          : await this.persistBindingPermissionsMode(updatedBindingBase, nextProfile);
       this.api.logger.debug?.(
         `codex status control toggle-permissions conversation=${this.formatConversationForLog(callback.conversation)} currentProfile=${currentProfile} requestedProfile=${nextProfile} activeRun=${active?.mode ?? "none"} ${formatBindingPreferencesForLog(updatedBinding)}`,
       );
