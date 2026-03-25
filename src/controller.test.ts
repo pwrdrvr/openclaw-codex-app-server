@@ -2524,6 +2524,91 @@ describe("Discord controller flows", () => {
     ).toBeNull();
   });
 
+  it("still sends the bound status output when a new thread is not materialized yet", async () => {
+    const { controller, sendMessageTelegram } = await createControllerHarness();
+    (controller as any).client.readThreadState = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new Error("codex app server rpc error (-32600): no rollout found for thread id thread-new"),
+      )
+      .mockRejectedValueOnce(
+        new Error(
+          "codex app server rpc error (-32600): thread thread-new is not materialized yet; includeTurns is unavailable before first user message",
+        ),
+      )
+      .mockResolvedValue({
+        threadId: "thread-new",
+        threadName: "Fresh Thread",
+        cwd: "/repo/openclaw",
+        model: "openai/gpt-5.4",
+        serviceTier: "default",
+      });
+    (controller as any).client.readThreadContext = vi.fn().mockRejectedValue(
+      new Error(
+        "codex app server rpc error (-32600): thread thread-new is not materialized yet; includeTurns is unavailable before first user message",
+      ),
+    );
+
+    await (controller as any).store.upsertPendingBind({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123:topic:456",
+        parentConversationId: "123",
+      },
+      threadId: "thread-new",
+      workspaceDir: "/repo/openclaw",
+      threadTitle: "Fresh Thread",
+      syncTopic: false,
+      notifyBound: true,
+      updatedAt: Date.now(),
+    });
+
+    await expect(
+      controller.handleConversationBindingResolved({
+        status: "approved",
+        binding: {
+          bindingId: "binding-1",
+          pluginId: "openclaw-codex-app-server",
+          pluginRoot: "/plugins/codex",
+          channel: "telegram",
+          accountId: "default",
+          conversationId: "123:topic:456",
+          parentConversationId: "123",
+          threadId: 456,
+          boundAt: Date.now(),
+        },
+        decision: "allow-once",
+        request: {
+          summary: "Bind this conversation to Codex thread Fresh Thread.",
+          conversation: {
+            channel: "telegram",
+            accountId: "default",
+            conversationId: "123:topic:456",
+            parentConversationId: "123",
+            threadId: 456,
+          },
+        },
+      } as any),
+    ).resolves.toBeUndefined();
+
+    const approvedLastCall = sendMessageTelegram.mock.calls.at(-1) as
+      | [string, string, { buttons?: Array<Array<{ text: string }>>; messageThreadId?: number }]
+      | undefined;
+    expect(approvedLastCall?.[0]).toBe("123");
+    expect(approvedLastCall?.[1]).toContain("Binding: Fresh Thread (openclaw)");
+    expect(approvedLastCall?.[1]).toContain("Thread: thread-new");
+    expect(approvedLastCall?.[2]?.messageThreadId).toBe(456);
+    expect(
+      (controller as any).store.getPendingBind({
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123:topic:456",
+        parentConversationId: "123",
+      }),
+    ).toBeNull();
+  });
+
   it("preserves pending model and yolo overrides when approval completes after resume-thread selection", async () => {
     const { controller } = await createControllerHarness();
 

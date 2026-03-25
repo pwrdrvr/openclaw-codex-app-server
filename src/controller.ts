@@ -5728,18 +5728,27 @@ export class CodexPluginController {
       this.resolveProjectFolder(binding?.workspaceDir || workspaceDir),
     ]);
     const effectiveThreadState = buildDesiredThreadConfiguration(threadState, binding).effectiveState;
+    const displayThreadState =
+      effectiveThreadState ??
+      (binding
+        ? {
+            threadId: binding.threadId,
+            threadName: binding.threadTitle,
+            cwd: binding.workspaceDir,
+          }
+        : undefined);
     this.api.logger.debug?.(
-      `codex status snapshot bindingActive=${bindingActive ? "yes" : "no"} activeRun=${activeRun?.mode ?? "none"} boundThread=${binding?.threadId ?? "<none>"} raw=${formatThreadStateForLog(threadState)} effective=${formatThreadStateForLog(effectiveThreadState)} ${formatBindingPreferencesForLog(binding)} threadCwd=${threadState?.cwd?.trim() || "<none>"}`,
+      `codex status snapshot bindingActive=${bindingActive ? "yes" : "no"} activeRun=${activeRun?.mode ?? "none"} boundThread=${binding?.threadId ?? "<none>"} raw=${formatThreadStateForLog(threadState)} effective=${formatThreadStateForLog(displayThreadState)} ${formatBindingPreferencesForLog(binding)} threadCwd=${displayThreadState?.cwd?.trim() || "<none>"}`,
     );
 
     return formatCodexStatusText({
       pluginVersion: PLUGIN_VERSION,
-      threadState: effectiveThreadState,
+      threadState: displayThreadState,
       account,
       rateLimits: limits,
       bindingActive,
       projectFolder,
-      worktreeFolder: threadState?.cwd?.trim() || binding?.workspaceDir || workspaceDir,
+      worktreeFolder: displayThreadState?.cwd?.trim() || binding?.workspaceDir || workspaceDir,
       contextUsage: binding?.contextUsage,
       planMode: bindingActive ? activeRun?.mode === "plan" : undefined,
       permissionNote:
