@@ -1,5 +1,6 @@
 import os from "node:os";
 import path from "node:path";
+import { formatCommandUsage } from "./help.js";
 import type { ThreadSummary } from "./types.js";
 
 export type ParsedThreadSelectionArgs = {
@@ -83,7 +84,7 @@ export function parseThreadSelectionArgs(args: string): ParsedThreadSelectionArg
         index += 1;
         continue;
       }
-      error = "Usage: /cas_resume [--new] [--sync] [--fast|--no-fast] [--yolo|--no-yolo] [--model <name>] [--cwd <path>] [query]";
+      error = formatCommandUsage("cas_resume");
       break;
     }
     if (token === "--cwd") {
@@ -93,7 +94,7 @@ export function parseThreadSelectionArgs(args: string): ParsedThreadSelectionArg
         index += 1;
         continue;
       }
-      error = "Usage: /cas_resume [--new] [--sync] [--fast|--no-fast] [--yolo|--no-yolo] [--model <name>] [--cwd <path>] [query]";
+      error = formatCommandUsage("cas_resume");
       break;
     }
     queryTokens.push(token);

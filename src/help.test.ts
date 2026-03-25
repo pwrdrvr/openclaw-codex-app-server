@@ -86,6 +86,18 @@ describe("command help metadata", () => {
     expect(text).toContain("Usage:");
     expect(text).toContain("Examples:");
     expect(text).toContain("Flags/Args:");
+    expect(text).toContain("--model <name>");
+    expect(text).toContain("--fast, --no-fast");
+    expect(text).toContain("--yolo, --no-yolo");
+  });
+
+  it("documents status overrides in command help", () => {
+    const text = renderCommandHelpText("cas_status");
+    expect(text).toContain("/cas_status");
+    expect(text).toContain("--model <name>");
+    expect(text).toContain("--fast, --no-fast");
+    expect(text).toContain("--yolo, --no-yolo");
+    expect(text).toContain("With no flags, this shows the current status card");
   });
 
   it("returns command help when args are help or --help", async () => {

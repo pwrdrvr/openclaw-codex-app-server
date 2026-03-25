@@ -16,22 +16,27 @@ type CommandHelpEntry = {
 export const COMMAND_HELP: Record<CommandName, CommandHelpEntry> = {
   cas_resume: {
     summary: COMMAND_SUMMARY.cas_resume,
-    usage: "/cas_resume [--projects] [--new [project]] [--all] [--cwd <path>] [--sync] [filter]",
+    usage: "/cas_resume [--projects|-p] [--new [project]] [--all|-a] [--cwd <path>] [--sync] [--model <name>] [--fast|--no-fast] [--yolo|--no-yolo] [filter]",
     flags: [
-      { flag: "--projects", description: "Browse projects first, then pick a thread." },
-      { flag: "--new", description: "Start a new thread; optionally pass a project filter." },
-      { flag: "--all", description: "Search recent threads across projects." },
+      { flag: "--projects, --project, -p", description: "Browse projects first, then pick a thread." },
+      { flag: "--new [project]", description: "Start a new thread; optionally pass a project filter or workspace path." },
+      { flag: "--all, -a", description: "Search recent threads across projects." },
       { flag: "--cwd <path>", description: "Restrict search to one workspace path." },
       { flag: "--sync", description: "Sync the chat/topic name to the selected thread title." },
+      { flag: "--model <name>", description: "Save a preferred model on the binding and apply it when possible." },
+      { flag: "--fast, --no-fast", description: "Enable or disable fast mode while binding or creating a thread." },
+      { flag: "--yolo, --no-yolo", description: "Switch between Default and Full Access permissions while binding." },
       { flag: "[filter]", description: "Match by thread title, id, or project text." },
     ],
     examples: [
       "/cas_resume",
       "/cas_resume --projects",
       "/cas_resume --new openclaw",
+      "/cas_resume thread-1 --model openai/gpt-5.4 --fast --yolo",
       "/cas_resume --cwd ~/github/openclaw release-fix",
       "/cas_resume --sync thread-1",
     ],
+    notes: "Use --new with no filter to open a project picker. Full Access depends on the current Codex Desktop profiles.",
   },
   cas_detach: {
     summary: COMMAND_SUMMARY.cas_detach,
@@ -40,8 +45,18 @@ export const COMMAND_HELP: Record<CommandName, CommandHelpEntry> = {
   },
   cas_status: {
     summary: COMMAND_SUMMARY.cas_status,
-    usage: "/cas_status",
-    examples: ["/cas_status"],
+    usage: "/cas_status [--model <name>] [--fast|--no-fast] [--yolo|--no-yolo]",
+    flags: [
+      { flag: "--model <name>", description: "Update the preferred model for the current binding." },
+      { flag: "--fast, --no-fast", description: "Enable or disable fast mode for the current binding." },
+      { flag: "--yolo, --no-yolo", description: "Switch between Default and Full Access permissions." },
+    ],
+    examples: [
+      "/cas_status",
+      "/cas_status --model openai/gpt-5.4",
+      "/cas_status --fast --yolo",
+    ],
+    notes: "With no flags, this shows the current status card and interactive controls.",
   },
   cas_stop: {
     summary: COMMAND_SUMMARY.cas_stop,
@@ -91,6 +106,7 @@ export const COMMAND_HELP: Record<CommandName, CommandHelpEntry> = {
       "/cas_skills",
       "/cas_skills release",
     ],
+    notes: "When a conversation is bound, the reply can include picker buttons and you can also run a skill directly by typing $skill-name.",
   },
   cas_experimental: {
     summary: COMMAND_SUMMARY.cas_experimental,
@@ -119,21 +135,23 @@ export const COMMAND_HELP: Record<CommandName, CommandHelpEntry> = {
       "/cas_fast on",
       "/cas_fast status",
     ],
-    notes: "With no argument, this command toggles fast mode.",
+    notes: "With no argument, this command toggles fast mode. /cas_status also exposes fast mode controls.",
   },
   cas_model: {
     summary: COMMAND_SUMMARY.cas_model,
     usage: "/cas_model [model_name]",
-    flags: [{ flag: "[model_name]", description: "Optional model id to set; omit to list available models." }],
+    flags: [{ flag: "[model_name]", description: "Optional model id to set; omit to list models or show a picker on bound conversations." }],
     examples: [
       "/cas_model",
       "/cas_model openai/gpt-5.4",
     ],
+    notes: "The status card is the main interactive model-control surface, but this command remains available.",
   },
   cas_permissions: {
     summary: COMMAND_SUMMARY.cas_permissions,
     usage: "/cas_permissions",
     examples: ["/cas_permissions"],
+    notes: "This shows account and permission status. To change permissions, use /cas_status --yolo or the status card toggle.",
   },
   cas_init: {
     summary: COMMAND_SUMMARY.cas_init,
@@ -165,6 +183,7 @@ export const COMMAND_HELP: Record<CommandName, CommandHelpEntry> = {
       "/cas_rename --sync approval flow cleanup",
       "/cas_rename --sync",
     ],
+    notes: "If you omit the name, the plugin offers derived naming styles from the current thread metadata.",
   },
 };
 

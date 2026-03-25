@@ -95,10 +95,16 @@ Pre-release packages are published on matching npm dist-tags instead of `latest`
 | `/cas_experimental` | List experimental features reported by Codex. | Read-only. |
 | `/cas_mcp` | List configured MCP servers. | Shows auth state and counts for tools/resources/templates. |
 | `/cas_mcp github` | Filter MCP servers. | Matches name and auth status. |
+| `/cas_fast` | Toggle fast mode for the bound thread. | Convenience command for the same fast-mode control exposed on `/cas_status`. |
+| `/cas_fast on`, `/cas_fast off`, `/cas_fast status` | Set or inspect fast mode explicitly. | Example: `/cas_fast status` |
+| `/cas_model` | List models and show model-selection buttons when the conversation is bound. | Without a binding, it lists models only. |
+| `/cas_model gpt-5.4` | Set the model for the bound thread. | Also updates the saved preferred model for later turns. |
+| `/cas_permissions` | Show account, rate-limit, and current permission status. | To change permissions, use `/cas_status --yolo` or the status card. |
 | `/cas_init ...` | Forward `/init` to Codex. | Sends the alias straight through to the App Server. |
 | `/cas_diff ...` | Forward `/diff` to Codex. | Sends the alias straight through to the App Server. |
 | `/cas_rename <new name>` | Rename the bound Codex thread. | Example: `/cas_rename approval flow cleanup` |
 | `/cas_rename --sync <new name>` | Rename the thread and try to sync the conversation/topic name too. | Requires an existing binding. |
+| `/cas_rename --sync` | Show suggested naming styles and sync the chosen one to the conversation too. | Useful when you want the derived thread/project naming without typing it out. |
 
 ## Screenshot Placeholders
 

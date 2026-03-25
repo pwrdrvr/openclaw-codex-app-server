@@ -1,6 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { formatCommandUsage } from "./help.js";
 import {
   parseThreadSelectionArgs,
   selectThreadFromMatches,
@@ -84,6 +85,21 @@ describe("thread selection args", () => {
       syncTopic: false,
       cwd: undefined,
       query: "openclaw",
+    });
+  });
+
+  it("returns the shared usage text when --cwd is missing its value", () => {
+    expect(parseThreadSelectionArgs("--cwd")).toEqual({
+      includeAll: false,
+      listProjects: false,
+      startNew: false,
+      syncTopic: false,
+      cwd: undefined,
+      requestedModel: undefined,
+      requestedFast: undefined,
+      requestedYolo: undefined,
+      error: formatCommandUsage("cas_resume"),
+      query: "",
     });
   });
 });

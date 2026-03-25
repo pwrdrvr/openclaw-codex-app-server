@@ -750,11 +750,11 @@ function parseStatusArgs(args: string): CommandPreferenceOverrides & { error?: s
         continue;
       }
       return {
-        error: "Usage: /cas_status [--model <name>] [--fast|--no-fast] [--yolo|--no-yolo]",
+        error: formatCommandUsage("cas_status"),
       };
     }
     return {
-      error: "Usage: /cas_status [--model <name>] [--fast|--no-fast] [--yolo|--no-yolo]",
+      error: formatCommandUsage("cas_status"),
     };
   }
   return {
