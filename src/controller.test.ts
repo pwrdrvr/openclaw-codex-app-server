@@ -3952,11 +3952,13 @@ describe("Discord controller flows", () => {
     });
 
     await flushAsyncWork();
-    expect(sendMessageTelegram).toHaveBeenCalledWith(
-      "8460800771",
-      "Codex authentication failed on this machine. Run `codex logout` and `codex login`, then try again.",
-      expect.anything(),
-    );
+    await vi.waitFor(() => {
+      expect(sendMessageTelegram).toHaveBeenCalledWith(
+        "8460800771",
+        "Codex authentication failed on this machine. Run `codex logout` and `codex login`, then try again.",
+        expect.anything(),
+      );
+    });
     expect(clientMock.readAccount).toHaveBeenCalledWith({
       profile: "default",
       sessionKey: "session-1",
