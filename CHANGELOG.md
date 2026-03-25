@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.4.0 - 2026-03-25
+
+### Highlights
+
+- Added new thread support directly to `/cas_resume`, including a `New` entry point, `/cas_resume --new`, grouped project picking, delayed workspace disambiguation, and a path back to recent sessions. @huntharo (#46)
+- Added an interactive `/cas_status` control card with one-tap model, fast-mode, and permissions controls, and now persist those thread preferences across reconnects and gateway restarts. @huntharo (#49)
+- Added built-in help for every `/cas_*` command, so `help` and `--help` now return structured usage, flags, and examples from inside chat. @huntharo (#50)
+
+### Fixes
+
+- Improved permissions handling and model controls from chat, including better Spark compatibility and durable per-conversation preferences when reconnecting to an existing Codex thread. @huntharo (#49)
+
+### Docs
+
+- Polished the README command table and added the standard badge strip so install and command guidance reads more cleanly on GitHub. @huntharo (#45)
+
 ## v0.3.0 - 2026-03-23
 
 ### Highlights
