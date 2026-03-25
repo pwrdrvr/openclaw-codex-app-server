@@ -972,7 +972,7 @@ export class CodexPluginController {
       }
     }
     if (pending.notifyBound) {
-      await this.sendBoundConversationSummary(conversation);
+      await this.sendBoundConversationNotifications(conversation);
     }
   }
 
@@ -1534,7 +1534,7 @@ export class CodexPluginController {
           await this.renameConversationIfSupported(conversation, syncedName);
         }
       }
-      await this.sendBoundConversationSummary(conversation);
+      await this.sendBoundConversationNotifications(conversation);
       return {};
     }
     if (pendingBind && !binding && !parsed.listProjects && !parsed.query) {
@@ -1577,7 +1577,7 @@ export class CodexPluginController {
           await this.renameConversationIfSupported(conversation, syncedName);
         }
       }
-      await this.sendBoundConversationSummary(conversation);
+      await this.sendBoundConversationNotifications(conversation);
       return {};
     }
     if (parsed.listProjects || !parsed.query) {
@@ -1649,7 +1649,7 @@ export class CodexPluginController {
         await this.renameConversationIfSupported(conversation, syncedName);
       }
     }
-    await this.sendBoundConversationSummary(conversation);
+    await this.sendBoundConversationNotifications(conversation);
     return {};
   }
 
@@ -4119,7 +4119,7 @@ export class CodexPluginController {
           await this.renameConversationIfSupported(responders.conversation, syncedName);
         }
       }
-      await this.sendBoundConversationSummary(callback.conversation);
+      await this.sendBoundConversationNotifications(callback.conversation);
       return;
     }
     if (callback.kind === "pending-input") {
@@ -4821,7 +4821,7 @@ export class CodexPluginController {
         await this.renameConversationIfSupported(conversation, syncedName);
       }
     }
-    await this.sendBoundConversationSummary(conversation);
+    await this.sendBoundConversationNotifications(conversation);
     return { status: "bound" };
   }
 
@@ -5151,6 +5151,36 @@ export class CodexPluginController {
     };
     for (const message of messages) {
       await this.sendText(target, message);
+    }
+  }
+
+  private async sendBoundConversationNotifications(
+    conversation: ConversationTarget | ConversationRef,
+  ): Promise<void> {
+    await this.sendBoundConversationSummary(conversation);
+    const target: ConversationTarget = {
+      channel: conversation.channel,
+      accountId: conversation.accountId,
+      conversationId: conversation.conversationId,
+      parentConversationId: conversation.parentConversationId,
+      threadId: "threadId" in conversation ? conversation.threadId : undefined,
+    };
+    const binding = this.store.getBinding(target);
+    if (!binding) {
+      return;
+    }
+    const card = await this.buildStatusCard(target, binding, true);
+    if (!card.buttons) {
+      return;
+    }
+    try {
+      const delivered = await this.sendReplyWithDeliveryRef(target, {
+        text: card.text,
+        buttons: card.buttons,
+      });
+      await this.pinBindingMessage(target, delivered);
+    } catch (error) {
+      this.api.logger.warn(`codex bound status card send failed: ${String(error)}`);
     }
   }
 

@@ -1711,7 +1711,7 @@ describe("Discord controller flows", () => {
   });
 
   it("pins the Telegram status message and unpins it on detach", async () => {
-    const { controller } = await createControllerHarness();
+    const { controller, sendMessageTelegram } = await createControllerHarness();
     const fetchMock = vi.mocked(fetch);
 
     await controller.handleCommand(
@@ -1720,17 +1720,6 @@ describe("Discord controller flows", () => {
         args: "thread-1",
         commandBody: "/cas_resume thread-1",
         messageThreadId: 456,
-      }),
-    );
-
-    fetchMock.mockClear();
-
-    await controller.handleCommand(
-      "cas_status",
-      buildTelegramCommandContext({
-        commandBody: "/cas_status",
-        messageThreadId: 456,
-        getCurrentConversationBinding: vi.fn(async () => ({ bindingId: "binding-1" })),
       }),
     );
 
@@ -1745,6 +1734,13 @@ describe("Discord controller flows", () => {
         chat_id: "123",
         message_id: 1,
       }),
+    );
+    const lastCall = sendMessageTelegram.mock.calls.at(-1) as unknown as
+      | [string, string, { buttons?: Array<Array<{ text: string }>> }]
+      | undefined;
+    expect(lastCall?.[1]).toContain("Binding: active");
+    expect(lastCall?.[2]?.buttons?.flat().map((button) => button.text)).toEqual(
+      expect.arrayContaining(["Refresh", "Detach"]),
     );
     expect(
       (controller as any).store.getBinding({
@@ -1781,7 +1777,7 @@ describe("Discord controller flows", () => {
   });
 
   it("pins the Discord status message and unpins it on detach", async () => {
-    const { controller } = await createControllerHarness();
+    const { controller, sendComponentMessage } = await createControllerHarness();
     const fetchMock = vi.mocked(fetch);
     vi.spyOn(controller as any, "resolveDiscordBotToken").mockResolvedValue("discord-token");
 
@@ -1793,16 +1789,6 @@ describe("Discord controller flows", () => {
       }),
     );
 
-    fetchMock.mockClear();
-
-    await controller.handleCommand(
-      "cas_status",
-      buildDiscordCommandContext({
-        commandBody: "/cas_status",
-        getCurrentConversationBinding: vi.fn(async () => ({ bindingId: "binding-1" })),
-      }),
-    );
-
     expect(fetchMock).toHaveBeenCalledWith(
       "https://discord.com/api/v10/channels/channel%3Achan-1/pins/discord-component-1",
       expect.objectContaining({
@@ -1811,6 +1797,21 @@ describe("Discord controller flows", () => {
           Authorization: "Bot discord-token",
         }),
       }),
+    );
+    expect(sendComponentMessage).toHaveBeenCalledWith(
+      "channel:chan-1",
+      expect.objectContaining({
+        text: expect.stringContaining("Binding: active"),
+        blocks: expect.arrayContaining([
+          expect.objectContaining({
+            buttons: expect.arrayContaining([
+              expect.objectContaining({ label: "Refresh" }),
+              expect.objectContaining({ label: "Detach" }),
+            ]),
+          }),
+        ]),
+      }),
+      expect.objectContaining({ accountId: "default" }),
     );
     expect(
       (controller as any).store.getBinding({
