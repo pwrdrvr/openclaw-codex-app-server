@@ -4492,7 +4492,7 @@ describe("Discord controller flows", () => {
   });
 
   it("shows model-picker buttons from the status card callback", async () => {
-    const { controller } = await createControllerHarness();
+    const { controller, sendMessageTelegram } = await createControllerHarness();
     await (controller as any).store.upsertBinding({
       conversation: {
         channel: "telegram",
@@ -4518,7 +4518,7 @@ describe("Discord controller flows", () => {
       channel: "telegram",
       accountId: "default",
       conversationId: "123",
-      callback: { payload: callback.token },
+      callback: { payload: callback.token, messageId: 41, chatId: "123" },
       respond: {
         clearButtons: vi.fn(async () => {}),
         reply: vi.fn(async () => {}),
@@ -4526,14 +4526,22 @@ describe("Discord controller flows", () => {
       },
     } as any);
 
-    const lastCall = editMessage.mock.calls.at(-1)?.[0] as any;
-    expect(lastCall?.text).toContain("Current model");
-    expect(Array.isArray(lastCall?.buttons)).toBe(true);
-    const firstToken = String(lastCall?.buttons?.[0]?.[0]?.callback_data ?? "").split(":").pop() ?? "";
+    expect(editMessage).not.toHaveBeenCalled();
+    const lastCall = sendMessageTelegram.mock.calls.at(-1) as unknown as
+      | [string, string, { buttons?: Array<Array<{ callback_data: string }>> }]
+      | undefined;
+    expect(lastCall?.[1]).toContain("Current model");
+    expect(Array.isArray(lastCall?.[2]?.buttons)).toBe(true);
+    const firstToken = String(lastCall?.[2]?.buttons?.[0]?.[0]?.callback_data ?? "").split(":").pop() ?? "";
     expect((controller as any).store.getCallback(firstToken)).toEqual(
       expect.objectContaining({
         kind: "set-model",
         returnToStatus: true,
+        statusMessage: {
+          provider: "telegram",
+          messageId: "41",
+          chatId: "123",
+        },
       }),
     );
   });
@@ -4565,7 +4573,7 @@ describe("Discord controller flows", () => {
       channel: "telegram",
       accountId: "default",
       conversationId: "123",
-      callback: { payload: callback.token },
+      callback: { payload: callback.token, messageId: 41, chatId: "123" },
       respond: {
         clearButtons: vi.fn(async () => {}),
         reply: vi.fn(async () => {}),
@@ -4574,12 +4582,26 @@ describe("Discord controller flows", () => {
     } as any);
 
     const lastCall = editMessage.mock.calls.at(-1)?.[0] as any;
-    expect(lastCall?.text).toContain("Current reasoning: Default");
+    expect(lastCall?.text).toContain("Binding:");
     expect(lastCall?.buttons?.some((row: Array<{ text: string }>) => row[0]?.text === "High")).toBe(true);
+    expect(lastCall?.buttons?.some((row: Array<{ text: string }>) => row[0]?.text === "Cancel")).toBe(true);
+    const cancelToken = String(
+      lastCall?.buttons
+        ?.flat()
+        .find((button: { text: string }) => button.text === "Cancel")
+        ?.callback_data ?? "",
+    )
+      .split(":")
+      .pop();
+    expect((controller as any).store.getCallback(cancelToken)).toEqual(
+      expect.objectContaining({
+        kind: "refresh-status",
+      }),
+    );
   });
 
-  it("shows the model picker using the saved preferred model when the thread snapshot is stale", async () => {
-    const { controller, clientMock } = await createControllerHarness();
+  it("shows the model picker in a separate message using the saved preferred model when the thread snapshot is stale", async () => {
+    const { controller, clientMock, sendMessageTelegram } = await createControllerHarness();
     clientMock.readThreadState.mockImplementation(async () => ({
       threadId: "thread-1",
       threadName: "Discord Thread",
@@ -4627,9 +4649,97 @@ describe("Discord controller flows", () => {
       },
     } as any);
 
-    const lastCall = editMessage.mock.calls.at(-1)?.[0] as any;
-    expect(lastCall?.text).toContain("Current model: openai/gpt-5.3");
-    expect(lastCall?.buttons?.some((row: Array<{ text: string }>) => row[0]?.text === "openai/gpt-5.3 (current)")).toBe(true);
+    expect(editMessage).not.toHaveBeenCalled();
+    const pickerCall = sendMessageTelegram.mock.calls.at(-1) as unknown as
+      | [string, string, { buttons?: Array<Array<{ text: string }>> }]
+      | undefined;
+    expect(pickerCall?.[0]).toBe("123");
+    expect(pickerCall?.[1]).toContain("Current model: openai/gpt-5.3");
+    expect(pickerCall?.[2]?.buttons?.some((row) => row[0]?.text === "openai/gpt-5.3 (current)")).toBe(true);
+  });
+
+  it("updates the original status message after choosing a model from a separately sent picker", async () => {
+    const { controller, sendMessageTelegram } = await createControllerHarness();
+    const fetchMock = vi.mocked(fetch);
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+    const showPicker = await (controller as any).store.putCallback({
+      kind: "show-model-picker",
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+    });
+    const statusEditMessage = vi.fn(async (_payload: any) => {});
+
+    await controller.handleTelegramInteractive({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+      callback: {
+        payload: showPicker.token,
+        messageId: 41,
+        chatId: "123",
+      },
+      respond: {
+        clearButtons: vi.fn(async () => {}),
+        reply: vi.fn(async () => {}),
+        editMessage: statusEditMessage,
+      },
+    } as any);
+
+    const pickerCall = sendMessageTelegram.mock.calls.at(-1) as unknown as
+      | [string, string, { buttons?: Array<Array<{ text: string; callback_data: string }>> }]
+      | undefined;
+    const modelCallbackData = pickerCall?.[2]?.buttons?.find((row) => row[0]?.text === "openai/gpt-5.3")?.[0]?.callback_data;
+    const modelToken = modelCallbackData?.split(":").at(-1);
+    expect(modelToken).toBeTruthy();
+    expect(statusEditMessage).not.toHaveBeenCalled();
+
+    const pickerEditMessage = vi.fn(async (_payload: any) => {});
+    await controller.handleTelegramInteractive({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+      callback: {
+        payload: modelToken,
+        messageId: 99,
+        chatId: "123",
+      },
+      respond: {
+        clearButtons: vi.fn(async () => {}),
+        reply: vi.fn(async () => {}),
+        editMessage: pickerEditMessage,
+      },
+    } as any);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.telegram.org/bottelegram-token/editMessageText",
+      expect.objectContaining({
+        method: "POST",
+      }),
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls.at(-1)?.[1]?.body))).toEqual(
+      expect.objectContaining({
+        chat_id: "123",
+        message_id: 41,
+        text: expect.stringContaining("Model: openai/gpt-5.3"),
+      }),
+    );
+    expect(pickerEditMessage).toHaveBeenLastCalledWith({
+      text: "Codex model set to openai/gpt-5.3.",
+      buttons: [],
+    });
   });
 
   it("sets the model from the status picker and returns to the updated status card", async () => {
