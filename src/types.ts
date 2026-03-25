@@ -2,13 +2,14 @@ import type { ConversationRef, PluginInteractiveButtons } from "openclaw/plugin-
 
 export const PLUGIN_ID = "openclaw-codex-app-server";
 export const INTERACTIVE_NAMESPACE = "codexapp";
-export const STORE_VERSION = 1;
+export const STORE_VERSION = 2;
 export const CALLBACK_TOKEN_BYTES = 9;
 export const CALLBACK_TTL_MS = 30 * 60_000;
 export const PENDING_INPUT_TTL_MS = 7 * 24 * 60 * 60_000;
 export const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 
 export type CodexTransport = "stdio" | "websocket";
+export type PermissionsMode = "default" | "full-access";
 
 export type PluginSettings = {
   enabled: boolean;
@@ -120,6 +121,8 @@ export type ModelSummary = {
   label?: string;
   description?: string;
   current?: boolean;
+  supportsReasoning?: boolean;
+  supportsFast?: boolean;
 };
 
 export type SkillSummary = {
@@ -193,6 +196,13 @@ export type ContextUsageSnapshot = {
   remainingPercent?: number;
 };
 
+export type ConversationPreferences = {
+  preferredModel?: string;
+  preferredReasoningEffort?: string;
+  preferredServiceTier: string | null;
+  updatedAt: number;
+};
+
 export type CompactProgress =
   | {
       phase: "started" | "completed";
@@ -251,6 +261,8 @@ export type StoredBinding = {
   sessionKey: string;
   threadId: string;
   workspaceDir: string;
+  permissionsMode?: PermissionsMode;
+  pendingPermissionsMode?: PermissionsMode;
   threadTitle?: string;
   pinnedBindingMessage?:
     | {
@@ -264,6 +276,7 @@ export type StoredBinding = {
         channelId: string;
       };
   contextUsage?: ContextUsageSnapshot;
+  preferences?: ConversationPreferences;
   updatedAt: number;
 };
 
@@ -271,9 +284,11 @@ export type StoredPendingBind = {
   conversation: ConversationRef;
   threadId: string;
   workspaceDir: string;
+  permissionsMode?: PermissionsMode;
   threadTitle?: string;
   syncTopic?: boolean;
   notifyBound?: boolean;
+  preferences?: ConversationPreferences;
   updatedAt: number;
 };
 
@@ -294,6 +309,9 @@ export type CallbackAction =
       conversation: ConversationRef;
       workspaceDir: string;
       syncTopic?: boolean;
+      requestedModel?: string;
+      requestedFast?: boolean;
+      requestedYolo?: boolean;
       createdAt: number;
       expiresAt: number;
     }
@@ -304,6 +322,9 @@ export type CallbackAction =
       threadId: string;
       workspaceDir: string;
       syncTopic?: boolean;
+      requestedModel?: string;
+      requestedFast?: boolean;
+      requestedYolo?: boolean;
       createdAt: number;
       expiresAt: number;
     }
@@ -340,6 +361,9 @@ export type CallbackAction =
             query?: string;
             workspaceDir?: string;
             projectName?: string;
+            requestedModel?: string;
+            requestedFast?: boolean;
+            requestedYolo?: boolean;
           }
         | {
             mode: "projects";
@@ -350,6 +374,9 @@ export type CallbackAction =
             query?: string;
             workspaceDir?: string;
             projectName?: string;
+            requestedModel?: string;
+            requestedFast?: boolean;
+            requestedYolo?: boolean;
           }
         | {
             mode: "workspaces";
@@ -359,6 +386,15 @@ export type CallbackAction =
             syncTopic?: boolean;
             workspaceDir?: string;
             projectName: string;
+            requestedModel?: string;
+            requestedFast?: boolean;
+            requestedYolo?: boolean;
+          }
+        | {
+            mode: "skills";
+            page: number;
+            filter?: string;
+            clickMode: "run" | "help";
           };
       createdAt: number;
       expiresAt: number;
@@ -375,9 +411,109 @@ export type CallbackAction =
     }
   | {
       token: string;
+      kind: "toggle-fast";
+      conversation: ConversationRef;
+      createdAt: number;
+      expiresAt: number;
+    }
+  | {
+      token: string;
+      kind: "show-reasoning-picker";
+      conversation: ConversationRef;
+      createdAt: number;
+      expiresAt: number;
+    }
+  | {
+      token: string;
+      kind: "set-reasoning";
+      conversation: ConversationRef;
+      reasoningEffort: string;
+      returnToStatus?: boolean;
+      createdAt: number;
+      expiresAt: number;
+    }
+  | {
+      token: string;
+      kind: "toggle-permissions";
+      conversation: ConversationRef;
+      createdAt: number;
+      expiresAt: number;
+    }
+  | {
+      token: string;
+      kind: "compact-thread";
+      conversation: ConversationRef;
+      createdAt: number;
+      expiresAt: number;
+    }
+  | {
+      token: string;
+      kind: "stop-run";
+      conversation: ConversationRef;
+      createdAt: number;
+      expiresAt: number;
+    }
+  | {
+      token: string;
+      kind: "refresh-status";
+      conversation: ConversationRef;
+      createdAt: number;
+      expiresAt: number;
+    }
+  | {
+      token: string;
+      kind: "detach-thread";
+      conversation: ConversationRef;
+      createdAt: number;
+      expiresAt: number;
+    }
+  | {
+      token: string;
+      kind: "show-skills";
+      conversation: ConversationRef;
+      createdAt: number;
+      expiresAt: number;
+    }
+  | {
+      token: string;
+      kind: "show-mcp";
+      conversation: ConversationRef;
+      createdAt: number;
+      expiresAt: number;
+    }
+  | {
+      token: string;
+      kind: "run-skill";
+      conversation: ConversationRef;
+      skillName: string;
+      workspaceDir?: string;
+      createdAt: number;
+      expiresAt: number;
+    }
+  | {
+      token: string;
+      kind: "show-skill-help";
+      conversation: ConversationRef;
+      skillName: string;
+      description?: string;
+      cwd?: string;
+      enabled?: boolean;
+      createdAt: number;
+      expiresAt: number;
+    }
+  | {
+      token: string;
+      kind: "show-model-picker";
+      conversation: ConversationRef;
+      createdAt: number;
+      expiresAt: number;
+    }
+  | {
+      token: string;
       kind: "set-model";
       conversation: ConversationRef;
       model: string;
+      returnToStatus?: boolean;
       createdAt: number;
       expiresAt: number;
     }

@@ -6,6 +6,8 @@ import type {
   CallbackAction,
   CollaborationMode,
   ConversationTarget,
+  ConversationPreferences,
+  PermissionsMode,
   StoreSnapshot,
   StoredBinding,
   StoredPendingBind,
@@ -18,6 +20,9 @@ type PutCallbackInput =
       conversation: ConversationTarget;
       workspaceDir: string;
       syncTopic?: boolean;
+      requestedModel?: string;
+      requestedFast?: boolean;
+      requestedYolo?: boolean;
       token?: string;
       ttlMs?: number;
     }
@@ -27,6 +32,9 @@ type PutCallbackInput =
       threadId: string;
       workspaceDir: string;
       syncTopic?: boolean;
+      requestedModel?: string;
+      requestedFast?: boolean;
+      requestedYolo?: boolean;
       token?: string;
       ttlMs?: number;
     }
@@ -73,9 +81,96 @@ type PutCallbackInput =
       ttlMs?: number;
     }
   | {
+      kind: "toggle-fast";
+      conversation: ConversationTarget;
+      token?: string;
+      ttlMs?: number;
+    }
+  | {
+      kind: "show-reasoning-picker";
+      conversation: ConversationTarget;
+      token?: string;
+      ttlMs?: number;
+    }
+  | {
+      kind: "set-reasoning";
+      conversation: ConversationTarget;
+      reasoningEffort: string;
+      returnToStatus?: boolean;
+      token?: string;
+      ttlMs?: number;
+    }
+  | {
+      kind: "toggle-permissions";
+      conversation: ConversationTarget;
+      token?: string;
+      ttlMs?: number;
+    }
+  | {
+      kind: "compact-thread";
+      conversation: ConversationTarget;
+      token?: string;
+      ttlMs?: number;
+    }
+  | {
+      kind: "stop-run";
+      conversation: ConversationTarget;
+      token?: string;
+      ttlMs?: number;
+    }
+  | {
+      kind: "refresh-status";
+      conversation: ConversationTarget;
+      token?: string;
+      ttlMs?: number;
+    }
+  | {
+      kind: "detach-thread";
+      conversation: ConversationTarget;
+      token?: string;
+      ttlMs?: number;
+    }
+  | {
+      kind: "show-skills";
+      conversation: ConversationTarget;
+      token?: string;
+      ttlMs?: number;
+    }
+  | {
+      kind: "show-mcp";
+      conversation: ConversationTarget;
+      token?: string;
+      ttlMs?: number;
+    }
+  | {
+      kind: "run-skill";
+      conversation: ConversationTarget;
+      skillName: string;
+      workspaceDir?: string;
+      token?: string;
+      ttlMs?: number;
+    }
+  | {
+      kind: "show-skill-help";
+      conversation: ConversationTarget;
+      skillName: string;
+      description?: string;
+      cwd?: string;
+      enabled?: boolean;
+      token?: string;
+      ttlMs?: number;
+    }
+  | {
+      kind: "show-model-picker";
+      conversation: ConversationTarget;
+      token?: string;
+      ttlMs?: number;
+    }
+  | {
       kind: "set-model";
       conversation: ConversationTarget;
       model: string;
+      returnToStatus?: boolean;
       token?: string;
       ttlMs?: number;
     }
@@ -113,6 +208,96 @@ function cloneSnapshot(value?: Partial<StoreSnapshot>): StoreSnapshot {
   };
 }
 
+function normalizePermissionsMode(value?: string | null): PermissionsMode | undefined {
+  return value === "full-access" ? "full-access" : value === "default" ? "default" : undefined;
+}
+
+function inferPermissionsModeFromLegacyFields(params: {
+  permissionsMode?: string | null;
+  appServerProfile?: string | null;
+  preferredApprovalPolicy?: string | null;
+  preferredSandbox?: string | null;
+}): PermissionsMode {
+  const explicit =
+    normalizePermissionsMode(params.permissionsMode) ??
+    normalizePermissionsMode(params.appServerProfile);
+  if (explicit) {
+    return explicit;
+  }
+  const approval = params.preferredApprovalPolicy?.trim();
+  const sandbox = params.preferredSandbox?.trim();
+  if (approval === "never" && sandbox === "danger-full-access") {
+    return "full-access";
+  }
+  return "default";
+}
+
+function normalizeConversationPreferences(
+  value: (ConversationPreferences & {
+    preferredApprovalPolicy?: string;
+    preferredSandbox?: string;
+  }) | undefined,
+): ConversationPreferences | undefined {
+  if (!value) {
+    return undefined;
+  }
+  return {
+    preferredModel: value.preferredModel,
+    preferredReasoningEffort: value.preferredReasoningEffort,
+    preferredServiceTier: value.preferredServiceTier,
+    updatedAt: value.updatedAt,
+  };
+}
+
+function normalizeSnapshot(value?: Partial<StoreSnapshot>): StoreSnapshot {
+  const snapshot = cloneSnapshot(value);
+  snapshot.version = STORE_VERSION;
+  snapshot.bindings = snapshot.bindings.map((binding) => {
+    const legacyPreferences = binding.preferences as
+      | (ConversationPreferences & {
+          preferredApprovalPolicy?: string;
+          preferredSandbox?: string;
+        })
+      | undefined;
+    return {
+      ...binding,
+      permissionsMode: inferPermissionsModeFromLegacyFields({
+        permissionsMode: (binding as StoredBinding & { permissionsMode?: string }).permissionsMode,
+        appServerProfile: (binding as StoredBinding & { appServerProfile?: string }).appServerProfile,
+        preferredApprovalPolicy: legacyPreferences?.preferredApprovalPolicy,
+        preferredSandbox: legacyPreferences?.preferredSandbox,
+      }),
+      pendingPermissionsMode:
+        normalizePermissionsMode(
+          (binding as StoredBinding & { pendingPermissionsMode?: string }).pendingPermissionsMode,
+        ) ??
+        normalizePermissionsMode(
+          (binding as StoredBinding & { pendingAppServerProfile?: string }).pendingAppServerProfile,
+        ),
+      preferences: normalizeConversationPreferences(legacyPreferences),
+    };
+  });
+  snapshot.pendingBinds = snapshot.pendingBinds.map((entry) => {
+    const legacyPreferences = entry.preferences as
+      | (ConversationPreferences & {
+          preferredApprovalPolicy?: string;
+          preferredSandbox?: string;
+        })
+      | undefined;
+    return {
+      ...entry,
+      permissionsMode: inferPermissionsModeFromLegacyFields({
+        permissionsMode: (entry as StoredPendingBind & { permissionsMode?: string }).permissionsMode,
+        appServerProfile: (entry as StoredPendingBind & { appServerProfile?: string }).appServerProfile,
+        preferredApprovalPolicy: legacyPreferences?.preferredApprovalPolicy,
+        preferredSandbox: legacyPreferences?.preferredSandbox,
+      }),
+      preferences: normalizeConversationPreferences(legacyPreferences),
+    };
+  });
+  return snapshot;
+}
+
 export class PluginStateStore {
   private snapshot = cloneSnapshot();
 
@@ -131,7 +316,7 @@ export class PluginStateStore {
     try {
       const raw = await fs.readFile(this.filePath, "utf8");
       const parsed = JSON.parse(raw) as Partial<StoreSnapshot>;
-      this.snapshot = cloneSnapshot(parsed);
+      this.snapshot = normalizeSnapshot(parsed);
       this.pruneExpired();
       await this.save();
     } catch (error) {
@@ -267,6 +452,9 @@ export class PluginStateStore {
             conversation: callback.conversation,
             workspaceDir: callback.workspaceDir,
             syncTopic: callback.syncTopic,
+            requestedModel: callback.requestedModel,
+            requestedFast: callback.requestedFast,
+            requestedYolo: callback.requestedYolo,
             token: callback.token ?? this.createCallbackToken(),
             createdAt: now,
             expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
@@ -278,6 +466,9 @@ export class PluginStateStore {
             threadId: callback.threadId,
             workspaceDir: callback.workspaceDir,
             syncTopic: callback.syncTopic,
+            requestedModel: callback.requestedModel,
+            requestedFast: callback.requestedFast,
+            requestedYolo: callback.requestedYolo,
             token: callback.token ?? this.createCallbackToken(),
             createdAt: now,
             expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
@@ -339,10 +530,123 @@ export class PluginStateStore {
                     kind: "set-model",
                     conversation: callback.conversation,
                     model: callback.model,
+                    returnToStatus: callback.returnToStatus,
                   token: callback.token ?? this.createCallbackToken(),
                   createdAt: now,
                   expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
                   }
+                : callback.kind === "toggle-fast"
+                  ? {
+                      kind: "toggle-fast",
+                      conversation: callback.conversation,
+                      token: callback.token ?? this.createCallbackToken(),
+                      createdAt: now,
+                      expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
+                    }
+                : callback.kind === "show-reasoning-picker"
+                  ? {
+                      kind: "show-reasoning-picker",
+                      conversation: callback.conversation,
+                      token: callback.token ?? this.createCallbackToken(),
+                      createdAt: now,
+                      expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
+                    }
+              : callback.kind === "set-reasoning"
+                ? {
+                    kind: "set-reasoning",
+                    conversation: callback.conversation,
+                    reasoningEffort: callback.reasoningEffort,
+                    returnToStatus: callback.returnToStatus,
+                    token: callback.token ?? this.createCallbackToken(),
+                    createdAt: now,
+                    expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
+                  }
+                  : callback.kind === "toggle-permissions"
+                    ? {
+                        kind: "toggle-permissions",
+                        conversation: callback.conversation,
+                        token: callback.token ?? this.createCallbackToken(),
+                        createdAt: now,
+                        expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
+                      }
+                    : callback.kind === "compact-thread"
+                      ? {
+                          kind: "compact-thread",
+                          conversation: callback.conversation,
+                          token: callback.token ?? this.createCallbackToken(),
+                          createdAt: now,
+                          expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
+                        }
+                    : callback.kind === "stop-run"
+                      ? {
+                          kind: "stop-run",
+                          conversation: callback.conversation,
+                          token: callback.token ?? this.createCallbackToken(),
+                          createdAt: now,
+                          expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
+                        }
+                    : callback.kind === "refresh-status"
+                      ? {
+                          kind: "refresh-status",
+                          conversation: callback.conversation,
+                          token: callback.token ?? this.createCallbackToken(),
+                          createdAt: now,
+                          expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
+                        }
+                    : callback.kind === "detach-thread"
+                      ? {
+                          kind: "detach-thread",
+                          conversation: callback.conversation,
+                          token: callback.token ?? this.createCallbackToken(),
+                          createdAt: now,
+                          expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
+                        }
+                    : callback.kind === "show-skills"
+                      ? {
+                          kind: "show-skills",
+                          conversation: callback.conversation,
+                          token: callback.token ?? this.createCallbackToken(),
+                          createdAt: now,
+                          expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
+                        }
+                    : callback.kind === "show-mcp"
+                      ? {
+                          kind: "show-mcp",
+                          conversation: callback.conversation,
+                          token: callback.token ?? this.createCallbackToken(),
+                          createdAt: now,
+                          expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
+                        }
+                    : callback.kind === "run-skill"
+                      ? {
+                          kind: "run-skill",
+                          conversation: callback.conversation,
+                          skillName: callback.skillName,
+                          workspaceDir: callback.workspaceDir,
+                          token: callback.token ?? this.createCallbackToken(),
+                          createdAt: now,
+                          expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
+                        }
+                    : callback.kind === "show-skill-help"
+                      ? {
+                          kind: "show-skill-help",
+                          conversation: callback.conversation,
+                          skillName: callback.skillName,
+                          description: callback.description,
+                          cwd: callback.cwd,
+                          enabled: callback.enabled,
+                          token: callback.token ?? this.createCallbackToken(),
+                          createdAt: now,
+                          expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
+                        }
+                    : callback.kind === "show-model-picker"
+                      ? {
+                          kind: "show-model-picker",
+                          conversation: callback.conversation,
+                          token: callback.token ?? this.createCallbackToken(),
+                          createdAt: now,
+                          expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
+                        }
                 : callback.kind === "reply-text"
                   ? {
                       kind: "reply-text",

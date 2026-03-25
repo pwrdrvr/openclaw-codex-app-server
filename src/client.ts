@@ -4,6 +4,7 @@ import readline from "node:readline";
 import { promisify } from "node:util";
 import WebSocket from "ws";
 import type { PluginLogger } from "openclaw/plugin-sdk";
+import { modelSupportsFast, modelSupportsReasoning } from "./model-capabilities.js";
 import { createPendingInputState, parseCodexUserInput } from "./pending-input.js";
 import {
   CALLBACK_TTL_MS,
@@ -19,6 +20,7 @@ import {
   type PendingInputAction,
   type PendingInputState,
   type PluginSettings,
+  type PermissionsMode,
   type RateLimitSummary,
   type ReviewResult,
   type ReviewTarget,
@@ -997,12 +999,21 @@ function buildThreadDiscoveryFilter(filter?: string, workspaceDir?: string): unk
 function buildThreadResumePayloads(params: {
   threadId: string;
   model?: string;
+  reasoningEffort?: string;
   cwd?: string;
   serviceTier?: string | null;
+  approvalPolicy?: string;
+  sandbox?: string;
 }): Array<Record<string, unknown>> {
-  const base: Record<string, unknown> = { threadId: params.threadId };
+  const base: Record<string, unknown> = {
+    threadId: params.threadId,
+    persistExtendedHistory: false,
+  };
   if (params.model?.trim()) {
     base.model = params.model.trim();
+  }
+  if (params.reasoningEffort?.trim()) {
+    base.reasoningEffort = params.reasoningEffort.trim();
   }
   if (params.cwd?.trim()) {
     base.cwd = params.cwd.trim();
@@ -1010,7 +1021,34 @@ function buildThreadResumePayloads(params: {
   if (params.serviceTier !== undefined) {
     base.serviceTier = params.serviceTier;
   }
+  if (params.approvalPolicy?.trim()) {
+    base.approvalPolicy = params.approvalPolicy.trim();
+  }
+  if (params.sandbox?.trim()) {
+    base.sandbox = params.sandbox.trim();
+  }
   return [base];
+}
+
+function normalizeSandboxMode(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const normalized = trimmed.toLowerCase();
+  if (normalized === "workspacewrite" || normalized === "workspace_write") {
+    return "workspace-write";
+  }
+  if (normalized === "readonly" || normalized === "read_only") {
+    return "read-only";
+  }
+  if (normalized === "dangerfullaccess" || normalized === "danger_full_access") {
+    return "danger-full-access";
+  }
+  if (normalized === "externalsandbox" || normalized === "external_sandbox") {
+    return "external-sandbox";
+  }
+  return trimmed;
 }
 
 function buildTurnInput(prompt: string): Array<Record<string, unknown>> {
@@ -1073,6 +1111,7 @@ function buildTurnStartPayloads(params: {
   threadId: string;
   prompt: string;
   model?: string;
+  serviceTier?: string;
   collaborationMode?: CollaborationMode;
   collaborationFallbackModel?: string;
 }): unknown[] {
@@ -1082,6 +1121,9 @@ function buildTurnStartPayloads(params: {
   };
   if (params.model?.trim()) {
     base.model = params.model.trim();
+  }
+  if (params.serviceTier?.trim()) {
+    base.serviceTier = params.serviceTier.trim();
   }
   if (!params.collaborationMode) {
     return [base];
@@ -1552,6 +1594,24 @@ function extractModelSummaries(value: unknown): ModelSummary[] {
         current:
           pickBoolean(record, ["current", "selected", "isCurrent", "is_current", "active"]) ??
           existing?.current,
+        supportsReasoning:
+          pickBoolean(record, [
+            "supportsReasoning",
+            "supports_reasoning",
+            "supportsReasoningEffort",
+            "supports_reasoning_effort",
+          ]) ??
+          existing?.supportsReasoning ??
+          modelSupportsReasoning(id),
+        supportsFast:
+          pickBoolean(record, [
+            "supportsFast",
+            "supports_fast",
+            "supportsServiceTierFast",
+            "supports_service_tier_fast",
+          ]) ??
+          existing?.supportsFast ??
+          modelSupportsFast(id),
       });
     }
     for (const key of ["models", "items", "data", "results", "entries", "available"]) {
@@ -1669,7 +1729,7 @@ function extractMcpServerSummaries(value: unknown): McpServerSummary[] {
 
 function summarizeSandboxPolicy(value: unknown): string | undefined {
   if (typeof value === "string") {
-    return value.trim() || undefined;
+    return normalizeSandboxMode(value);
   }
   const record = asRecord(value);
   if (!record) {
@@ -1687,7 +1747,7 @@ function summarizeSandboxPolicy(value: unknown): string | undefined {
   if ("externalSandbox" in record || "external_sandbox" in record) {
     return "external-sandbox";
   }
-  return pickString(record, ["mode", "type", "kind", "name"]);
+  return normalizeSandboxMode(pickString(record, ["mode", "type", "kind", "name"]));
 }
 
 function extractThreadState(value: unknown): ThreadState {
@@ -2346,6 +2406,22 @@ export function isMissingThreadError(error: unknown): boolean {
   );
 }
 
+function buildFullAccessPluginSettings(settings: PluginSettings): PluginSettings | null {
+  if (settings.transport !== "stdio") {
+    return null;
+  }
+  return {
+    ...settings,
+    args: [
+      ...settings.args,
+      "-c",
+      'approval_policy="never"',
+      "-c",
+      'sandbox_mode="danger-full-access"',
+    ],
+  };
+}
+
 export class CodexAppServerClient {
   private connectionPromise:
     | Promise<{
@@ -2738,6 +2814,30 @@ export class CodexAppServerClient {
     );
   }
 
+  async setThreadPermissions(params: {
+    sessionKey?: string;
+    threadId: string;
+    approvalPolicy: string;
+    sandbox: string;
+  }): Promise<ThreadState> {
+    return await this.withClient(
+      { sessionKey: params.sessionKey },
+      async ({ client, settings }) => {
+        const result = await requestWithFallbacks({
+          client,
+          methods: ["thread/resume"],
+          payloads: buildThreadResumePayloads({
+            threadId: params.threadId,
+            approvalPolicy: params.approvalPolicy,
+            sandbox: params.sandbox,
+          }),
+          timeoutMs: settings.requestTimeoutMs,
+        });
+        return extractThreadState(result);
+      },
+    );
+  }
+
   async compactThread(params: {
     sessionKey?: string;
     threadId: string;
@@ -2870,6 +2970,11 @@ export class CodexAppServerClient {
     workspaceDir: string;
     threadId: string;
     runId: string;
+    model?: string;
+    reasoningEffort?: string;
+    serviceTier?: string | null;
+    approvalPolicy?: string;
+    sandbox?: string;
     target: ReviewTarget;
     onPendingInput?: (state: PendingInputState | null) => Promise<void> | void;
     onInterrupted?: () => Promise<void> | void;
@@ -2911,7 +3016,14 @@ export class CodexAppServerClient {
         await requestWithFallbacks({
           client,
           methods: ["thread/resume"],
-          payloads: [{ threadId: reviewThreadId }],
+          payloads: buildThreadResumePayloads({
+            threadId: reviewThreadId,
+            model: params.model,
+            reasoningEffort: params.reasoningEffort,
+            serviceTier: params.serviceTier,
+            approvalPolicy: params.approvalPolicy,
+            sandbox: params.sandbox,
+          }),
           timeoutMs: this.settings.requestTimeoutMs,
         }).catch(() => undefined);
         const result = await requestWithFallbacks({
@@ -3132,6 +3244,10 @@ export class CodexAppServerClient {
     runId: string;
     existingThreadId?: string;
     model?: string;
+    reasoningEffort?: string;
+    serviceTier?: string;
+    approvalPolicy?: string;
+    sandbox?: string;
     collaborationMode?: CollaborationMode;
     onPendingInput?: (state: PendingInputState | null) => Promise<void> | void;
     onFileEdits?: (text: string) => Promise<void> | void;
@@ -3397,11 +3513,34 @@ export class CodexAppServerClient {
           this.logger.debug(
             `codex turn thread created run=${params.runId} thread=${threadId} model=${threadModel || "<none>"} reasoningEffort=${threadReasoningEffort || "<none>"}`,
           );
+          if (params.serviceTier || params.approvalPolicy || params.sandbox) {
+            const resumed = await requestWithFallbacks({
+              client,
+              methods: ["thread/resume"],
+              payloads: buildThreadResumePayloads({
+                threadId,
+                serviceTier: params.serviceTier,
+                approvalPolicy: params.approvalPolicy,
+                sandbox: params.sandbox,
+              }),
+              timeoutMs: this.settings.requestTimeoutMs,
+            });
+            const resumedState = extractThreadState(resumed);
+            threadModel = resumedState.model?.trim() || threadModel;
+            threadReasoningEffort =
+              resumedState.reasoningEffort?.trim() || threadReasoningEffort;
+          }
         } else {
           const resumed = await requestWithFallbacks({
             client,
             methods: ["thread/resume"],
-            payloads: [{ threadId }],
+            payloads: buildThreadResumePayloads({
+              threadId,
+              model: params.model,
+              serviceTier: params.serviceTier,
+              approvalPolicy: params.approvalPolicy,
+              sandbox: params.sandbox,
+            }),
             timeoutMs: this.settings.requestTimeoutMs,
           }).catch(() => undefined);
           const resumedState = resumed ? extractThreadState(resumed) : undefined;
@@ -3414,13 +3553,14 @@ export class CodexAppServerClient {
         }
         const synthesizedDefaultMode = buildDefaultCollaborationMode({
           model: params.model?.trim() || threadModel,
-          reasoningEffort: threadReasoningEffort,
+          reasoningEffort: params.reasoningEffort?.trim() || threadReasoningEffort,
         });
         const collaborationMode = params.collaborationMode ?? synthesizedDefaultMode;
         const turnStartPayloads = buildTurnStartPayloads({
           threadId,
           prompt: params.prompt,
           model: params.model,
+          serviceTier: params.serviceTier,
           collaborationMode,
           collaborationFallbackModel: params.model?.trim() || threadModel,
         });
@@ -3606,6 +3746,139 @@ export class CodexAppServerClient {
       isAwaitingInput: () => awaitingInput,
       getThreadId: () => threadId || undefined,
     };
+  }
+}
+
+type ProfiledParams<T> = T & { profile?: PermissionsMode };
+
+export class CodexAppServerModeClient {
+  private readonly clients: Record<PermissionsMode, CodexAppServerClient | null>;
+
+  constructor(
+    settings: PluginSettings,
+    logger: PluginLogger,
+  ) {
+    const fullAccessSettings = buildFullAccessPluginSettings(settings);
+    this.clients = {
+      default: new CodexAppServerClient(settings, logger),
+      "full-access": fullAccessSettings ? new CodexAppServerClient(fullAccessSettings, logger) : null,
+    };
+  }
+
+  hasProfile(profile: PermissionsMode): boolean {
+    return this.clients[profile] != null;
+  }
+
+  private getClient(profile: PermissionsMode | undefined): CodexAppServerClient {
+    const resolvedProfile = profile ?? "default";
+    const client = this.clients[resolvedProfile];
+    if (!client) {
+      throw new Error(`Codex app-server mode unavailable: ${resolvedProfile}`);
+    }
+    return client;
+  }
+
+  async logStartupProbe(): Promise<void> {
+    await this.getClient("default").logStartupProbe();
+    if (this.hasProfile("full-access")) {
+      await this.getClient("full-access").logStartupProbe();
+    }
+  }
+
+  async close(): Promise<void> {
+    await Promise.all(
+      (Object.values(this.clients).filter(Boolean) as CodexAppServerClient[]).map((client) =>
+        client.close().catch(() => undefined),
+      ),
+    );
+  }
+
+  async listThreads(params: ProfiledParams<Parameters<CodexAppServerClient["listThreads"]>[0]>) {
+    return await this.getClient(params.profile).listThreads(params);
+  }
+
+  async startThread(params: ProfiledParams<Parameters<CodexAppServerClient["startThread"]>[0]>) {
+    return await this.getClient(params.profile).startThread(params);
+  }
+
+  async listModels(params: ProfiledParams<Parameters<CodexAppServerClient["listModels"]>[0]>) {
+    return await this.getClient(params.profile).listModels(params);
+  }
+
+  async listSkills(params: ProfiledParams<Parameters<CodexAppServerClient["listSkills"]>[0]>) {
+    return await this.getClient(params.profile).listSkills(params);
+  }
+
+  async listExperimentalFeatures(
+    params: ProfiledParams<Parameters<CodexAppServerClient["listExperimentalFeatures"]>[0]>,
+  ) {
+    return await this.getClient(params.profile).listExperimentalFeatures(params);
+  }
+
+  async listMcpServers(
+    params: ProfiledParams<Parameters<CodexAppServerClient["listMcpServers"]>[0]>,
+  ) {
+    return await this.getClient(params.profile).listMcpServers(params);
+  }
+
+  async readRateLimits(
+    params: ProfiledParams<Parameters<CodexAppServerClient["readRateLimits"]>[0]>,
+  ) {
+    return await this.getClient(params.profile).readRateLimits(params);
+  }
+
+  async readAccount(params: ProfiledParams<Parameters<CodexAppServerClient["readAccount"]>[0]>) {
+    return await this.getClient(params.profile).readAccount(params);
+  }
+
+  async readThreadState(
+    params: ProfiledParams<Parameters<CodexAppServerClient["readThreadState"]>[0]>,
+  ) {
+    return await this.getClient(params.profile).readThreadState(params);
+  }
+
+  async setThreadName(
+    params: ProfiledParams<Parameters<CodexAppServerClient["setThreadName"]>[0]>,
+  ) {
+    return await this.getClient(params.profile).setThreadName(params);
+  }
+
+  async setThreadModel(
+    params: ProfiledParams<Parameters<CodexAppServerClient["setThreadModel"]>[0]>,
+  ) {
+    return await this.getClient(params.profile).setThreadModel(params);
+  }
+
+  async setThreadServiceTier(
+    params: ProfiledParams<Parameters<CodexAppServerClient["setThreadServiceTier"]>[0]>,
+  ) {
+    return await this.getClient(params.profile).setThreadServiceTier(params);
+  }
+
+  async setThreadPermissions(
+    params: ProfiledParams<Parameters<CodexAppServerClient["setThreadPermissions"]>[0]>,
+  ) {
+    return await this.getClient(params.profile).setThreadPermissions(params);
+  }
+
+  async compactThread(
+    params: ProfiledParams<Parameters<CodexAppServerClient["compactThread"]>[0]>,
+  ) {
+    return await this.getClient(params.profile).compactThread(params);
+  }
+
+  async readThreadContext(
+    params: ProfiledParams<Parameters<CodexAppServerClient["readThreadContext"]>[0]>,
+  ) {
+    return await this.getClient(params.profile).readThreadContext(params);
+  }
+
+  startReview(params: ProfiledParams<Parameters<CodexAppServerClient["startReview"]>[0]>) {
+    return this.getClient(params.profile).startReview(params);
+  }
+
+  startTurn(params: ProfiledParams<Parameters<CodexAppServerClient["startTurn"]>[0]>) {
+    return this.getClient(params.profile).startTurn(params);
   }
 }
 

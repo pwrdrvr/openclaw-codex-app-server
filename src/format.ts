@@ -1,4 +1,5 @@
 import os from "node:os";
+import { formatModelCapabilitySuffix } from "./model-capabilities.js";
 import type {
   AccountSummary,
   ContextUsageSnapshot,
@@ -315,10 +316,10 @@ function formatCodexFastModeValue(value: string | undefined): string {
   if (!normalized) {
     return "off";
   }
-  if (normalized === "default" || normalized === "auto") {
+  if (normalized === "default" || normalized === "auto" || normalized === "flex") {
     return "off";
   }
-  if (normalized === "fast" || normalized === "priority") {
+  if (normalized === "fast") {
     return "on";
   }
   return normalized;
@@ -500,14 +501,18 @@ export function formatCodexStatusText(params: {
   bindingActive?: boolean;
   contextUsage?: ContextUsageSnapshot;
   planMode?: boolean;
+  permissionNote?: string;
 }): string {
   const lines = [];
-  lines.push(`Binding: ${params.bindingActive ? "active" : "none"}`);
+  const bindingThreadName = params.threadState?.threadName?.trim();
+  const bindingProjectName = getProjectName(params.projectFolder ?? params.worktreeFolder);
+  lines.push(
+    params.bindingActive
+      ? `Binding: ${bindingThreadName ?? "active"}${bindingProjectName ? ` (${bindingProjectName})` : ""}`
+      : "Binding: none",
+  );
   if (params.pluginVersion?.trim()) {
     lines.push(`Plugin version: ${params.pluginVersion.trim()}`);
-  }
-  if (params.threadState?.threadName?.trim()) {
-    lines.push(`Thread: ${params.threadState.threadName.trim()}`);
   }
   if (params.threadState) {
     lines.push(`Model: ${formatCodexModelText(params.threadState)}`);
@@ -532,6 +537,9 @@ export function formatCodexStatusText(params: {
   });
   if (permissions) {
     lines.push(`Permissions: ${permissions}`);
+  }
+  if (params.permissionNote?.trim()) {
+    lines.push(params.permissionNote.trim());
   }
   lines.push(`Account: ${formatCodexAccountText(params.account)}`);
   const threadId = params.threadState?.threadId?.trim();
@@ -610,7 +618,7 @@ export function formatModels(models: ModelSummary[], state?: ThreadState): strin
   if (models.length === 0) {
     return state?.model ? `Current model: ${state.model}` : "No Codex models reported.";
   }
-  const currentModel = models.find((model) => model.current)?.id || state?.model;
+  const currentModel = state?.model || models.find((model) => model.current)?.id;
   const lines = [];
   if (currentModel) {
     lines.push(`Current model: ${currentModel}`);
@@ -618,8 +626,9 @@ export function formatModels(models: ModelSummary[], state?: ThreadState): strin
   lines.push(
     "Available models:",
     ...models.slice(0, 20).map((model) => {
-      const current = model.current || model.id === state?.model ? " (current)" : "";
-      return `- ${model.id}${current}`;
+      const current =
+        model.id === state?.model || (!state?.model && model.current) ? " (current)" : "";
+      return `- ${model.id}${current}${formatModelCapabilitySuffix(model)}`;
     }),
   );
   return lines.join("\n");
@@ -651,6 +660,56 @@ export function formatSkills(params: {
   if (skills.length > 20) {
     lines.push(`- …and ${skills.length - 20} more`);
   }
+  return lines.join("\n");
+}
+
+export function filterSkillsByQuery(skills: SkillSummary[], filter?: string): SkillSummary[] {
+  const normalizedFilter = filter?.trim().toLowerCase();
+  if (!normalizedFilter) {
+    return [...skills];
+  }
+  return skills.filter((skill) => {
+    const haystack = [skill.name, skill.description, skill.cwd].filter(Boolean).join("\n");
+    return haystack.toLowerCase().includes(normalizedFilter);
+  });
+}
+
+export function formatSkillsPickerText(params: {
+  workspaceDir: string;
+  skills: SkillSummary[];
+  page: number;
+  totalPages: number;
+  mode: "run" | "help";
+  filter?: string;
+}): string {
+  if (params.skills.length === 0) {
+    return params.filter?.trim()
+      ? `No Codex skills matched "${params.filter.trim()}".`
+      : `No Codex skills found for ${params.workspaceDir}.`;
+  }
+  const modeLabel = params.mode === "run" ? "Click to Run" : "Click to Print Help";
+  const lines = [
+    "Codex skills. Type `$skill-name` in this chat to run one directly.",
+    `Mode: ${modeLabel}. Page ${params.page + 1}/${params.totalPages}.`,
+  ];
+  if (params.filter?.trim()) {
+    lines.push(`Filter: ${params.filter.trim()}`);
+  }
+  return lines.join("\n");
+}
+
+export function formatSkillHelpText(skill: SkillSummary): string {
+  const lines = [`Skill: $${skill.name}`];
+  if (skill.description?.trim()) {
+    lines.push(skill.description.trim());
+  }
+  if (skill.cwd?.trim()) {
+    lines.push(`Workspace: ${skill.cwd.trim()}`);
+  }
+  if (skill.enabled === false) {
+    lines.push("Status: disabled");
+  }
+  lines.push(`Type \`$${skill.name}\` in this chat to run it.`);
   return lines.join("\n");
 }
 

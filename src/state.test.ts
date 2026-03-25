@@ -243,4 +243,128 @@ describe("state store", () => {
       }),
     ).toBeNull();
   });
+
+  it("persists conversation preferences in bindings across reload", async () => {
+    const dir = await makeStoreDir();
+    const store = await makeStore(dir);
+    const updatedAt = Date.now();
+    await store.upsertBinding({
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:chan-1",
+      },
+      sessionKey: buildPluginSessionKey("thread-1"),
+      threadId: "thread-1",
+      workspaceDir: "/tmp/work",
+      permissionsMode: "full-access",
+      preferences: {
+        preferredModel: "openai/gpt-5.3",
+        preferredServiceTier: "fast",
+        updatedAt,
+      },
+      updatedAt,
+    });
+
+    const reloaded = await makeStore(dir);
+    const binding = reloaded.getBinding({
+      channel: "discord",
+      accountId: "default",
+      conversationId: "channel:chan-1",
+    });
+
+    expect(binding?.preferences).toEqual({
+      preferredModel: "openai/gpt-5.3",
+      preferredServiceTier: "fast",
+      updatedAt,
+    });
+    expect(binding?.permissionsMode).toBe("full-access");
+  });
+
+  it("migrates legacy profile and permission fields into permissions mode", async () => {
+    const dir = await makeStoreDir();
+    const stateDir = path.join(dir, "openclaw-codex-app-server");
+    const bindingUpdatedAt = Date.now();
+    const pendingBindUpdatedAt = bindingUpdatedAt + 1;
+    await fs.mkdir(stateDir, { recursive: true });
+    await fs.writeFile(
+      path.join(stateDir, "state.json"),
+      `${JSON.stringify({
+        version: 1,
+        bindings: [
+          {
+            conversation: {
+              channel: "discord",
+              accountId: "default",
+              conversationId: "channel:chan-1",
+            },
+            sessionKey: buildPluginSessionKey("thread-1"),
+            threadId: "thread-1",
+            workspaceDir: "/tmp/work",
+            appServerProfile: "default",
+            pendingAppServerProfile: "full-access",
+            preferences: {
+              preferredModel: "openai/gpt-5.3",
+              preferredReasoningEffort: "high",
+              preferredServiceTier: "fast",
+              preferredApprovalPolicy: "never",
+              preferredSandbox: "danger-full-access",
+              updatedAt: bindingUpdatedAt,
+            },
+            updatedAt: bindingUpdatedAt,
+          },
+        ],
+        pendingBinds: [
+          {
+            conversation: {
+              channel: "telegram",
+              accountId: "default",
+              conversationId: "123",
+            },
+            threadId: "thread-2",
+            workspaceDir: "/tmp/pending",
+            appServerProfile: "full-access",
+            preferences: {
+              preferredModel: "openai/gpt-5.4",
+              preferredServiceTier: "default",
+              preferredApprovalPolicy: "never",
+              preferredSandbox: "danger-full-access",
+              updatedAt: pendingBindUpdatedAt,
+            },
+            updatedAt: pendingBindUpdatedAt,
+          },
+        ],
+        pendingRequests: [],
+        callbacks: [],
+      }, null, 2)}\n`,
+      "utf8",
+    );
+
+    const reloaded = await makeStore(dir);
+    const binding = reloaded.getBinding({
+      channel: "discord",
+      accountId: "default",
+      conversationId: "channel:chan-1",
+    });
+    const pendingBind = reloaded.getPendingBind({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+    });
+
+    expect(binding?.permissionsMode).toBe("default");
+    expect(binding?.pendingPermissionsMode).toBe("full-access");
+    expect(binding?.preferences).toEqual({
+      preferredModel: "openai/gpt-5.3",
+      preferredReasoningEffort: "high",
+      preferredServiceTier: "fast",
+      updatedAt: bindingUpdatedAt,
+    });
+    expect(pendingBind?.permissionsMode).toBe("full-access");
+    expect(pendingBind?.preferences).toEqual({
+      preferredModel: "openai/gpt-5.4",
+      preferredServiceTier: "default",
+      updatedAt: pendingBindUpdatedAt,
+    });
+  });
 });

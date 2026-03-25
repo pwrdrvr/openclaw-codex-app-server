@@ -133,13 +133,16 @@ describe("buildThreadResumePayloads", () => {
       __testing.buildThreadResumePayloads({
         threadId: "thread-123",
         model: "gpt-5.4",
+        reasoningEffort: "high",
         cwd: "/tmp/workspace",
         serviceTier: "default",
       }),
     ).toEqual([
       {
         threadId: "thread-123",
+        persistExtendedHistory: false,
         model: "gpt-5.4",
+        reasoningEffort: "high",
         cwd: "/tmp/workspace",
         serviceTier: "default",
       },
@@ -192,10 +195,152 @@ describe("CodexAppServerClient.setThreadModel", () => {
       {
         threadId: "thread-123",
         model: "gpt-5.4",
+        persistExtendedHistory: false,
       },
       1_000,
     );
     expect(state.cwd).toBe("/repo/original");
+  });
+});
+
+describe("CodexAppServerClient.setThreadPermissions", () => {
+  it("passes approval policy and sandbox through thread/resume", async () => {
+    const request = vi.fn(async () => ({
+      threadId: "thread-123",
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+    }));
+    const client = new CodexAppServerClient(
+      {
+        enabled: true,
+        transport: "stdio",
+        command: "codex",
+        args: [],
+        requestTimeoutMs: 1_000,
+      },
+      {
+        debug: vi.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      },
+    );
+    (client as any).ensureConnected = vi.fn(async () => ({
+      client: {
+        connect: vi.fn(),
+        close: vi.fn(),
+        notify: vi.fn(),
+        request,
+        setNotificationHandler: vi.fn(),
+        setRequestHandler: vi.fn(),
+      },
+      initializeResult: {},
+    }));
+
+    const state = await client.setThreadPermissions({
+      sessionKey: "session-123",
+      threadId: "thread-123",
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+    });
+
+    expect(request).toHaveBeenCalledWith(
+      "thread/resume",
+      {
+        threadId: "thread-123",
+        approvalPolicy: "never",
+        sandbox: "danger-full-access",
+        persistExtendedHistory: false,
+      },
+      1_000,
+    );
+    expect(state.approvalPolicy).toBe("never");
+    expect(state.sandbox).toBe("danger-full-access");
+  });
+});
+
+describe("CodexAppServerClient.startReview", () => {
+  it("reapplies saved thread settings before starting review", async () => {
+    const request = vi.fn(async (method: string) => {
+      if (method === "review/start") {
+        return {
+          reviewThreadId: "thread-123",
+          runId: "turn-123",
+        };
+      }
+      return {
+        threadId: "thread-123",
+        model: "gpt-5.4",
+        reasoningEffort: "high",
+        serviceTier: "fast",
+        approvalPolicy: "never",
+        sandbox: "workspace-write",
+      };
+    });
+    const client = new CodexAppServerClient(
+      {
+        enabled: true,
+        transport: "stdio",
+        command: "codex",
+        args: [],
+        requestTimeoutMs: 1_000,
+      },
+      {
+        debug: vi.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      },
+    );
+    (client as any).ensureConnected = vi.fn(async () => ({
+      client: {
+        connect: vi.fn(),
+        close: vi.fn(),
+        notify: vi.fn(),
+        request,
+        setNotificationHandler: vi.fn(),
+        setRequestHandler: vi.fn(),
+      },
+      initializeResult: {},
+    }));
+
+    client.startReview({
+      sessionKey: "session-123",
+      workspaceDir: "/repo/openclaw",
+      threadId: "thread-123",
+      runId: "review-1",
+      model: "gpt-5.4",
+      reasoningEffort: "high",
+      serviceTier: "fast",
+      approvalPolicy: "never",
+      sandbox: "workspace-write",
+      target: { type: "uncommittedChanges" },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(request).toHaveBeenCalledWith(
+      "thread/resume",
+      {
+        threadId: "thread-123",
+        persistExtendedHistory: false,
+        model: "gpt-5.4",
+        reasoningEffort: "high",
+        serviceTier: "fast",
+        approvalPolicy: "never",
+        sandbox: "workspace-write",
+      },
+      1_000,
+    );
+    expect(request).toHaveBeenCalledWith(
+      "review/start",
+      {
+        threadId: "thread-123",
+        target: { type: "uncommittedChanges" },
+        delivery: "inline",
+      },
+      1_000,
+    );
   });
 });
 

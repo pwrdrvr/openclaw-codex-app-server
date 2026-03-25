@@ -51,16 +51,17 @@ Pre-release packages are published on matching npm dist-tags instead of `latest`
 
 - Uses your existing local Codex CLI setup instead of a separate hosted bridge.
 - Feels natural in chat: bind once with `/cas_resume`, then just talk.
-- Keeps useful controls close at hand with `/cas_status`, `/cas_plan`, `/cas_review`, `/cas_model`, and more.
+- Keeps useful controls close at hand with `/cas_status`, `/cas_plan`, `/cas_review`, and more.
 - Works well for Telegram and Discord conversations that you want tied to a real Codex thread.
 
 ## Typical Workflow
 
 1. Run `/cas_resume` in the conversation you want to bind.
 2. Use the picker buttons, click `New`, or pass a filter like `/cas_resume release-fix`, `/cas_resume --projects`, or `/cas_resume --new openclaw`.
-3. Send normal chat messages once the thread is bound.
-4. Use control commands such as `/cas_status`, `/cas_plan`, `/cas_review`, `/cas_model`, and `/cas_stop` as needed.
-5. If you leave plan mode through the normal `Implement this plan` button, you do not need `/cas_plan off`; use `/cas_plan off` only when you want to exit planning manually instead.
+3. Optionally set model, fast mode, or permissions while binding with flags like `/cas_resume --model gpt-5.4 --fast --yolo`.
+4. Send normal chat messages once the thread is bound.
+5. Use `/cas_status` to inspect or adjust the binding in place, including model, reasoning, fast mode, permissions, compact, and stop controls.
+6. If you leave plan mode through the normal `Implement this plan` button, you do not need `/cas_plan off`; use `/cas_plan off` only when you want to exit planning manually instead.
 
 ## Command Reference
 
@@ -73,8 +74,14 @@ Pre-release packages are published on matching npm dist-tags instead of `latest`
 | `/cas_resume --all` | Search recent threads across projects. | Useful when the thread is not in the current workspace. |
 | `/cas_resume --cwd ~/github/openclaw` | Restrict browsing/search to one workspace. | `--cwd` accepts an absolute path or `~/...`. |
 | `/cas_resume --sync` | Resume and try to sync the chat/topic name to the Codex thread. | You can combine this with other flags. |
+| `/cas_resume --model gpt-5.4` | Resume or create a thread with a preferred model. | The preference is saved on the binding and reused on later turns. |
+| `/cas_resume --fast`, `/cas_resume --no-fast` | Set fast mode while binding or creating a thread. | Fast mode is only available on supported models such as GPT-5.4+. |
+| `/cas_resume --yolo`, `/cas_resume --no-yolo` | Set permissions mode while binding or creating a thread. | `--yolo` selects Full Access. |
 | `/cas_resume release-fix` | Resume a matching thread by title or id. | If more than one thread matches, you get buttons to choose. |
-| `/cas_status` | Show the current binding and thread state. | Includes thread id, model, workspace, sandbox, and permissions when available. |
+| `/cas_status` | Show the current binding, thread state, and interactive controls. | Includes model, reasoning, fast mode, permissions, compact, and stop buttons. |
+| `/cas_status --model gpt-5.4` | Change the preferred model and refresh the status card. | Works on the current binding. |
+| `/cas_status --fast`, `/cas_status --no-fast` | Change fast mode and refresh the status card. | Fast mode is only available on supported models such as GPT-5.4+. |
+| `/cas_status --yolo`, `/cas_status --no-yolo` | Change permissions mode and refresh the status card. | `--yolo` selects Full Access. |
 | `/cas_detach` | Unbind this conversation from Codex. | Stops routing plain text from this conversation into the bound thread. |
 | `/cas_stop` | Interrupt the active Codex run. | Only applies when a turn is currently in progress. |
 | `/cas_steer <message>` | Send follow-up steer text to an active run. | Example: `/cas_steer focus on the failing tests first` |
@@ -88,11 +95,6 @@ Pre-release packages are published on matching npm dist-tags instead of `latest`
 | `/cas_experimental` | List experimental features reported by Codex. | Read-only. |
 | `/cas_mcp` | List configured MCP servers. | Shows auth state and counts for tools/resources/templates. |
 | `/cas_mcp github` | Filter MCP servers. | Matches name and auth status. |
-| `/cas_fast` | Toggle fast mode for the bound thread. | Equivalent to switching the service tier between default and fast. |
-| `/cas_fast on`, `/cas_fast off`, `/cas_fast status` | Set or inspect fast mode explicitly. | Example: `/cas_fast status` |
-| `/cas_model` | List models and show model-selection buttons. | If the conversation is not bound yet, it lists models only. |
-| `/cas_model gpt-5.4` | Set the model for the bound thread. | Requires an existing binding. |
-| `/cas_permissions` | Show account, rate-limit, and thread permission information. | Works with or without a current binding. |
 | `/cas_init ...` | Forward `/init` to Codex. | Sends the alias straight through to the App Server. |
 | `/cas_diff ...` | Forward `/diff` to Codex. | Sends the alias straight through to the App Server. |
 | `/cas_rename <new name>` | Rename the bound Codex thread. | Example: `/cas_rename approval flow cleanup` |
@@ -115,6 +117,15 @@ Pre-release packages are published on matching npm dist-tags instead of `latest`
 ### `/cas_status`
 
 <img width="973" height="938" alt="image" src="https://github.com/user-attachments/assets/203796f7-114d-4a13-804d-404504c2546a" />
+
+The status card is the main control surface once a conversation is bound. It shows the current binding state and provides buttons for:
+
+- model selection
+- reasoning selection
+- fast mode toggle when the current model supports it
+- permissions toggle between Default and Full Access
+- compaction
+- stopping the active run
 
 ### Run `npm view openclaw-codex-app-server` and prompt to exit sandbox
 
