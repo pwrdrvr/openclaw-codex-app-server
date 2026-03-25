@@ -449,6 +449,20 @@ export type CallbackAction =
     }
   | {
       token: string;
+      kind: "refresh-status";
+      conversation: ConversationRef;
+      createdAt: number;
+      expiresAt: number;
+    }
+  | {
+      token: string;
+      kind: "detach-thread";
+      conversation: ConversationRef;
+      createdAt: number;
+      expiresAt: number;
+    }
+  | {
+      token: string;
       kind: "show-skills";
       conversation: ConversationRef;
       createdAt: number;

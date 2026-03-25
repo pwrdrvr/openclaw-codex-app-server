@@ -146,6 +146,7 @@ type PickerResponders = {
     | { status: "pending"; reply: ReplyPayload }
     | { status: "error"; message: string }
   >;
+  detachConversationBinding?: () => Promise<{ removed: boolean }>;
 };
 
 const DELAYED_QUESTIONNAIRE_NOTE_THRESHOLD_MS = 15 * 60_000;
@@ -1128,6 +1129,7 @@ export class CodexPluginController {
         }
         return result;
       },
+      detachConversationBinding: bindingApi.detachConversationBinding,
     });
   }
 
@@ -1297,6 +1299,7 @@ export class CodexPluginController {
           }
           return result;
         },
+        detachConversationBinding: bindingApi.detachConversationBinding,
       });
     } catch (error) {
       const detail = error instanceof Error ? error.stack ?? error.message : String(error);
@@ -1693,19 +1696,7 @@ export class CodexPluginController {
         if (!card.buttons || !conversation) {
           return { text };
         }
-        if (isDiscordChannel(conversation.channel)) {
-          try {
-            await this.sendReply(conversation, {
-              text,
-              buttons: card.buttons,
-            });
-            return { text: "Sent Codex status controls to this Discord conversation." };
-          } catch (error) {
-            this.api.logger.warn(`codex discord status card send failed: ${String(error)}`);
-            return { text };
-          }
-        }
-        return buildReplyWithButtons(text, card.buttons);
+        return await this.sendStatusCardCommandReply(conversation, binding, text, card.buttons);
       }
       const nextPreferences = this.buildBindingPreferencesWithOverrides(
         binding.preferences,
@@ -1742,19 +1733,7 @@ export class CodexPluginController {
     if (!card.buttons || !conversation) {
       return { text };
     }
-    if (isDiscordChannel(conversation.channel)) {
-      try {
-        await this.sendReply(conversation, {
-          text,
-          buttons: card.buttons,
-        });
-        return { text: "Sent Codex status controls to this Discord conversation." };
-      } catch (error) {
-        this.api.logger.warn(`codex discord status card send failed: ${String(error)}`);
-        return { text };
-      }
-    }
-    return buildReplyWithButtons(text, card.buttons);
+    return await this.sendStatusCardCommandReply(conversation, binding, text, card.buttons);
   }
 
   private hasFullAccessProfile(): boolean {
@@ -1917,7 +1896,7 @@ export class CodexPluginController {
     const currentReasoning = normalizeReasoningEffort(
       effectiveState?.reasoningEffort ?? binding.preferences?.preferredReasoningEffort,
     );
-    const [showModelPicker, showReasoningPicker, togglePermissions, compactThread, stopRun, showSkills, showMcp] = await Promise.all([
+    const [showModelPicker, showReasoningPicker, togglePermissions, compactThread, stopRun, refreshStatus, detachThread, showSkills, showMcp] = await Promise.all([
       this.store.putCallback({
         kind: "show-model-picker",
         conversation,
@@ -1936,6 +1915,14 @@ export class CodexPluginController {
       }),
       this.store.putCallback({
         kind: "stop-run",
+        conversation,
+      }),
+      this.store.putCallback({
+        kind: "refresh-status",
+        conversation,
+      }),
+      this.store.putCallback({
+        kind: "detach-thread",
         conversation,
       }),
       this.store.putCallback({
@@ -1990,6 +1977,16 @@ export class CodexPluginController {
       {
         text: "Stop",
         callback_data: `${INTERACTIVE_NAMESPACE}:${stopRun.token}`,
+      },
+    ]);
+    buttons.push([
+      {
+        text: "Refresh",
+        callback_data: `${INTERACTIVE_NAMESPACE}:${refreshStatus.token}`,
+      },
+      {
+        text: "Detach",
+        callback_data: `${INTERACTIVE_NAMESPACE}:${detachThread.token}`,
       },
     ]);
     buttons.push([
@@ -4535,6 +4532,41 @@ export class CodexPluginController {
       });
       return;
     }
+    if (callback.kind === "refresh-status") {
+      const binding = this.store.getBinding(callback.conversation);
+      await this.store.removeCallback(callback.token);
+      const statusCard = await this.buildStatusCard(
+        {
+          ...callback.conversation,
+          threadId: responders.conversation.threadId,
+        },
+        binding,
+        Boolean(binding),
+      );
+      await responders.editPicker({
+        text: statusCard.text,
+        buttons: statusCard.buttons ?? [],
+      });
+      return;
+    }
+    if (callback.kind === "detach-thread") {
+      await this.store.removeCallback(callback.token);
+      await responders.detachConversationBinding?.().catch(() => undefined);
+      await this.unbindConversation(callback.conversation);
+      const statusCard = await this.buildStatusCard(
+        {
+          ...callback.conversation,
+          threadId: responders.conversation.threadId,
+        },
+        null,
+        false,
+      );
+      await responders.editPicker({
+        text: `${statusCard.text}\n\nDetached this conversation from Codex.`,
+        buttons: [],
+      });
+      return;
+    }
     if (callback.kind === "show-skills") {
       const binding = this.store.getBinding(callback.conversation);
       await this.store.removeCallback(callback.token);
@@ -5117,13 +5149,31 @@ export class CodexPluginController {
       parentConversationId: conversation.parentConversationId,
       threadId: "threadId" in conversation ? conversation.threadId : undefined,
     };
-    const [firstMessage, ...followUps] = messages;
-    if (firstMessage) {
-      const delivered = await this.sendTextWithDeliveryRef(target, firstMessage);
-      await this.pinBindingMessage(target, delivered);
-    }
-    for (const message of followUps) {
+    for (const message of messages) {
       await this.sendText(target, message);
+    }
+  }
+
+  private async sendStatusCardCommandReply(
+    conversation: ConversationTarget,
+    binding: StoredBinding | null,
+    text: string,
+    buttons: PluginInteractiveButtons,
+  ): Promise<ReplyPayload> {
+    try {
+      const delivered = await this.sendReplyWithDeliveryRef(conversation, {
+        text,
+        buttons,
+      });
+      if (binding) {
+        await this.pinBindingMessage(conversation, delivered);
+      }
+      return isDiscordChannel(conversation.channel)
+        ? { text: "Sent Codex status controls to this Discord conversation." }
+        : {};
+    } catch (error) {
+      this.api.logger.warn(`codex ${conversation.channel} status card send failed: ${String(error)}`);
+      return { text };
     }
   }
 
@@ -5224,10 +5274,22 @@ export class CodexPluginController {
       mediaUrl?: string;
     },
   ): Promise<boolean> {
+    const delivered = await this.sendReplyWithDeliveryRef(conversation, payload);
+    return delivered !== null;
+  }
+
+  private async sendReplyWithDeliveryRef(
+    conversation: ConversationTarget,
+    payload: {
+      text?: string;
+      buttons?: PluginInteractiveButtons;
+      mediaUrl?: string;
+    },
+  ): Promise<DeliveredMessageRef | null> {
     const text = payload.text?.trim() ?? "";
     const hasMedia = typeof payload.mediaUrl === "string" && payload.mediaUrl.trim().length > 0;
     if (!text && !hasMedia) {
-      return false;
+      return null;
     }
     this.api.logger.debug?.(
       `codex outbound send start ${this.formatConversationForLog(conversation)} textChars=${text.length} media=${hasMedia ? "yes" : "no"} buttons=${payload.buttons?.length ?? 0} preview="${summarizeTextForLog(text, 80)}"`,
@@ -5243,8 +5305,9 @@ export class CodexPluginController {
       const chunks = text
         ? this.api.runtime.channel.text.chunkText(text, limit).filter(Boolean)
         : [];
+      let delivered: DeliveredMessageRef | null = null;
       if (hasMedia) {
-        await this.api.runtime.channel.telegram.sendMessageTelegram(
+        const result = await this.api.runtime.channel.telegram.sendMessageTelegram(
           conversation.parentConversationId ?? conversation.conversationId,
           chunks[0] ?? text,
           {
@@ -5255,12 +5318,17 @@ export class CodexPluginController {
             buttons: chunks.length <= 1 ? payload.buttons : undefined,
           },
         );
+        delivered = {
+          provider: "telegram",
+          messageId: result.messageId,
+          chatId: result.chatId,
+        };
         for (let index = 1; index < chunks.length; index += 1) {
           const chunk = chunks[index];
           if (!chunk) {
             continue;
           }
-          await this.api.runtime.channel.telegram.sendMessageTelegram(
+          const result = await this.api.runtime.channel.telegram.sendMessageTelegram(
             conversation.parentConversationId ?? conversation.conversationId,
             chunk,
             {
@@ -5269,11 +5337,18 @@ export class CodexPluginController {
               buttons: index === chunks.length - 1 ? payload.buttons : undefined,
             },
           );
+          if (index === chunks.length - 1 || !delivered) {
+            delivered = {
+              provider: "telegram",
+              messageId: result.messageId,
+              chatId: result.chatId,
+            };
+          }
         }
         this.api.logger.debug?.(
           `codex outbound send complete ${this.formatConversationForLog(conversation)} channel=telegram chunks=${Math.max(chunks.length, 1)} media=${hasMedia ? "yes" : "no"}`,
         );
-        return true;
+        return delivered;
       }
       const textChunks = chunks.length > 0 ? chunks : [text];
       for (let index = 0; index < textChunks.length; index += 1) {
@@ -5281,7 +5356,7 @@ export class CodexPluginController {
         if (!chunk) {
           continue;
         }
-        await this.api.runtime.channel.telegram.sendMessageTelegram(
+        const result = await this.api.runtime.channel.telegram.sendMessageTelegram(
           conversation.parentConversationId ?? conversation.conversationId,
           chunk,
           {
@@ -5290,11 +5365,18 @@ export class CodexPluginController {
             buttons: index === textChunks.length - 1 ? payload.buttons : undefined,
           },
         );
+        if (!delivered || index === textChunks.length - 1) {
+          delivered = {
+            provider: "telegram",
+            messageId: result.messageId,
+            chatId: result.chatId,
+          };
+        }
       }
       this.api.logger.debug?.(
         `codex outbound send complete ${this.formatConversationForLog(conversation)} channel=telegram chunks=${textChunks.length} media=no`,
       );
-      return true;
+      return delivered;
     }
     if (isDiscordChannel(conversation.channel)) {
       const mediaLocalRoots = this.resolveReplyMediaLocalRoots(payload.mediaUrl);
@@ -5307,13 +5389,14 @@ export class CodexPluginController {
       const chunks = text
         ? this.api.runtime.channel.text.chunkText(text, limit).filter(Boolean)
         : [];
+      let delivered: DeliveredMessageRef | null = null;
       if (payload.buttons && payload.buttons.length > 0) {
         this.api.logger.debug(
           `codex discord reply send conversation=${conversation.conversationId} rows=${payload.buttons.length}`,
         );
         const attachmentChunk = hasMedia ? (chunks.shift() ?? text) : undefined;
         if (hasMedia) {
-          await this.api.runtime.channel.discord.sendMessageDiscord(
+          const result = await this.api.runtime.channel.discord.sendMessageDiscord(
             conversation.conversationId,
             attachmentChunk ?? "",
             {
@@ -5322,14 +5405,26 @@ export class CodexPluginController {
               mediaLocalRoots,
             },
           );
+          delivered = {
+            provider: "discord",
+            messageId: result.messageId,
+            channelId: result.channelId,
+          };
         }
         const finalChunk = chunks.pop() ?? (hasMedia ? "" : text);
         for (const chunk of chunks) {
-          await this.api.runtime.channel.discord.sendMessageDiscord(conversation.conversationId, chunk, {
+          const result = await this.api.runtime.channel.discord.sendMessageDiscord(conversation.conversationId, chunk, {
             accountId: conversation.accountId,
           });
+          if (!delivered) {
+            delivered = {
+              provider: "discord",
+              messageId: result.messageId,
+              channelId: result.channelId,
+            };
+          }
         }
-        await this.api.runtime.channel.discord.sendComponentMessage(
+        const result = await this.api.runtime.channel.discord.sendComponentMessage(
           conversation.conversationId,
           {
             text: finalChunk,
@@ -5346,15 +5441,27 @@ export class CodexPluginController {
             accountId: conversation.accountId,
           },
         );
+        if (
+          result &&
+          typeof result === "object" &&
+          typeof (result as { messageId?: unknown }).messageId === "string" &&
+          typeof (result as { channelId?: unknown }).channelId === "string"
+        ) {
+          delivered = {
+            provider: "discord",
+            messageId: (result as { messageId: string }).messageId,
+            channelId: (result as { channelId: string }).channelId,
+          };
+        }
         this.api.logger.debug?.(
           `codex outbound send complete ${this.formatConversationForLog(conversation)} channel=discord chunks=${chunks.length + 1 + (hasMedia ? 1 : 0)} media=${hasMedia ? "yes" : "no"} buttons=${payload.buttons.length}`,
         );
-        return true;
+        return delivered;
       }
       const textChunks = chunks.length > 0 ? chunks : [text];
       if (hasMedia) {
         const firstChunk = textChunks.shift() ?? "";
-        await this.api.runtime.channel.discord.sendMessageDiscord(
+        const result = await this.api.runtime.channel.discord.sendMessageDiscord(
           conversation.conversationId,
           firstChunk,
           {
@@ -5363,21 +5470,33 @@ export class CodexPluginController {
             mediaLocalRoots,
           },
         );
+        delivered = {
+          provider: "discord",
+          messageId: result.messageId,
+          channelId: result.channelId,
+        };
       }
       for (const chunk of textChunks) {
         if (!chunk) {
           continue;
         }
-        await this.api.runtime.channel.discord.sendMessageDiscord(conversation.conversationId, chunk, {
+        const result = await this.api.runtime.channel.discord.sendMessageDiscord(conversation.conversationId, chunk, {
           accountId: conversation.accountId,
         });
+        if (!delivered) {
+          delivered = {
+            provider: "discord",
+            messageId: result.messageId,
+            channelId: result.channelId,
+          };
+        }
       }
       this.api.logger.debug?.(
         `codex outbound send complete ${this.formatConversationForLog(conversation)} channel=discord chunks=${textChunks.length + (hasMedia ? 1 : 0)} media=${hasMedia ? "yes" : "no"}`,
       );
-      return hasMedia || textChunks.length > 0;
+      return delivered;
     }
-    return false;
+    return null;
   }
 
   private resolveReplyMediaLocalRoots(mediaUrl?: string): readonly string[] | undefined {

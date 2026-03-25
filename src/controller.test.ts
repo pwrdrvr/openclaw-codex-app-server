@@ -34,7 +34,7 @@ function makeStateDir(): string {
 
 function createApiMock() {
   const stateDir = makeStateDir();
-  const sendComponentMessage = vi.fn(async () => ({}));
+  const sendComponentMessage = vi.fn(async () => ({ messageId: "discord-component-1", channelId: "channel:chan-1" }));
   const sendMessageDiscord = vi.fn(async () => ({ messageId: "discord-msg-1", channelId: "channel:chan-1" }));
   const sendMessageTelegram = vi.fn(async () => ({ messageId: "1", chatId: "123" }));
   const discordTypingStart = vi.fn(async () => ({ refresh: vi.fn(async () => {}), stop: vi.fn() }));
@@ -293,6 +293,7 @@ beforeEach(() => {
 });
 
 async function flushAsyncWork(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
   await new Promise((resolve) => setTimeout(resolve, 0));
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
@@ -1401,8 +1402,9 @@ describe("Discord controller flows", () => {
     );
   });
 
-  it("returns status control buttons when a binding exists", async () => {
-    const { controller } = await createControllerHarness();
+  it("sends and pins status control buttons when a binding exists", async () => {
+    const { controller, sendMessageTelegram } = await createControllerHarness();
+    const fetchMock = vi.mocked(fetch);
     await (controller as any).store.upsertBinding({
       conversation: {
         channel: "telegram",
@@ -1422,17 +1424,25 @@ describe("Discord controller flows", () => {
         getCurrentConversationBinding: vi.fn(async () => ({ bindingId: "b1" })),
       }),
     );
-    const buttons = (reply as any).channelData?.telegram?.buttons;
 
-    expect(buttons).toHaveLength(4);
+    expect(reply).toEqual({});
+    expect(sendMessageTelegram).toHaveBeenCalledTimes(1);
+    const firstCall = sendMessageTelegram.mock.calls[0] as unknown as
+      | [string, string, { buttons?: Array<Array<{ text: string; callback_data: string }>> }]
+      | undefined;
+    const buttons = firstCall?.[2]?.buttons ?? [];
+
+    expect(buttons).toHaveLength(5);
     expect(buttons[0][0].text).toBe("Select Model");
     expect(buttons[0][1].text).toBe("Reasoning: Default");
     expect(buttons[1][0].text).toBe("Fast: toggle");
     expect(buttons[1][1].text).toBe("Permissions: toggle");
     expect(buttons[2][0].text).toBe("Compact");
     expect(buttons[2][1].text).toBe("Stop");
-    expect(buttons[3][0].text).toBe("Skills");
-    expect(buttons[3][1].text).toBe("MCPs");
+    expect(buttons[3][0].text).toBe("Refresh");
+    expect(buttons[3][1].text).toBe("Detach");
+    expect(buttons[4][0].text).toBe("Skills");
+    expect(buttons[4][1].text).toBe("MCPs");
     const kinds = buttons.flatMap((row: Array<{ callback_data: string }>) => {
       return row.map((button) => {
         const token = button.callback_data.split(":").pop() ?? "";
@@ -1447,14 +1457,20 @@ describe("Discord controller flows", () => {
         "toggle-permissions",
         "compact-thread",
         "stop-run",
+        "refresh-status",
+        "detach-thread",
         "show-skills",
         "show-mcp",
       ]),
     );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.telegram.org/bottelegram-token/pinChatMessage",
+      expect.objectContaining({ method: "POST" }),
+    );
   });
 
   it("hides the fast button on status controls when the current model does not support it", async () => {
-    const { controller } = await createControllerHarness();
+    const { controller, sendMessageTelegram } = await createControllerHarness();
     await (controller as any).store.upsertBinding({
       conversation: {
         channel: "telegram",
@@ -1479,12 +1495,16 @@ describe("Discord controller flows", () => {
         getCurrentConversationBinding: vi.fn(async () => ({ bindingId: "b1" })),
       }),
     );
-    const buttons = (reply as any).channelData?.telegram?.buttons;
+    expect(reply).toEqual({});
+    const firstCall = sendMessageTelegram.mock.calls[0] as unknown as
+      | [string, string, { buttons?: Array<Array<{ text: string; callback_data: string }>> }]
+      | undefined;
+    const buttons = firstCall?.[2]?.buttons ?? [];
 
     expect(buttons[1]).toHaveLength(1);
     expect(buttons[1][0].text).toBe("Permissions: toggle");
-    expect(buttons[3][0].text).toBe("Skills");
-    expect(buttons[3][1].text).toBe("MCPs");
+    expect(buttons[4][0].text).toBe("Skills");
+    expect(buttons[4][1].text).toBe("MCPs");
     const kinds = buttons.flatMap((row: Array<{ callback_data: string }>) => {
       return row.map((button) => {
         const token = button.callback_data.split(":").pop() ?? "";
@@ -1495,7 +1515,7 @@ describe("Discord controller flows", () => {
   });
 
   it("renders saved conversation preferences in cas_status even if thread reads lag behind", async () => {
-    const { controller } = await createControllerHarness();
+    const { controller, sendMessageTelegram } = await createControllerHarness();
     await (controller as any).store.upsertBinding({
       conversation: {
         channel: "telegram",
@@ -1522,10 +1542,12 @@ describe("Discord controller flows", () => {
         getCurrentConversationBinding: vi.fn(async () => ({ bindingId: "b1" })),
       }),
     );
-
-    expect(reply.text).toContain("Model: openai/gpt-5.3-codex · reasoning high");
-    expect(reply.text).toContain("Fast mode: off");
-    expect(reply.text).toContain("Permissions: Full Access");
+    expect(reply).toEqual({});
+    const firstCall = sendMessageTelegram.mock.calls[0] as unknown as [string, string] | undefined;
+    const text = firstCall?.[1] ?? "";
+    expect(text).toContain("Model: openai/gpt-5.3-codex · reasoning high");
+    expect(text).toContain("Fast mode: off");
+    expect(text).toContain("Permissions: Full Access");
   });
 
   it("sends the status card directly to Discord with interactive controls", async () => {
@@ -1567,7 +1589,7 @@ describe("Discord controller flows", () => {
   });
 
   it("applies model, fast, and yolo flags from cas_status", async () => {
-    const { controller, clientMock } = await createControllerHarness();
+    const { controller, clientMock, sendMessageTelegram } = await createControllerHarness();
     await (controller as any).store.upsertBinding({
       conversation: {
         channel: "telegram",
@@ -1609,9 +1631,12 @@ describe("Discord controller flows", () => {
       threadId: "thread-1",
       serviceTier: "fast",
     });
-    expect((reply as any).text).toContain("Model: gpt-5.4");
-    expect((reply as any).text).toContain("Fast mode: on");
-    expect((reply as any).text).toContain("Permissions: Full Access");
+    expect(reply).toEqual({});
+    const firstCall = sendMessageTelegram.mock.calls[0] as unknown as [string, string] | undefined;
+    const text = firstCall?.[1] ?? "";
+    expect(text).toContain("Model: gpt-5.4");
+    expect(text).toContain("Fast mode: on");
+    expect(text).toContain("Permissions: Full Access");
   });
 
   it("parses unicode em dash --sync for cas_rename and renames the Telegram topic", async () => {
@@ -1685,7 +1710,7 @@ describe("Discord controller flows", () => {
     );
   });
 
-  it("pins the Telegram binding summary message on resume and unpins it on detach", async () => {
+  it("pins the Telegram status message and unpins it on detach", async () => {
     const { controller } = await createControllerHarness();
     const fetchMock = vi.mocked(fetch);
 
@@ -1695,6 +1720,17 @@ describe("Discord controller flows", () => {
         args: "thread-1",
         commandBody: "/cas_resume thread-1",
         messageThreadId: 456,
+      }),
+    );
+
+    fetchMock.mockClear();
+
+    await controller.handleCommand(
+      "cas_status",
+      buildTelegramCommandContext({
+        commandBody: "/cas_status",
+        messageThreadId: 456,
+        getCurrentConversationBinding: vi.fn(async () => ({ bindingId: "binding-1" })),
       }),
     );
 
@@ -1744,7 +1780,7 @@ describe("Discord controller flows", () => {
     );
   });
 
-  it("pins the Discord binding summary message on resume and unpins it on detach", async () => {
+  it("pins the Discord status message and unpins it on detach", async () => {
     const { controller } = await createControllerHarness();
     const fetchMock = vi.mocked(fetch);
     vi.spyOn(controller as any, "resolveDiscordBotToken").mockResolvedValue("discord-token");
@@ -1757,8 +1793,18 @@ describe("Discord controller flows", () => {
       }),
     );
 
+    fetchMock.mockClear();
+
+    await controller.handleCommand(
+      "cas_status",
+      buildDiscordCommandContext({
+        commandBody: "/cas_status",
+        getCurrentConversationBinding: vi.fn(async () => ({ bindingId: "binding-1" })),
+      }),
+    );
+
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://discord.com/api/v10/channels/channel%3Achan-1/pins/discord-msg-1",
+      "https://discord.com/api/v10/channels/channel%3Achan-1/pins/discord-component-1",
       expect.objectContaining({
         method: "PUT",
         headers: expect.objectContaining({
@@ -1776,7 +1822,7 @@ describe("Discord controller flows", () => {
       expect.objectContaining({
         pinnedBindingMessage: {
           provider: "discord",
-          messageId: "discord-msg-1",
+          messageId: "discord-component-1",
           channelId: "channel:chan-1",
         },
       }),
@@ -1791,7 +1837,7 @@ describe("Discord controller flows", () => {
     );
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://discord.com/api/v10/channels/channel%3Achan-1/pins/discord-msg-1",
+      "https://discord.com/api/v10/channels/channel%3Achan-1/pins/discord-component-1",
       expect.objectContaining({
         method: "DELETE",
         headers: expect.objectContaining({

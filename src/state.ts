@@ -119,6 +119,18 @@ type PutCallbackInput =
       ttlMs?: number;
     }
   | {
+      kind: "refresh-status";
+      conversation: ConversationTarget;
+      token?: string;
+      ttlMs?: number;
+    }
+  | {
+      kind: "detach-thread";
+      conversation: ConversationTarget;
+      token?: string;
+      ttlMs?: number;
+    }
+  | {
       kind: "show-skills";
       conversation: ConversationTarget;
       token?: string;
@@ -550,6 +562,22 @@ export class PluginStateStore {
                     : callback.kind === "stop-run"
                       ? {
                           kind: "stop-run",
+                          conversation: callback.conversation,
+                          token: callback.token ?? this.createCallbackToken(),
+                          createdAt: now,
+                          expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
+                        }
+                    : callback.kind === "refresh-status"
+                      ? {
+                          kind: "refresh-status",
+                          conversation: callback.conversation,
+                          token: callback.token ?? this.createCallbackToken(),
+                          createdAt: now,
+                          expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
+                        }
+                    : callback.kind === "detach-thread"
+                      ? {
+                          kind: "detach-thread",
                           conversation: callback.conversation,
                           token: callback.token ?? this.createCallbackToken(),
                           createdAt: now,
