@@ -5173,7 +5173,7 @@ export class CodexPluginController {
       profile,
       sessionKey: binding?.sessionKey,
       workspaceDir,
-      model: undefined,
+      model: overrides.requestedModel?.trim() || undefined,
     });
     const preferences = this.buildBindingPreferencesWithOverrides(
       binding?.preferences,

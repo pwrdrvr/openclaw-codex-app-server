@@ -713,6 +713,43 @@ describe("Discord controller flows", () => {
     expect(binding?.preferences?.preferredServiceTier).toBe("fast");
   });
 
+  it("preserves em-dash resume overrides through the no-query picker callback", async () => {
+    const { controller } = await createControllerHarness();
+
+    const reply = await controller.handleCommand(
+      "cas_resume",
+      buildTelegramCommandContext({
+        args: "—model gpt-5.3-codex-spark —yolo",
+        commandBody: "/cas_resume —model gpt-5.3-codex-spark —yolo",
+      }),
+    );
+
+    const buttons = (reply.channelData as any)?.telegram?.buttons;
+    const callbackData = buttons?.[0]?.[0]?.callback_data as string | undefined;
+    expect(callbackData).toMatch(/^codexapp:/);
+
+    await controller.handleTelegramInteractive({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+      callback: { payload: callbackData?.slice("codexapp:".length) },
+      requestConversationBinding: vi.fn(async () => ({ status: "bound" as const })),
+      respond: {
+        clearButtons: vi.fn(async () => {}),
+        reply: vi.fn(async () => {}),
+        editMessage: vi.fn(async () => {}),
+      },
+    } as any);
+
+    const binding = (controller as any).store.getBinding({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+    });
+    expect(binding?.permissionsMode).toBe("full-access");
+    expect(binding?.preferences?.preferredModel).toBe("gpt-5.3-codex-spark");
+  });
+
   it("resolves channel identity from ctx.to when ctx.from is a slash identity in a new Discord thread", async () => {
     // Regression test for brand-new Discord threads where the slash interaction
     // places the slash user identity in ctx.from and the channel target in ctx.to.
@@ -2443,6 +2480,71 @@ describe("Discord controller flows", () => {
         summary: expect.stringContaining("Bind this conversation to Codex thread"),
       }),
     );
+  });
+
+  it("preserves em-dash model and yolo overrides when New is chosen from the resume picker", async () => {
+    const { controller, clientMock } = await createControllerHarness();
+
+    const reply = await controller.handleCommand(
+      "cas_resume",
+      buildTelegramCommandContext({
+        args: "—model gpt-5.3-codex-spark —yolo",
+        commandBody: "/cas_resume —model gpt-5.3-codex-spark —yolo",
+      }),
+    );
+
+    const buttons = (reply.channelData as any)?.telegram?.buttons;
+    const newCallbackData = buttons?.flat().find((button: { text: string }) => button.text === "New")?.callback_data as
+      | string
+      | undefined;
+    expect(newCallbackData).toMatch(/^codexapp:/);
+
+    const editMessage = vi.fn(async (_payload: any) => {});
+    await controller.handleTelegramInteractive({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+      callback: { payload: newCallbackData?.slice("codexapp:".length) },
+      requestConversationBinding: vi.fn(async () => ({ status: "bound" as const })),
+      respond: {
+        clearButtons: vi.fn(async () => {}),
+        reply: vi.fn(async () => {}),
+        editMessage,
+      },
+    } as any);
+
+    const projectButtons = editMessage.mock.calls.at(-1)?.[0]?.buttons as
+      | Array<Array<{ text: string; callback_data: string }>>
+      | undefined;
+    const projectCallbackData = projectButtons?.[0]?.[0]?.callback_data;
+    expect(projectCallbackData).toMatch(/^codexapp:/);
+
+    await controller.handleTelegramInteractive({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+      callback: { payload: projectCallbackData?.slice("codexapp:".length) },
+      requestConversationBinding: vi.fn(async () => ({ status: "bound" as const })),
+      respond: {
+        clearButtons: vi.fn(async () => {}),
+        reply: vi.fn(async () => {}),
+        editMessage: vi.fn(async () => {}),
+      },
+    } as any);
+
+    expect(clientMock.startThread).toHaveBeenCalledWith({
+      profile: "full-access",
+      sessionKey: undefined,
+      workspaceDir: "/repo/openclaw",
+      model: "gpt-5.3-codex-spark",
+    });
+    const binding = (controller as any).store.getBinding({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+    });
+    expect(binding?.permissionsMode).toBe("full-access");
+    expect(binding?.preferences?.preferredModel).toBe("gpt-5.3-codex-spark");
   });
 
   it("sends the Telegram bind approval prompt only once for resume callbacks", async () => {
