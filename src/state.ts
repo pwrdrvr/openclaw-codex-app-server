@@ -171,6 +171,7 @@ type PutCallbackInput =
       conversation: ConversationTarget;
       model: string;
       returnToStatus?: boolean;
+      statusMessage?: Extract<CallbackAction, { kind: "set-model" }>["statusMessage"];
       token?: string;
       ttlMs?: number;
     }
@@ -531,6 +532,7 @@ export class PluginStateStore {
                     conversation: callback.conversation,
                     model: callback.model,
                     returnToStatus: callback.returnToStatus,
+                    statusMessage: callback.statusMessage,
                   token: callback.token ?? this.createCallbackToken(),
                   createdAt: now,
                   expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),

@@ -59,6 +59,7 @@ import type {
   AccountSummary,
   CollaborationMode,
   ConversationPreferences,
+  InteractiveMessageRef,
   PermissionsMode,
   ThreadState,
   TurnTerminalError,
@@ -158,6 +159,7 @@ type DesiredThreadConfiguration = {
 
 type PickerResponders = {
   conversation: ConversationTarget;
+  sourceMessage?: InteractiveMessageRef;
   acknowledge?: () => Promise<void>;
   clear: () => Promise<void>;
   reply: (text: string) => Promise<void>;
@@ -210,17 +212,7 @@ type PlanDelivery = {
   attachmentFallbackText?: string;
 };
 
-type DeliveredMessageRef =
-  | {
-      provider: "telegram";
-      messageId: string;
-      chatId: string;
-    }
-  | {
-      provider: "discord";
-      messageId: string;
-      channelId: string;
-    };
+type DeliveredMessageRef = InteractiveMessageRef;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -468,6 +460,20 @@ function extractReplyButtons(reply: ReplyPayload): PluginInteractiveButtons | un
     }
   }
   return rows.length > 0 ? rows : undefined;
+}
+
+function buildTelegramReplyMarkup(buttons?: PluginInteractiveButtons): { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> } | undefined {
+  if (!buttons || buttons.length === 0) {
+    return undefined;
+  }
+  return {
+    inline_keyboard: buttons.map((row) =>
+      row.map((button) => ({
+        text: button.text,
+        callback_data: button.callback_data,
+      })),
+    ),
+  };
 }
 function parseFastAction(
   argsText: string,
@@ -1148,6 +1154,11 @@ export class CodexPluginController {
         parentConversationId: ctx.parentConversationId,
         threadId: ctx.threadId,
       },
+      sourceMessage: {
+        provider: "telegram",
+        messageId: String(ctx.callback.messageId),
+        chatId: ctx.callback.chatId,
+      },
       acknowledge: async () => {},
       clear: async () => {
         await ctx.respond.clearButtons().catch(() => undefined);
@@ -1224,6 +1235,13 @@ export class CodexPluginController {
       }
       await this.dispatchCallbackAction(callback, {
         conversation,
+        sourceMessage: ctx.interaction.messageId?.trim()
+          ? {
+              provider: "discord",
+              messageId: ctx.interaction.messageId.trim(),
+              channelId: conversation.conversationId,
+            }
+          : undefined,
         acknowledge: async () => {
           if (interactionSettled) {
             return;
@@ -2093,11 +2111,66 @@ export class CodexPluginController {
     }
   }
 
+  private async sendPickerToConversation(
+    conversation: ConversationTarget,
+    picker: PickerRender,
+  ): Promise<void> {
+    await this.sendText(conversation, picker.text, { buttons: picker.buttons });
+  }
+
+  private async updateStatusCardMessage(
+    conversation: ConversationTarget,
+    message: InteractiveMessageRef,
+    statusCard: StatusCardRender,
+  ): Promise<boolean> {
+    try {
+      if (message.provider === "telegram") {
+        const token = await this.resolveTelegramBotToken(conversation.accountId);
+        if (!token) {
+          return false;
+        }
+        await this.callTelegramEditMessageApi(token, {
+          chat_id: message.chatId,
+          message_id: Number(message.messageId),
+          text: statusCard.text,
+          reply_markup: buildTelegramReplyMarkup(statusCard.buttons) ?? { inline_keyboard: [] },
+        });
+        return true;
+      }
+      const builtPicker = this.buildDiscordPickerMessage({
+        text: statusCard.text,
+        buttons: statusCard.buttons,
+      });
+      await editDiscordComponentMessage(
+        message.channelId,
+        message.messageId,
+        this.buildDiscordPickerSpec({
+          text: statusCard.text,
+          buttons: statusCard.buttons,
+        }),
+        {
+          accountId: conversation.accountId,
+        },
+      );
+      registerBuiltDiscordComponentMessage({
+        buildResult: builtPicker,
+        messageId: message.messageId,
+      });
+      return true;
+    } catch (error) {
+      this.api.logger.warn(
+        `codex status card update failed ${this.formatConversationForLog(conversation)} provider=${message.provider}: ${String(error)}`,
+      );
+      return false;
+    }
+  }
+
   private async buildModelPicker(
     conversation: ConversationTarget,
     binding: StoredBinding,
     opts?: {
       returnToStatus?: boolean;
+      statusMessage?: InteractiveMessageRef;
     },
   ): Promise<PickerRender> {
     const profile = this.getPermissionsMode(binding);
@@ -2116,6 +2189,7 @@ export class CodexPluginController {
         conversation,
         model: model.id,
         returnToStatus: opts?.returnToStatus,
+        statusMessage: opts?.statusMessage,
       });
       buttons.push([
         {
@@ -4994,9 +5068,17 @@ export class CodexPluginController {
         binding,
         {
           returnToStatus: true,
+          statusMessage: responders.sourceMessage,
         },
       );
-      await responders.editPicker(picker);
+      await responders.acknowledge?.();
+      await this.sendPickerToConversation(
+        {
+          ...callback.conversation,
+          threadId: responders.conversation.threadId,
+        },
+        picker,
+      );
       return;
     }
     if (callback.kind === "set-model") {
@@ -5053,6 +5135,23 @@ export class CodexPluginController {
           updatedBinding,
           true,
         );
+        if (callback.statusMessage) {
+          const updatedOriginal = await this.updateStatusCardMessage(
+            {
+              ...callback.conversation,
+              threadId: responders.conversation.threadId,
+            },
+            callback.statusMessage,
+            statusCard,
+          );
+          if (updatedOriginal) {
+            await responders.editPicker({
+              text: `Codex model set to ${callback.model}.`,
+              buttons: [],
+            });
+            return;
+          }
+        }
         await responders.editPicker({
           text: statusCard.text,
           buttons: statusCard.buttons,
@@ -6216,6 +6315,24 @@ export class CodexPluginController {
     if (!response.ok) {
       throw new Error(
         `Telegram ${method} failed status=${response.status} body=${await response.text()}`,
+      );
+    }
+  }
+
+  private async callTelegramEditMessageApi(
+    token: string,
+    body: Record<string, unknown>,
+  ): Promise<void> {
+    const response = await fetch(`https://api.telegram.org/bot${token}/editMessageText`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      throw new Error(
+        `Telegram editMessageText failed status=${response.status} body=${await response.text()}`,
       );
     }
   }

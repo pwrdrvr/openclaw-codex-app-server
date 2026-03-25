@@ -264,21 +264,23 @@ export type StoredBinding = {
   permissionsMode?: PermissionsMode;
   pendingPermissionsMode?: PermissionsMode;
   threadTitle?: string;
-  pinnedBindingMessage?:
-    | {
-        provider: "telegram";
-        messageId: string;
-        chatId: string;
-      }
-    | {
-        provider: "discord";
-        messageId: string;
-        channelId: string;
-      };
+  pinnedBindingMessage?: InteractiveMessageRef;
   contextUsage?: ContextUsageSnapshot;
   preferences?: ConversationPreferences;
   updatedAt: number;
 };
+
+export type InteractiveMessageRef =
+  | {
+      provider: "telegram";
+      messageId: string;
+      chatId: string;
+    }
+  | {
+      provider: "discord";
+      messageId: string;
+      channelId: string;
+    };
 
 export type StoredPendingBind = {
   conversation: ConversationRef;
@@ -514,6 +516,7 @@ export type CallbackAction =
       conversation: ConversationRef;
       model: string;
       returnToStatus?: boolean;
+      statusMessage?: InteractiveMessageRef;
       createdAt: number;
       expiresAt: number;
     }
