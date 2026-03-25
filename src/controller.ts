@@ -1008,6 +1008,7 @@ export class CodexPluginController {
       permissionsMode: normalizePermissionsMode(pending.permissionsMode),
       preferences: pending.preferences,
     });
+    await this.store.removePendingBind(conversation);
     if (pending.syncTopic) {
       const syncedName = buildResumeTopicName({
         title: pending.threadTitle,
@@ -5471,18 +5472,56 @@ export class CodexPluginController {
       return ["No Codex binding for this conversation."];
     }
     const profile = this.getPermissionsMode(binding);
+    const restoreConversation: ConversationTarget = {
+      channel: conversation.channel,
+      accountId: conversation.accountId,
+      conversationId: conversation.conversationId,
+      parentConversationId: conversation.parentConversationId,
+      threadId: "threadId" in conversation ? conversation.threadId : undefined,
+    };
+
+    const readStateForRestore = async (): Promise<ThreadState | undefined> => {
+      try {
+        return await this.client.readThreadState({
+          profile,
+          sessionKey: binding.sessionKey,
+          threadId: binding.threadId,
+        });
+      } catch (error) {
+        if (isMissingThreadError(error)) {
+          this.api.logger.warn(
+            `codex bound restore could not read thread state ${this.formatConversationForLog(restoreConversation)} boundThread=${binding.threadId}: ${String(error)}`,
+          );
+          return undefined;
+        }
+        throw error;
+      }
+    };
+
+    const readReplayForRestore = async (): Promise<{
+      lastUserMessage?: string;
+      lastAssistantMessage?: string;
+    }> => {
+      try {
+        return await this.client.readThreadContext({
+          profile,
+          sessionKey: binding.sessionKey,
+          threadId: binding.threadId,
+        });
+      } catch (error) {
+        if (isMissingThreadError(error)) {
+          this.api.logger.warn(
+            `codex bound restore could not read thread replay ${this.formatConversationForLog(restoreConversation)} boundThread=${binding.threadId}: ${String(error)}`,
+          );
+          return { lastUserMessage: undefined, lastAssistantMessage: undefined };
+        }
+        throw error;
+      }
+    };
 
     const [initialState, replay] = await Promise.all([
-      this.client.readThreadState({
-        profile,
-        sessionKey: binding.sessionKey,
-        threadId: binding.threadId,
-      }),
-      this.client.readThreadContext({
-        profile,
-        sessionKey: binding.sessionKey,
-        threadId: binding.threadId,
-      }).catch(() => ({ lastUserMessage: undefined, lastAssistantMessage: undefined })),
+      readStateForRestore(),
+      readReplayForRestore(),
     ]);
     const state =
       (await this.reconcileThreadConfiguration(binding, {
@@ -5491,8 +5530,8 @@ export class CodexPluginController {
       })) ?? initialState;
 
     const nextBinding =
-      (state.threadName && state.threadName !== binding.threadTitle) ||
-      (state.cwd?.trim() && state.cwd.trim() !== binding.workspaceDir)
+      (state?.threadName && state.threadName !== binding.threadTitle) ||
+      (state?.cwd?.trim() && state.cwd.trim() !== binding.workspaceDir)
         ? {
             ...binding,
             threadTitle: state.threadName?.trim() || binding.threadTitle,

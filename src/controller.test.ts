@@ -2353,6 +2353,82 @@ describe("Discord controller flows", () => {
     ).toBeNull();
   });
 
+  it("still sends the bound status output when the approval restore hits a missing rollout error", async () => {
+    const { controller, sendMessageTelegram } = await createControllerHarness();
+    (controller as any).client.readThreadState = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new Error("codex app server rpc error (-32600): no rollout found for thread id thread-1"),
+      )
+      .mockResolvedValue({
+        threadId: "thread-1",
+        threadName: "Discord Thread",
+        model: "openai/gpt-5.4",
+        cwd: "/repo/openclaw",
+        serviceTier: "default",
+        approvalPolicy: "on-request",
+        sandbox: "workspace-write",
+      });
+
+    await (controller as any).store.upsertPendingBind({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123:topic:456",
+        parentConversationId: "123",
+      },
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      threadTitle: "Discord Thread",
+      syncTopic: false,
+      notifyBound: true,
+      updatedAt: Date.now(),
+    });
+
+    await expect(
+      controller.handleConversationBindingResolved({
+        status: "approved",
+        binding: {
+          bindingId: "binding-1",
+          pluginId: "openclaw-codex-app-server",
+          pluginRoot: "/plugins/codex",
+          channel: "telegram",
+          accountId: "default",
+          conversationId: "123:topic:456",
+          parentConversationId: "123",
+          threadId: 456,
+          boundAt: Date.now(),
+        },
+        decision: "allow-once",
+        request: {
+          summary: "Bind this conversation to Codex thread Discord Thread.",
+          conversation: {
+            channel: "telegram",
+            accountId: "default",
+            conversationId: "123:topic:456",
+            parentConversationId: "123",
+            threadId: 456,
+          },
+        },
+      } as any),
+    ).resolves.toBeUndefined();
+
+    const approvedLastCall = sendMessageTelegram.mock.calls.at(-1) as
+      | [string, string, { buttons?: Array<Array<{ text: string }>>; messageThreadId?: number }]
+      | undefined;
+    expect(approvedLastCall?.[0]).toBe("123");
+    expect(approvedLastCall?.[1]).toContain("Binding: Discord Thread (openclaw)");
+    expect(approvedLastCall?.[2]?.messageThreadId).toBe(456);
+    expect(
+      (controller as any).store.getPendingBind({
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123:topic:456",
+        parentConversationId: "123",
+      }),
+    ).toBeNull();
+  });
+
   it("preserves pending model and yolo overrides when approval completes after resume-thread selection", async () => {
     const { controller } = await createControllerHarness();
 
