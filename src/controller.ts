@@ -1696,7 +1696,7 @@ export class CodexPluginController {
         if (!card.buttons || !conversation) {
           return { text };
         }
-        return await this.sendStatusCardCommandReply(conversation, binding, text, card.buttons);
+        return await this.sendStatusCardCommandReply(conversation, text, card.buttons);
       }
       const nextPreferences = this.buildBindingPreferencesWithOverrides(
         binding.preferences,
@@ -1733,7 +1733,7 @@ export class CodexPluginController {
     if (!card.buttons || !conversation) {
       return { text };
     }
-    return await this.sendStatusCardCommandReply(conversation, binding, text, card.buttons);
+    return await this.sendStatusCardCommandReply(conversation, text, card.buttons);
   }
 
   private hasFullAccessProfile(): boolean {
@@ -5157,7 +5157,6 @@ export class CodexPluginController {
   private async sendBoundConversationNotifications(
     conversation: ConversationTarget | ConversationRef,
   ): Promise<void> {
-    await this.sendBoundConversationSummary(conversation);
     const target: ConversationTarget = {
       channel: conversation.channel,
       accountId: conversation.accountId,
@@ -5165,6 +5164,10 @@ export class CodexPluginController {
       parentConversationId: conversation.parentConversationId,
       threadId: "threadId" in conversation ? conversation.threadId : undefined,
     };
+    const messages = await this.buildBoundConversationMessages(conversation);
+    for (const message of messages.slice(1)) {
+      await this.sendText(target, message);
+    }
     const binding = this.store.getBinding(target);
     if (!binding) {
       return;
@@ -5186,18 +5189,14 @@ export class CodexPluginController {
 
   private async sendStatusCardCommandReply(
     conversation: ConversationTarget,
-    binding: StoredBinding | null,
     text: string,
     buttons: PluginInteractiveButtons,
   ): Promise<ReplyPayload> {
     try {
-      const delivered = await this.sendReplyWithDeliveryRef(conversation, {
+      await this.sendReplyWithDeliveryRef(conversation, {
         text,
         buttons,
       });
-      if (binding) {
-        await this.pinBindingMessage(conversation, delivered);
-      }
       return isDiscordChannel(conversation.channel)
         ? { text: "Sent Codex status controls to this Discord conversation." }
         : {};

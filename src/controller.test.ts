@@ -1267,7 +1267,7 @@ describe("Discord controller flows", () => {
     expect(sendComponentMessage).toHaveBeenCalledWith(
       "channel:chan-1",
       expect.objectContaining({
-        text: expect.stringContaining("Binding: active"),
+        text: expect.stringContaining("Binding: Discord Thread (openclaw)"),
       }),
       expect.objectContaining({ accountId: "default" }),
     );
@@ -1389,7 +1389,7 @@ describe("Discord controller flows", () => {
     expect(sendComponentMessage).toHaveBeenCalledWith(
       "channel:chan-1",
       expect.objectContaining({
-        text: expect.stringContaining("Binding: active"),
+        text: expect.stringContaining("Binding: Discord Thread (openclaw)"),
       }),
       expect.objectContaining({ accountId: "default" }),
     );
@@ -1463,10 +1463,7 @@ describe("Discord controller flows", () => {
         "show-mcp",
       ]),
     );
-    expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.telegram.org/bottelegram-token/pinChatMessage",
-      expect.objectContaining({ method: "POST" }),
-    );
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("hides the fast button on status controls when the current model does not support it", async () => {
@@ -1545,6 +1542,7 @@ describe("Discord controller flows", () => {
     expect(reply).toEqual({});
     const firstCall = sendMessageTelegram.mock.calls[0] as unknown as [string, string] | undefined;
     const text = firstCall?.[1] ?? "";
+    expect(text).toContain("Binding: Discord Thread (openclaw)");
     expect(text).toContain("Model: openai/gpt-5.3-codex · reasoning high");
     expect(text).toContain("Fast mode: off");
     expect(text).toContain("Permissions: Full Access");
@@ -1575,7 +1573,7 @@ describe("Discord controller flows", () => {
     expect(sendComponentMessage).toHaveBeenCalledWith(
       "channel:chan-1",
       expect.objectContaining({
-        text: expect.stringContaining("Binding: active"),
+        text: expect.stringContaining("Binding: Discord Thread (openclaw)"),
         blocks: expect.arrayContaining([
           expect.objectContaining({
             buttons: expect.arrayContaining([
@@ -1703,10 +1701,14 @@ describe("Discord controller flows", () => {
       expect.objectContaining({ accountId: "default" }),
     );
     expect(reply).toEqual({});
-    expect(sendMessageTelegram).toHaveBeenCalledWith(
-      "123",
-      expect.stringContaining("Thread Name: Discord Thread"),
-      expect.objectContaining({ accountId: "default", messageThreadId: 456 }),
+    const lastCall = sendMessageTelegram.mock.calls.at(-1) as unknown as
+      | [string, string, { buttons?: Array<Array<{ text: string }>>; messageThreadId?: number }]
+      | undefined;
+    expect(lastCall?.[0]).toBe("123");
+    expect(lastCall?.[1]).toContain("Binding: Discord Thread (openclaw)");
+    expect(lastCall?.[2]?.messageThreadId).toBe(456);
+    expect(lastCall?.[2]?.buttons?.flat().map((button) => button.text)).toEqual(
+      expect.arrayContaining(["Refresh", "Detach"]),
     );
   });
 
@@ -1738,7 +1740,12 @@ describe("Discord controller flows", () => {
     const lastCall = sendMessageTelegram.mock.calls.at(-1) as unknown as
       | [string, string, { buttons?: Array<Array<{ text: string }>> }]
       | undefined;
-    expect(lastCall?.[1]).toContain("Binding: active");
+    expect(lastCall?.[1]).toContain("Binding: Discord Thread (openclaw)");
+    expect(
+      sendMessageTelegram.mock.calls.some((call) =>
+        String((call as unknown as [string, string])[1]).includes("Codex thread bound."),
+      ),
+    ).toBe(false);
     expect(lastCall?.[2]?.buttons?.flat().map((button) => button.text)).toEqual(
       expect.arrayContaining(["Refresh", "Detach"]),
     );
@@ -1801,7 +1808,7 @@ describe("Discord controller flows", () => {
     expect(sendComponentMessage).toHaveBeenCalledWith(
       "channel:chan-1",
       expect.objectContaining({
-        text: expect.stringContaining("Binding: active"),
+        text: expect.stringContaining("Binding: Discord Thread (openclaw)"),
         blocks: expect.arrayContaining([
           expect.objectContaining({
             buttons: expect.arrayContaining([
@@ -1904,10 +1911,14 @@ describe("Discord controller flows", () => {
       expect.objectContaining({ accountId: "default" }),
     );
     expect(hydratedReply).toEqual({});
-    expect(sendMessageTelegram).toHaveBeenCalledWith(
-      "123",
-      expect.stringContaining("Thread Name: Discord Thread"),
-      expect.objectContaining({ accountId: "default", messageThreadId: 456 }),
+    const hydratedLastCall = sendMessageTelegram.mock.calls.at(-1) as unknown as
+      | [string, string, { buttons?: Array<Array<{ text: string }>>; messageThreadId?: number }]
+      | undefined;
+    expect(hydratedLastCall?.[0]).toBe("123");
+    expect(hydratedLastCall?.[1]).toContain("Binding: Discord Thread (openclaw)");
+    expect(hydratedLastCall?.[2]?.messageThreadId).toBe(456);
+    expect(hydratedLastCall?.[2]?.buttons?.flat().map((button) => button.text)).toEqual(
+      expect.arrayContaining(["Refresh", "Detach"]),
     );
     expect(sendMessageTelegram).toHaveBeenCalledWith(
       "123",
@@ -2003,10 +2014,14 @@ describe("Discord controller flows", () => {
       "Discord Thread (openclaw)",
       expect.objectContaining({ accountId: "default" }),
     );
-    expect(sendMessageTelegram).toHaveBeenCalledWith(
-      "123",
-      expect.stringContaining("Thread Name: Discord Thread"),
-      expect.objectContaining({ accountId: "default", messageThreadId: 456 }),
+    const reboundLastCall = sendMessageTelegram.mock.calls.at(-1) as unknown as
+      | [string, string, { buttons?: Array<Array<{ text: string }>>; messageThreadId?: number }]
+      | undefined;
+    expect(reboundLastCall?.[0]).toBe("123");
+    expect(reboundLastCall?.[1]).toContain("Binding: Discord Thread (openclaw)");
+    expect(reboundLastCall?.[2]?.messageThreadId).toBe(456);
+    expect(reboundLastCall?.[2]?.buttons?.flat().map((button) => button.text)).toEqual(
+      expect.arrayContaining(["Refresh", "Detach"]),
     );
     expect(
       (controller as any).store.getBinding({
@@ -2085,10 +2100,14 @@ describe("Discord controller flows", () => {
       "Discord Thread (openclaw)",
       expect.objectContaining({ accountId: "default" }),
     );
-    expect(sendMessageTelegram).toHaveBeenCalledWith(
-      "123",
-      expect.stringContaining("Thread Name: Discord Thread"),
-      expect.objectContaining({ accountId: "default", messageThreadId: 456 }),
+    const approvedLastCall = sendMessageTelegram.mock.calls.at(-1) as unknown as
+      | [string, string, { buttons?: Array<Array<{ text: string }>>; messageThreadId?: number }]
+      | undefined;
+    expect(approvedLastCall?.[0]).toBe("123");
+    expect(approvedLastCall?.[1]).toContain("Binding: Discord Thread (openclaw)");
+    expect(approvedLastCall?.[2]?.messageThreadId).toBe(456);
+    expect(approvedLastCall?.[2]?.buttons?.flat().map((button) => button.text)).toEqual(
+      expect.arrayContaining(["Refresh", "Detach"]),
     );
     expect(sendMessageTelegram).toHaveBeenCalledWith(
       "123",
@@ -3978,7 +3997,7 @@ describe("Discord controller flows", () => {
     });
     expect(editMessage).toHaveBeenCalledWith(
       expect.objectContaining({
-        text: expect.stringContaining("Binding: active"),
+        text: expect.stringContaining("Binding: Discord Thread (openclaw)"),
         buttons: expect.any(Array),
       }),
     );

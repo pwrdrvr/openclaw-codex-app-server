@@ -139,9 +139,8 @@ describe("formatCodexStatusText", () => {
       ],
     });
 
-    expect(text).toContain("Binding: active");
+    expect(text).toContain("Binding: Fix Telegram approval flow (openclaw)");
     expect(text).toContain(`Plugin version: ${TEST_PLUGIN_VERSION}`);
-    expect(text).toContain("Thread: Fix Telegram approval flow");
     expect(text).toContain("Model: openai/gpt-5.4 · reasoning high");
     expect(text).toContain(
       `Project folder: ${shortenHomePathForTest("/Users/huntharo/github/openclaw")}`,

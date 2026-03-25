@@ -504,12 +504,15 @@ export function formatCodexStatusText(params: {
   permissionNote?: string;
 }): string {
   const lines = [];
-  lines.push(`Binding: ${params.bindingActive ? "active" : "none"}`);
+  const bindingThreadName = params.threadState?.threadName?.trim();
+  const bindingProjectName = getProjectName(params.projectFolder ?? params.worktreeFolder);
+  lines.push(
+    params.bindingActive
+      ? `Binding: ${bindingThreadName ?? "active"}${bindingProjectName ? ` (${bindingProjectName})` : ""}`
+      : "Binding: none",
+  );
   if (params.pluginVersion?.trim()) {
     lines.push(`Plugin version: ${params.pluginVersion.trim()}`);
-  }
-  if (params.threadState?.threadName?.trim()) {
-    lines.push(`Thread: ${params.threadState.threadName.trim()}`);
   }
   if (params.threadState) {
     lines.push(`Model: ${formatCodexModelText(params.threadState)}`);
