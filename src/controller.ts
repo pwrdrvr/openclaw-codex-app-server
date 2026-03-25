@@ -1388,8 +1388,8 @@ export class CodexPluginController {
         : null;
     const binding = existingBinding ?? hydratedBinding?.binding ?? null;
     const args = ctx.args?.trim() ?? "";
-    const trimmedArgs = args.trim();
-    if (trimmedArgs === "help" || trimmedArgs === "--help") {
+    const normalizedArgs = normalizeOptionDashes(args).trim();
+    if (normalizedArgs === "help" || normalizedArgs === "--help") {
       return this.renderCommandHelp(commandName);
     }
     if (isDiscordChannel(ctx.channel)) {

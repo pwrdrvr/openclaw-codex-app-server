@@ -380,6 +380,24 @@ describe("Discord controller flows", () => {
     expect(renameHelp.text).toContain("Usage:");
   });
 
+  it("renders help when Telegram-style em dash is used for --help", async () => {
+    const { controller } = await createControllerHarness();
+
+    const resumeHelp = await controller.handleCommand("cas_resume", buildDiscordCommandContext({
+      args: "—help",
+      commandBody: "/cas_resume —help",
+    }));
+    const statusHelp = await controller.handleCommand("cas_status", buildDiscordCommandContext({
+      args: "—help",
+      commandBody: "/cas_status —help",
+    }));
+
+    expect(resumeHelp.text).toContain("/cas_resume");
+    expect(resumeHelp.text).toContain("Usage:");
+    expect(statusHelp.text).toContain("/cas_status");
+    expect(statusHelp.text).toContain("--yolo, --no-yolo");
+  });
+
   it("keeps usage error paths for cas_fast, cas_steer, and cas_plan", async () => {
     const { controller } = await createControllerHarness();
     await (controller as any).store.upsertBinding({
@@ -659,6 +677,28 @@ describe("Discord controller flows", () => {
       buildDiscordCommandContext({
         args: "thread-1 --model gpt-5.4 --fast --yolo",
         commandBody: "/cas_resume thread-1 --model gpt-5.4 --fast --yolo",
+      }),
+    );
+
+    expect(reply).toEqual({});
+    const binding = (controller as any).store.getBinding({
+      channel: "discord",
+      accountId: "default",
+      conversationId: "channel:chan-1",
+    });
+    expect(binding?.permissionsMode).toBe("full-access");
+    expect(binding?.preferences?.preferredModel).toBe("gpt-5.4");
+    expect(binding?.preferences?.preferredServiceTier).toBe("fast");
+  });
+
+  it("applies em-dash model, fast, and yolo flags when resuming a thread", async () => {
+    const { controller } = await createControllerHarness();
+
+    const reply = await controller.handleCommand(
+      "cas_resume",
+      buildDiscordCommandContext({
+        args: "thread-1 —model gpt-5.4 —fast —yolo",
+        commandBody: "/cas_resume thread-1 —model gpt-5.4 —fast —yolo",
       }),
     );
 
@@ -1736,6 +1776,58 @@ describe("Discord controller flows", () => {
     expect(text).toContain("Fast mode: on");
     expect(text).toContain("Permissions: Full Access");
   });
+
+  it("applies em-dash model, fast, and yolo flags from cas_status", async () => {
+    const { controller, clientMock, sendMessageTelegram } = await createControllerHarness();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+
+    const reply = await controller.handleCommand(
+      "cas_status",
+      buildTelegramCommandContext({
+        args: "—model gpt-5.4 —fast —yolo",
+        commandBody: "/cas_status —model gpt-5.4 —fast —yolo",
+        getCurrentConversationBinding: vi.fn(async () => ({ bindingId: "b1" })),
+      }),
+    );
+
+    const binding = (controller as any).store.getBinding({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+    });
+    expect(binding?.permissionsMode).toBe("full-access");
+    expect(binding?.preferences?.preferredModel).toBe("gpt-5.4");
+    expect(binding?.preferences?.preferredServiceTier).toBe("fast");
+    expect(clientMock.setThreadModel).toHaveBeenCalledWith({
+      profile: "full-access",
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      model: "gpt-5.4",
+    });
+    expect(clientMock.setThreadServiceTier).toHaveBeenCalledWith({
+      profile: "full-access",
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      serviceTier: "fast",
+    });
+    expect(reply).toEqual({});
+    const firstCall = sendMessageTelegram.mock.calls[0] as unknown as [string, string] | undefined;
+    const text = firstCall?.[1] ?? "";
+    expect(text).toContain("Model: gpt-5.4");
+    expect(text).toContain("Fast mode: on");
+    expect(text).toContain("Permissions: Full Access");
+  });
+
 
   it("parses unicode em dash --sync for cas_rename and renames the Telegram topic", async () => {
     const { controller, clientMock, renameTopic } = await createControllerHarness();

@@ -100,7 +100,7 @@ describe("command help metadata", () => {
     expect(text).toContain("With no flags, this shows the current status card");
   });
 
-  it("returns command help when args are help or --help", async () => {
+  it("returns command help when args are help, --help, or em-dash help", async () => {
     const controller = new CodexPluginController(createApiMock());
     const helpReply = await controller.handleCommand("cas_plan", buildDiscordCommandContext({
       args: "help",
@@ -110,6 +110,10 @@ describe("command help metadata", () => {
       args: "--help",
       commandBody: "/cas_model --help",
     }));
+    const emDashHelpReply = await controller.handleCommand("cas_resume", buildDiscordCommandContext({
+      args: "—help",
+      commandBody: "/cas_resume —help",
+    }));
 
     expect(helpReply.text).toContain("/cas_plan");
     expect(helpReply.text).toContain("Usage:");
@@ -117,5 +121,8 @@ describe("command help metadata", () => {
     expect(longHelpReply.text).toContain("/cas_model");
     expect(longHelpReply.text).toContain("Usage:");
     expect(longHelpReply.text).toContain("Examples:");
+    expect(emDashHelpReply.text).toContain("/cas_resume");
+    expect(emDashHelpReply.text).toContain("Usage:");
+    expect(emDashHelpReply.text).toContain("Examples:");
   });
 });
