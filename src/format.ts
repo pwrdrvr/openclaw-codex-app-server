@@ -502,6 +502,7 @@ export function formatCodexStatusText(params: {
   contextUsage?: ContextUsageSnapshot;
   planMode?: boolean;
   permissionNote?: string;
+  threadNote?: string;
 }): string {
   const lines = [];
   const bindingThreadName = params.threadState?.threadName?.trim();
@@ -537,6 +538,9 @@ export function formatCodexStatusText(params: {
   });
   if (permissions) {
     lines.push(`Permissions: ${permissions}`);
+  }
+  if (params.threadNote?.trim()) {
+    lines.push(params.threadNote.trim());
   }
   if (params.permissionNote?.trim()) {
     lines.push(params.permissionNote.trim());

@@ -1738,6 +1738,50 @@ describe("Discord controller flows", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("shows pending default controls when the bound thread is not materialized yet", async () => {
+    const { controller, sendMessageTelegram, clientMock } = await createControllerHarness();
+    clientMock.readThreadState.mockRejectedValue(
+      new Error(
+        "thread thread-1 is not materialized yet; includeTurns is unavailable before first user message",
+      ),
+    );
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+
+    const reply = await controller.handleCommand(
+      "cas_status",
+      buildTelegramCommandContext({
+        commandBody: "/cas_status",
+        getCurrentConversationBinding: vi.fn(async () => ({ bindingId: "b1" })),
+      }),
+    );
+
+    expect(reply).toEqual({});
+    expect(sendMessageTelegram).toHaveBeenCalledTimes(1);
+    const firstCall = sendMessageTelegram.mock.calls[0] as unknown as
+      | [string, string, { buttons?: Array<Array<{ text: string; callback_data: string }>> }]
+      | undefined;
+    const text = firstCall?.[1] ?? "";
+    const buttons = firstCall?.[2]?.buttons ?? [];
+
+    expect(text).toContain("Model: unknown");
+    expect(text).toContain("saved as defaults until then");
+    expect(buttons).toHaveLength(5);
+    expect(buttons[0][0].text).toBe("Select Model");
+    expect(buttons[0][1].text).toBe("Reasoning: Default");
+    expect(buttons[1][0].text).toBe("Fast: toggle");
+    expect(buttons[1][1].text).toBe("Permissions: toggle");
+  });
+
   it("hides the fast button on status controls when the current model does not support it", async () => {
     const { controller, sendMessageTelegram } = await createControllerHarness();
     await (controller as any).store.upsertBinding({
@@ -4303,6 +4347,61 @@ describe("Discord controller flows", () => {
     );
   });
 
+  it("stores fast mode as a pending default before the thread is materialized", async () => {
+    const { controller, clientMock } = await createControllerHarness();
+    clientMock.readThreadState.mockRejectedValue(
+      new Error(
+        "thread thread-1 is not materialized yet; includeTurns is unavailable before first user message",
+      ),
+    );
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+    const callback = await (controller as any).store.putCallback({
+      kind: "toggle-fast",
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+    });
+    const editMessage = vi.fn(async (_payload: any) => {});
+
+    await controller.handleTelegramInteractive({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+      callback: { payload: callback.token },
+      respond: {
+        clearButtons: vi.fn(async () => {}),
+        reply: vi.fn(async () => {}),
+        editMessage,
+      },
+    } as any);
+
+    expect(clientMock.setThreadServiceTier).not.toHaveBeenCalled();
+    const binding = (controller as any).store.getBinding({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+    });
+    expect(binding?.preferences?.preferredServiceTier).toBe("fast");
+    expect(editMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("Fast mode: on"),
+        buttons: expect.any(Array),
+      }),
+    );
+  });
+
   it("turns fast mode off from the status card by clearing the service tier", async () => {
     const { controller, clientMock } = await createControllerHarness();
     clientMock.readThreadState.mockImplementation(async () => ({
@@ -4778,6 +4877,52 @@ describe("Discord controller flows", () => {
         kind: "refresh-status",
       }),
     );
+  });
+
+  it("shows reasoning-picker buttons for an unmaterialized thread using the current default model", async () => {
+    const { controller, clientMock } = await createControllerHarness();
+    clientMock.readThreadState.mockRejectedValue(
+      new Error(
+        "thread thread-1 is not materialized yet; includeTurns is unavailable before first user message",
+      ),
+    );
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+    const callback = await (controller as any).store.putCallback({
+      kind: "show-reasoning-picker",
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+    });
+    const editMessage = vi.fn(async (_payload: any) => {});
+
+    await controller.handleTelegramInteractive({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+      callback: { payload: callback.token },
+      respond: {
+        clearButtons: vi.fn(async () => {}),
+        reply: vi.fn(async () => {}),
+        editMessage,
+      },
+    } as any);
+
+    const lastCall = editMessage.mock.calls.at(-1)?.[0] as any;
+    expect(lastCall?.text).toContain("Current reasoning: Default");
+    expect(lastCall?.text).toContain("Model: openai/gpt-5.4");
+    expect(lastCall?.buttons?.some((row: Array<{ text: string }>) => row[0]?.text === "High")).toBe(true);
   });
 
   it("shows the model picker in a separate message using the saved preferred model when the thread snapshot is stale", async () => {
@@ -5299,6 +5444,63 @@ describe("Discord controller flows", () => {
       },
     } as any);
 
+    const binding = (controller as any).store.getBinding({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+    });
+    expect(binding?.preferences?.preferredModel).toBe("openai/gpt-5.3");
+    expect(editMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("Model: openai/gpt-5.3"),
+        buttons: expect.any(Array),
+      }),
+    );
+  });
+
+  it("stores the selected model as a pending default before the thread is materialized", async () => {
+    const { controller, clientMock } = await createControllerHarness();
+    clientMock.readThreadState.mockRejectedValue(
+      new Error(
+        "thread thread-1 is not materialized yet; includeTurns is unavailable before first user message",
+      ),
+    );
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+    const callback = await (controller as any).store.putCallback({
+      kind: "set-model",
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      model: "openai/gpt-5.3",
+      returnToStatus: true,
+    });
+    const editMessage = vi.fn(async (_payload: any) => {});
+
+    await controller.handleTelegramInteractive({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+      callback: { payload: callback.token },
+      respond: {
+        clearButtons: vi.fn(async () => {}),
+        reply: vi.fn(async () => {}),
+        editMessage,
+      },
+    } as any);
+
+    expect(clientMock.setThreadModel).not.toHaveBeenCalled();
     const binding = (controller as any).store.getBinding({
       channel: "telegram",
       accountId: "default",
