@@ -449,6 +449,20 @@ export type CallbackAction =
     }
   | {
       token: string;
+      kind: "show-skills";
+      conversation: ConversationRef;
+      createdAt: number;
+      expiresAt: number;
+    }
+  | {
+      token: string;
+      kind: "show-mcp";
+      conversation: ConversationRef;
+      createdAt: number;
+      expiresAt: number;
+    }
+  | {
+      token: string;
       kind: "show-model-picker";
       conversation: ConversationRef;
       createdAt: number;

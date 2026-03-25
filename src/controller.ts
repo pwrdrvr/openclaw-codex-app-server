@@ -1917,7 +1917,7 @@ export class CodexPluginController {
     const currentReasoning = normalizeReasoningEffort(
       effectiveState?.reasoningEffort ?? binding.preferences?.preferredReasoningEffort,
     );
-    const [showModelPicker, showReasoningPicker, togglePermissions, compactThread, stopRun] = await Promise.all([
+    const [showModelPicker, showReasoningPicker, togglePermissions, compactThread, stopRun, showSkills, showMcp] = await Promise.all([
       this.store.putCallback({
         kind: "show-model-picker",
         conversation,
@@ -1936,6 +1936,14 @@ export class CodexPluginController {
       }),
       this.store.putCallback({
         kind: "stop-run",
+        conversation,
+      }),
+      this.store.putCallback({
+        kind: "show-skills",
+        conversation,
+      }),
+      this.store.putCallback({
+        kind: "show-mcp",
         conversation,
       }),
     ]);
@@ -1984,7 +1992,31 @@ export class CodexPluginController {
         callback_data: `${INTERACTIVE_NAMESPACE}:${stopRun.token}`,
       },
     ]);
+    buttons.push([
+      {
+        text: "Skills",
+        callback_data: `${INTERACTIVE_NAMESPACE}:${showSkills.token}`,
+      },
+      {
+        text: "MCPs",
+        callback_data: `${INTERACTIVE_NAMESPACE}:${showMcp.token}`,
+      },
+    ]);
     return buttons;
+  }
+
+  private async sendReplyPayloadToConversation(
+    conversation: ConversationTarget,
+    payload: ReplyPayload,
+  ): Promise<void> {
+    const buttons = extractReplyButtons(payload);
+    const sent = await this.sendReply(conversation, {
+      text: payload.text,
+      buttons,
+    });
+    if (!sent && payload.text?.trim()) {
+      await this.sendText(conversation, payload.text);
+    }
   }
 
   private async buildModelPicker(
@@ -4501,6 +4533,41 @@ export class CodexPluginController {
         text: statusCard.text,
         buttons: statusCard.buttons ?? [],
       });
+      return;
+    }
+    if (callback.kind === "show-skills") {
+      const binding = this.store.getBinding(callback.conversation);
+      await this.store.removeCallback(callback.token);
+      const payload = await this.handleSkillsCommand(
+        {
+          ...callback.conversation,
+          threadId: responders.conversation.threadId,
+        },
+        binding,
+        "",
+      );
+      if (!(isDiscordChannel(callback.conversation.channel) && payload.text === "Sent Codex skills to this Discord conversation.")) {
+        await this.sendReplyPayloadToConversation(
+          {
+            ...callback.conversation,
+            threadId: responders.conversation.threadId,
+          },
+          payload,
+        );
+      }
+      return;
+    }
+    if (callback.kind === "show-mcp") {
+      const binding = this.store.getBinding(callback.conversation);
+      await this.store.removeCallback(callback.token);
+      const payload = await this.handleMcpCommand(binding, "");
+      await this.sendReplyPayloadToConversation(
+        {
+          ...callback.conversation,
+          threadId: responders.conversation.threadId,
+        },
+        payload,
+      );
       return;
     }
     if (callback.kind === "show-model-picker") {

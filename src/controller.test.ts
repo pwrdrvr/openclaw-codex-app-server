@@ -158,6 +158,7 @@ async function createControllerHarness() {
       { name: "skill-a", description: "Skill A", cwd: "/repo/openclaw" },
       { name: "skill-b", description: "Skill B", cwd: "/repo/openclaw" },
     ]),
+    listMcpServers: vi.fn(async () => []),
     readThreadState: vi.fn(async () => ({ ...threadState })),
     readThreadContext: vi.fn(async () => ({
       lastUserMessage: undefined,
@@ -1423,13 +1424,15 @@ describe("Discord controller flows", () => {
     );
     const buttons = (reply as any).channelData?.telegram?.buttons;
 
-    expect(buttons).toHaveLength(3);
+    expect(buttons).toHaveLength(4);
     expect(buttons[0][0].text).toBe("Select Model");
     expect(buttons[0][1].text).toBe("Reasoning: Default");
     expect(buttons[1][0].text).toBe("Fast: toggle");
     expect(buttons[1][1].text).toBe("Permissions: toggle");
     expect(buttons[2][0].text).toBe("Compact");
     expect(buttons[2][1].text).toBe("Stop");
+    expect(buttons[3][0].text).toBe("Skills");
+    expect(buttons[3][1].text).toBe("MCPs");
     const kinds = buttons.flatMap((row: Array<{ callback_data: string }>) => {
       return row.map((button) => {
         const token = button.callback_data.split(":").pop() ?? "";
@@ -1444,6 +1447,8 @@ describe("Discord controller flows", () => {
         "toggle-permissions",
         "compact-thread",
         "stop-run",
+        "show-skills",
+        "show-mcp",
       ]),
     );
   });
@@ -1478,6 +1483,8 @@ describe("Discord controller flows", () => {
 
     expect(buttons[1]).toHaveLength(1);
     expect(buttons[1][0].text).toBe("Permissions: toggle");
+    expect(buttons[3][0].text).toBe("Skills");
+    expect(buttons[3][1].text).toBe("MCPs");
     const kinds = buttons.flatMap((row: Array<{ callback_data: string }>) => {
       return row.map((button) => {
         const token = button.callback_data.split(":").pop() ?? "";
@@ -4287,6 +4294,97 @@ describe("Discord controller flows", () => {
       expect.objectContaining({
         text: expect.stringContaining("Compaction started."),
         buttons: expect.any(Array),
+      }),
+    );
+  });
+
+  it("runs skills from the status card without rewriting the status message", async () => {
+    const { controller, sendMessageTelegram } = await createControllerHarness();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+    const callback = await (controller as any).store.putCallback({
+      kind: "show-skills",
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+    });
+    const editMessage = vi.fn(async (_payload: any) => {});
+
+    await controller.handleTelegramInteractive({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+      callback: { payload: callback.token },
+      respond: {
+        clearButtons: vi.fn(async () => {}),
+        reply: vi.fn(async () => {}),
+        editMessage,
+      },
+    } as any);
+
+    expect(editMessage).not.toHaveBeenCalled();
+    expect(sendMessageTelegram).toHaveBeenCalledWith(
+      "123",
+      expect.stringContaining("skill-a"),
+      expect.objectContaining({
+        accountId: "default",
+        buttons: expect.any(Array),
+      }),
+    );
+  });
+
+  it("runs MCPs from the status card without rewriting the status message", async () => {
+    const { controller, sendMessageTelegram } = await createControllerHarness();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+    const callback = await (controller as any).store.putCallback({
+      kind: "show-mcp",
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+    });
+    const editMessage = vi.fn(async (_payload: any) => {});
+
+    await controller.handleTelegramInteractive({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+      callback: { payload: callback.token },
+      respond: {
+        clearButtons: vi.fn(async () => {}),
+        reply: vi.fn(async () => {}),
+        editMessage,
+      },
+    } as any);
+
+    expect(editMessage).not.toHaveBeenCalled();
+    expect(sendMessageTelegram).toHaveBeenCalledWith(
+      "123",
+      expect.stringContaining("No MCP servers reported."),
+      expect.objectContaining({
+        accountId: "default",
       }),
     );
   });
