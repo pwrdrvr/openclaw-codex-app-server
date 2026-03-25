@@ -513,20 +513,26 @@ describe("Discord controller flows", () => {
 
   it("collapses matching worktrees to one project root in the /cas_resume --new picker", async () => {
     const { controller } = await createControllerHarness();
-    const canonicalWorkspaceDir = "/Users/huntharo/github/openclaw";
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-worktree-picker-"));
+    const canonicalWorkspaceDir = path.join(tempRoot, "github", "openclaw");
+    const worktreeA = path.join(tempRoot, ".codex", "worktrees", "7d9d", "openclaw");
+    const worktreeB = path.join(tempRoot, ".codex", "worktrees", "1999", "openclaw");
+    fs.mkdirSync(canonicalWorkspaceDir, { recursive: true });
+    fs.mkdirSync(worktreeA, { recursive: true });
+    fs.mkdirSync(worktreeB, { recursive: true });
 
     (controller as any).client.listThreads.mockResolvedValue([
       {
         threadId: "thread-a",
         title: "Feature A",
-        projectKey: "/Users/huntharo/.codex/worktrees/7d9d/openclaw",
+        projectKey: worktreeA,
         createdAt: Date.now() - 60_000,
         updatedAt: Date.now() - 30_000,
       },
       {
         threadId: "thread-b",
         title: "Feature B",
-        projectKey: "/Users/huntharo/.codex/worktrees/1999/openclaw",
+        projectKey: worktreeB,
         createdAt: Date.now() - 50_000,
         updatedAt: Date.now() - 20_000,
       },
