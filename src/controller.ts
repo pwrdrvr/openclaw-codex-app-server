@@ -1005,6 +1005,8 @@ export class CodexPluginController {
       threadId: pending.threadId,
       workspaceDir: pending.workspaceDir,
       threadTitle: pending.threadTitle,
+      permissionsMode: normalizePermissionsMode(pending.permissionsMode),
+      preferences: pending.preferences,
     });
     if (pending.syncTopic) {
       const syncedName = buildResumeTopicName({

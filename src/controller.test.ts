@@ -2353,6 +2353,65 @@ describe("Discord controller flows", () => {
     ).toBeNull();
   });
 
+  it("preserves pending model and yolo overrides when approval completes after resume-thread selection", async () => {
+    const { controller } = await createControllerHarness();
+
+    await (controller as any).store.upsertPendingBind({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123:topic:456",
+        parentConversationId: "123",
+      },
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      threadTitle: "Discord Thread",
+      permissionsMode: "full-access",
+      preferences: {
+        preferredModel: "gpt-5.3-codex-spark",
+        updatedAt: Date.now(),
+      },
+      syncTopic: false,
+      notifyBound: false,
+      updatedAt: Date.now(),
+    });
+
+    await controller.handleConversationBindingResolved({
+      status: "approved",
+      binding: {
+        bindingId: "binding-1",
+        pluginId: "openclaw-codex-app-server",
+        pluginRoot: "/plugins/codex",
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123:topic:456",
+        parentConversationId: "123",
+        threadId: 456,
+        boundAt: Date.now(),
+      },
+      decision: "allow-once",
+      request: {
+        summary: "Bind this conversation to Codex thread Discord Thread.",
+        conversation: {
+          channel: "telegram",
+          accountId: "default",
+          conversationId: "123:topic:456",
+          parentConversationId: "123",
+          threadId: 456,
+        },
+      },
+    } as any);
+
+    const binding = (controller as any).store.getBinding({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123:topic:456",
+      parentConversationId: "123",
+    });
+    expect(binding?.permissionsMode).toBe("full-access");
+    expect(binding?.preferences?.preferredModel).toBe("gpt-5.3-codex-spark");
+  });
+
   it("clears pending bind state immediately when core reports the bind was denied", async () => {
     const { controller, renameTopic, sendMessageTelegram } = await createControllerHarness();
 
