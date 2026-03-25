@@ -5547,8 +5547,8 @@ export class CodexPluginController {
 
     const messages = [
       formatBoundThreadSummary({
-      binding: nextBinding,
-      state,
+        binding: nextBinding,
+        state,
       }),
     ];
 
