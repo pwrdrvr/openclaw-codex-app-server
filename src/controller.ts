@@ -2241,6 +2241,16 @@ export class CodexPluginController {
         },
       ]);
     }
+    const cancel = await this.store.putCallback({
+      kind: "refresh-status",
+      conversation,
+    });
+    buttons.push([
+      {
+        text: "Cancel",
+        callback_data: `${INTERACTIVE_NAMESPACE}:${cancel.token}`,
+      },
+    ]);
     const currentText = currentReasoning ? formatReasoningEffortLabel(currentReasoning) : "Default";
     return {
       text:
@@ -4741,17 +4751,28 @@ export class CodexPluginController {
         await responders.reply("No Codex binding for this conversation.");
         return;
       }
-      const picker = await this.buildReasoningPicker(
-        {
-          ...callback.conversation,
-          threadId: responders.conversation.threadId,
-        },
-        binding,
-        {
-          returnToStatus: true,
-        },
-      );
-      await responders.editPicker(picker);
+      const conversation = {
+        ...callback.conversation,
+        threadId: responders.conversation.threadId,
+      };
+      const [picker, statusCard] = await Promise.all([
+        this.buildReasoningPicker(
+          conversation,
+          binding,
+          {
+            returnToStatus: true,
+          },
+        ),
+        this.buildStatusCard(
+          conversation,
+          binding,
+          true,
+        ),
+      ]);
+      await responders.editPicker({
+        text: statusCard.text,
+        buttons: picker.buttons,
+      });
       return;
     }
     if (callback.kind === "set-reasoning") {

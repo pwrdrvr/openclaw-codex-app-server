@@ -4497,7 +4497,7 @@ describe("Discord controller flows", () => {
       channel: "telegram",
       accountId: "default",
       conversationId: "123",
-      callback: { payload: callback.token },
+      callback: { payload: callback.token, messageId: 41, chatId: "123" },
       respond: {
         clearButtons: vi.fn(async () => {}),
         reply: vi.fn(async () => {}),
@@ -4506,8 +4506,22 @@ describe("Discord controller flows", () => {
     } as any);
 
     const lastCall = editMessage.mock.calls.at(-1)?.[0] as any;
-    expect(lastCall?.text).toContain("Current reasoning: Default");
+    expect(lastCall?.text).toContain("Binding:");
     expect(lastCall?.buttons?.some((row: Array<{ text: string }>) => row[0]?.text === "High")).toBe(true);
+    expect(lastCall?.buttons?.some((row: Array<{ text: string }>) => row[0]?.text === "Cancel")).toBe(true);
+    const cancelToken = String(
+      lastCall?.buttons
+        ?.flat()
+        .find((button: { text: string }) => button.text === "Cancel")
+        ?.callback_data ?? "",
+    )
+      .split(":")
+      .pop();
+    expect((controller as any).store.getCallback(cancelToken)).toEqual(
+      expect.objectContaining({
+        kind: "refresh-status",
+      }),
+    );
   });
 
   it("shows the model picker in a separate message using the saved preferred model when the thread snapshot is stale", async () => {
