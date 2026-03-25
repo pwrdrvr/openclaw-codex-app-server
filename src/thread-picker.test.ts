@@ -7,7 +7,7 @@ import {
 
 describe("thread picker helpers", () => {
   it("derives the project name from a worktree path", () => {
-    expect(getProjectName("/Users/huntharo/.codex/worktrees/cb00/openclaw")).toBe("openclaw");
+    expect(getProjectName("/workspace/.codex/worktrees/cb00/openclaw")).toBe("openclaw");
   });
 
   it("groups multiple worktrees under the same project name", () => {
@@ -16,19 +16,19 @@ describe("thread picker helpers", () => {
         {
           threadId: "1",
           title: "One",
-          projectKey: "/Users/huntharo/.codex/worktrees/cb00/openclaw",
+          projectKey: "/workspace/.codex/worktrees/cb00/openclaw",
           updatedAt: 10,
         },
         {
           threadId: "2",
           title: "Two",
-          projectKey: "/Users/huntharo/.codex/worktrees/cb01/openclaw",
+          projectKey: "/workspace/.codex/worktrees/cb01/openclaw",
           updatedAt: 20,
         },
         {
           threadId: "3",
           title: "Three",
-          projectKey: "/Users/huntharo/github/gitcrawl",
+          projectKey: "/workspace/gitcrawl",
           updatedAt: 5,
         },
       ]),

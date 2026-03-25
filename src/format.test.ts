@@ -22,6 +22,9 @@ import {
 const require = createRequire(import.meta.url);
 const packageJson = require("../package.json") as { version?: string };
 const TEST_PLUGIN_VERSION = packageJson.version ?? "unknown";
+const TEST_WORKTREE_PATH = "/workspace/.codex/worktrees/41fb/openclaw";
+const TEST_PROJECT_PATH = "/workspace/openclaw";
+const TEST_EMAIL = "user@example.com";
 
 function shortenHomePathForTest(value: string): string {
   const home = os.homedir();
@@ -41,7 +44,7 @@ describe("formatThreadButtonLabel", () => {
         thread: {
           threadId: "019cdaf5-54be-7ba2-b610-dd71b0efb42b",
           title: "App Server Redux - Plugin Surface Build",
-          projectKey: "/Users/huntharo/.codex/worktrees/cb00/openclaw",
+          projectKey: "/workspace/.codex/worktrees/cb00/openclaw",
           updatedAt: Date.now() - 4 * 60_000,
           createdAt: Date.now() - 10 * 60 * 60_000,
         },
@@ -57,7 +60,7 @@ describe("formatThreadButtonLabel", () => {
       formatThreadButtonLabel({
         thread: {
           threadId: "019cbef1-376b-7312-98aa-24488c7499d4",
-          projectKey: "/Users/huntharo/.openclaw/workspace",
+          projectKey: "/workspace/.openclaw/workspace",
         },
         includeProjectSuffix: true,
       }),
@@ -77,14 +80,14 @@ describe("formatBoundThreadSummary", () => {
           },
           sessionKey: "openclaw-codex-app-server:thread:abc",
           threadId: "019cc00d-6cf4-7c11-afcd-2673db349a21",
-          workspaceDir: "/Users/huntharo/.codex/worktrees/41fb/openclaw",
+          workspaceDir: TEST_WORKTREE_PATH,
           threadTitle: "Fix Telegram approval flow",
           updatedAt: 1,
         },
         state: {
           threadId: "019cc00d-6cf4-7c11-afcd-2673db349a21",
           threadName: "Fix Telegram approval flow",
-          cwd: "/Users/huntharo/.codex/worktrees/41fb/openclaw",
+          cwd: TEST_WORKTREE_PATH,
         },
       }),
     ).toBe(
@@ -93,7 +96,7 @@ describe("formatBoundThreadSummary", () => {
         "Project: openclaw",
         "Thread Name: Fix Telegram approval flow",
         "Thread ID: 019cc00d-6cf4-7c11-afcd-2673db349a21",
-        "Worktree Path: /Users/huntharo/.codex/worktrees/41fb/openclaw",
+        `Worktree Path: ${TEST_WORKTREE_PATH}`,
       ].join("\n"),
     );
   });
@@ -111,17 +114,17 @@ describe("formatCodexStatusText", () => {
         modelProvider: "openai",
         reasoningEffort: "high",
         serviceTier: "default",
-        cwd: "/Users/huntharo/.codex/worktrees/41fb/openclaw",
+        cwd: TEST_WORKTREE_PATH,
         approvalPolicy: "on-request",
         sandbox: "workspace-write",
       },
       account: {
         type: "chatgpt",
-        email: "huntharo@gmail.com",
+        email: TEST_EMAIL,
         planType: "pro",
       },
-      projectFolder: "/Users/huntharo/github/openclaw",
-      worktreeFolder: "/Users/huntharo/.codex/worktrees/41fb/openclaw",
+      projectFolder: TEST_PROJECT_PATH,
+      worktreeFolder: TEST_WORKTREE_PATH,
       planMode: false,
       rateLimits: [
         {
@@ -142,17 +145,13 @@ describe("formatCodexStatusText", () => {
     expect(text).toContain("Binding: Fix Telegram approval flow (openclaw)");
     expect(text).toContain(`Plugin version: ${TEST_PLUGIN_VERSION}`);
     expect(text).toContain("Model: openai/gpt-5.4 · reasoning high");
-    expect(text).toContain(
-      `Project folder: ${shortenHomePathForTest("/Users/huntharo/github/openclaw")}`,
-    );
-    expect(text).toContain(
-      `Worktree folder: ${shortenHomePathForTest("/Users/huntharo/.codex/worktrees/41fb/openclaw")}`,
-    );
+    expect(text).toContain(`Project folder: ${shortenHomePathForTest(TEST_PROJECT_PATH)}`);
+    expect(text).toContain(`Worktree folder: ${shortenHomePathForTest(TEST_WORKTREE_PATH)}`);
     expect(text).toContain("Fast mode: off");
     expect(text).toContain("Plan mode: off");
     expect(text).toContain("Context usage: unavailable until Codex emits a token-usage update");
     expect(text).toContain("Permissions: Default");
-    expect(text).toContain("Account: huntharo@gmail.com (pro)");
+    expect(text).toContain(`Account: ${TEST_EMAIL} (pro)`);
     expect(text).toContain("Thread: 019cc00d-6cf4-7c11-afcd-2673db349a21");
     expect(text).toContain("Rate limits timezone:");
     expect(text).toContain("5h limit: 85% left");

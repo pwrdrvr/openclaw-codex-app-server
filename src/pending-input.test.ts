@@ -120,7 +120,7 @@ describe("pending-input helpers", () => {
         turnId: "turn-1",
         itemId: "item-1",
         reason: "Codex needs write access outside the workspace.",
-        grantRoot: "/Users/huntharo/github/codex",
+        grantRoot: "/workspace/codex",
       },
       options: [],
       actions: buildPendingUserInputActions({
@@ -136,7 +136,7 @@ describe("pending-input helpers", () => {
 
     expect(text).toContain("Codex file change approval requested");
     expect(text).toContain("Codex needs write access outside the workspace.");
-    expect(text).toContain("Requested writable root: `/Users/huntharo/github/codex`");
+    expect(text).toContain("Requested writable root: `/workspace/codex`");
     expect(text).not.toContain("Command:");
   });
 

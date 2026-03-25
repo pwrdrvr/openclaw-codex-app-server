@@ -7,6 +7,8 @@ import type { OpenClawPluginApi, PluginCommandContext } from "openclaw/plugin-sd
 import { CodexAppServerClient } from "./client.js";
 import { CodexPluginController } from "./controller.js";
 
+const TEST_TELEGRAM_PEER_ID = "telegram-user-1";
+
 const discordSdkState = vi.hoisted(() => ({
   buildDiscordComponentMessage: vi.fn((params: { spec: { text?: string; blocks?: unknown[] } }) => ({
     components: [params.spec.text ?? "", ...(params.spec.blocks ?? [])],
@@ -3558,7 +3560,7 @@ describe("Discord controller flows", () => {
       {
         channel: "telegram",
         accountId: "default",
-        conversationId: "8460800771",
+        conversationId: TEST_TELEGRAM_PEER_ID,
       },
       {
         mediaUrl: attachmentPath,
@@ -3567,7 +3569,7 @@ describe("Discord controller flows", () => {
 
     expect(sent).toBe(true);
     expect(sendMessageTelegram).toHaveBeenCalledWith(
-      "8460800771",
+      TEST_TELEGRAM_PEER_ID,
       "",
       expect.objectContaining({
         mediaUrl: attachmentPath,
@@ -3789,7 +3791,7 @@ describe("Discord controller flows", () => {
         conversation: {
           channel: "telegram",
           accountId: "default",
-          conversationId: "8460800771",
+          conversationId: TEST_TELEGRAM_PEER_ID,
         },
         binding: null,
         workspaceDir: "/repo/openclaw",
@@ -3842,13 +3844,13 @@ describe("Discord controller flows", () => {
       conversation: {
         channel: "telegram",
         accountId: "default",
-        conversationId: "8460800771",
+        conversationId: TEST_TELEGRAM_PEER_ID,
       },
       binding: {
         conversation: {
           channel: "telegram",
           accountId: "default",
-          conversationId: "8460800771",
+          conversationId: TEST_TELEGRAM_PEER_ID,
         },
         sessionKey: "session-1",
         threadId: "thread-1",
@@ -3863,7 +3865,7 @@ describe("Discord controller flows", () => {
     await flushAsyncWork();
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(sendMessageTelegram).toHaveBeenCalledWith(
-      "8460800771",
+      TEST_TELEGRAM_PEER_ID,
       "Codex authentication failed on this machine. Run `codex logout` and `codex login`, then try again.",
       expect.anything(),
     );
@@ -3891,7 +3893,7 @@ describe("Discord controller flows", () => {
       conversation: {
         channel: "telegram",
         accountId: "default",
-        conversationId: "8460800771",
+        conversationId: TEST_TELEGRAM_PEER_ID,
       },
       binding: null,
       workspaceDir: "/repo/openclaw",
@@ -3902,7 +3904,7 @@ describe("Discord controller flows", () => {
     await flushAsyncWork();
     await vi.waitFor(() => {
       expect(sendMessageTelegram).toHaveBeenCalledWith(
-        "8460800771",
+        TEST_TELEGRAM_PEER_ID,
         "Codex authentication failed on this machine. Run `codex logout` and `codex login`, then try again.",
         expect.anything(),
       );
@@ -3933,13 +3935,13 @@ describe("Discord controller flows", () => {
       conversation: {
         channel: "telegram",
         accountId: "default",
-        conversationId: "8460800771",
+        conversationId: TEST_TELEGRAM_PEER_ID,
       },
       binding: {
         conversation: {
           channel: "telegram",
           accountId: "default",
-          conversationId: "8460800771",
+          conversationId: TEST_TELEGRAM_PEER_ID,
         },
         sessionKey: "session-1",
         threadId: "thread-1",
@@ -3954,7 +3956,7 @@ describe("Discord controller flows", () => {
     await flushAsyncWork();
     await vi.waitFor(() => {
       expect(sendMessageTelegram).toHaveBeenCalledWith(
-        "8460800771",
+        TEST_TELEGRAM_PEER_ID,
         "Codex authentication failed on this machine. Run `codex logout` and `codex login`, then try again.",
         expect.anything(),
       );
@@ -3986,13 +3988,13 @@ describe("Discord controller flows", () => {
       conversation: {
         channel: "telegram",
         accountId: "default",
-        conversationId: "8460800771",
+        conversationId: TEST_TELEGRAM_PEER_ID,
       },
       binding: {
         conversation: {
           channel: "telegram",
           accountId: "default",
-          conversationId: "8460800771",
+          conversationId: TEST_TELEGRAM_PEER_ID,
         },
         sessionKey: "session-1",
         threadId: "thread-1",
@@ -4041,13 +4043,13 @@ describe("Discord controller flows", () => {
       conversation: {
         channel: "telegram",
         accountId: "default",
-        conversationId: "8460800771",
+        conversationId: TEST_TELEGRAM_PEER_ID,
       },
       binding: {
         conversation: {
           channel: "telegram",
           accountId: "default",
-          conversationId: "8460800771",
+          conversationId: TEST_TELEGRAM_PEER_ID,
         },
         sessionKey: "session-1",
         threadId: "thread-1",
@@ -4096,13 +4098,13 @@ describe("Discord controller flows", () => {
       conversation: {
         channel: "telegram",
         accountId: "default",
-        conversationId: "8460800771",
+        conversationId: TEST_TELEGRAM_PEER_ID,
       },
       binding: {
         conversation: {
           channel: "telegram",
           accountId: "default",
-          conversationId: "8460800771",
+          conversationId: TEST_TELEGRAM_PEER_ID,
         },
         sessionKey: "session-1",
         threadId: "thread-1",
@@ -4162,13 +4164,13 @@ describe("Discord controller flows", () => {
       conversation: {
         channel: "telegram",
         accountId: "default",
-        conversationId: "8460800771",
+        conversationId: TEST_TELEGRAM_PEER_ID,
       },
       binding: {
         conversation: {
           channel: "telegram",
           accountId: "default",
-          conversationId: "8460800771",
+          conversationId: TEST_TELEGRAM_PEER_ID,
         },
         sessionKey: "session-1",
         threadId: "thread-1",
@@ -4182,7 +4184,7 @@ describe("Discord controller flows", () => {
 
     await flushAsyncWork();
     expect(sendMessageTelegram).toHaveBeenCalledWith(
-      "8460800771",
+      TEST_TELEGRAM_PEER_ID,
       "Codex completed without a text reply.",
       expect.anything(),
     );
@@ -4208,13 +4210,13 @@ describe("Discord controller flows", () => {
       conversation: {
         channel: "telegram",
         accountId: "default",
-        conversationId: "8460800771",
+        conversationId: TEST_TELEGRAM_PEER_ID,
       },
       binding: {
         conversation: {
           channel: "telegram",
           accountId: "default",
-          conversationId: "8460800771",
+          conversationId: TEST_TELEGRAM_PEER_ID,
         },
         sessionKey: "session-1",
         threadId: "thread-1",
@@ -4228,7 +4230,7 @@ describe("Discord controller flows", () => {
 
     await flushAsyncWork();
     expect(sendMessageTelegram).toHaveBeenCalledWith(
-      "8460800771",
+      TEST_TELEGRAM_PEER_ID,
       "Cancelled the Codex approval request.",
       expect.anything(),
     );
