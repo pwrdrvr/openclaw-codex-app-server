@@ -3900,11 +3900,13 @@ describe("Discord controller flows", () => {
     });
 
     await flushAsyncWork();
-    expect(sendMessageTelegram).toHaveBeenCalledWith(
-      "8460800771",
-      "Codex authentication failed on this machine. Run `codex logout` and `codex login`, then try again.",
-      expect.anything(),
-    );
+    await vi.waitFor(() => {
+      expect(sendMessageTelegram).toHaveBeenCalledWith(
+        "8460800771",
+        "Codex authentication failed on this machine. Run `codex logout` and `codex login`, then try again.",
+        expect.anything(),
+      );
+    });
   });
 
   it("surfaces explicit failed turns as auth failures when the terminal error is unauthorized", async () => {
@@ -4974,7 +4976,7 @@ describe("Discord controller flows", () => {
       channel: "telegram",
       accountId: "default",
       conversationId: "123",
-      callback: { payload: callback.token },
+      callback: { payload: callback.token, messageId: 41, chatId: "123" },
       respond: {
         clearButtons: vi.fn(async () => {}),
         reply: vi.fn(async () => {}),
@@ -4983,9 +4985,10 @@ describe("Discord controller flows", () => {
     } as any);
 
     const lastCall = editMessage.mock.calls.at(-1)?.[0] as any;
-    expect(lastCall?.text).toContain("Current reasoning: Default");
-    expect(lastCall?.text).toContain("Model: openai/gpt-5.4");
+    expect(lastCall?.text).toContain("Binding:");
+    expect(lastCall?.text).toContain("saved as defaults until then");
     expect(lastCall?.buttons?.some((row: Array<{ text: string }>) => row[0]?.text === "High")).toBe(true);
+    expect(lastCall?.buttons?.some((row: Array<{ text: string }>) => row[0]?.text === "Cancel")).toBe(true);
   });
 
   it("shows the model picker in a separate message using the saved preferred model when the thread snapshot is stale", async () => {
