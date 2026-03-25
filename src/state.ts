@@ -143,6 +143,24 @@ type PutCallbackInput =
       ttlMs?: number;
     }
   | {
+      kind: "run-skill";
+      conversation: ConversationTarget;
+      skillName: string;
+      workspaceDir?: string;
+      token?: string;
+      ttlMs?: number;
+    }
+  | {
+      kind: "show-skill-help";
+      conversation: ConversationTarget;
+      skillName: string;
+      description?: string;
+      cwd?: string;
+      enabled?: boolean;
+      token?: string;
+      ttlMs?: number;
+    }
+  | {
       kind: "show-model-picker";
       conversation: ConversationTarget;
       token?: string;
@@ -595,6 +613,28 @@ export class PluginStateStore {
                       ? {
                           kind: "show-mcp",
                           conversation: callback.conversation,
+                          token: callback.token ?? this.createCallbackToken(),
+                          createdAt: now,
+                          expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
+                        }
+                    : callback.kind === "run-skill"
+                      ? {
+                          kind: "run-skill",
+                          conversation: callback.conversation,
+                          skillName: callback.skillName,
+                          workspaceDir: callback.workspaceDir,
+                          token: callback.token ?? this.createCallbackToken(),
+                          createdAt: now,
+                          expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
+                        }
+                    : callback.kind === "show-skill-help"
+                      ? {
+                          kind: "show-skill-help",
+                          conversation: callback.conversation,
+                          skillName: callback.skillName,
+                          description: callback.description,
+                          cwd: callback.cwd,
+                          enabled: callback.enabled,
                           token: callback.token ?? this.createCallbackToken(),
                           createdAt: now,
                           expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),

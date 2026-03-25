@@ -389,6 +389,12 @@ export type CallbackAction =
             requestedModel?: string;
             requestedFast?: boolean;
             requestedYolo?: boolean;
+          }
+        | {
+            mode: "skills";
+            page: number;
+            filter?: string;
+            clickMode: "run" | "help";
           };
       createdAt: number;
       expiresAt: number;
@@ -472,6 +478,26 @@ export type CallbackAction =
       token: string;
       kind: "show-mcp";
       conversation: ConversationRef;
+      createdAt: number;
+      expiresAt: number;
+    }
+  | {
+      token: string;
+      kind: "run-skill";
+      conversation: ConversationRef;
+      skillName: string;
+      workspaceDir?: string;
+      createdAt: number;
+      expiresAt: number;
+    }
+  | {
+      token: string;
+      kind: "show-skill-help";
+      conversation: ConversationRef;
+      skillName: string;
+      description?: string;
+      cwd?: string;
+      enabled?: boolean;
       createdAt: number;
       expiresAt: number;
     }

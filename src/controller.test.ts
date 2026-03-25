@@ -655,7 +655,21 @@ describe("Discord controller flows", () => {
     expect(sendComponentMessage).toHaveBeenCalledWith(
       "channel:chan-1",
       expect.objectContaining({
-        text: expect.stringContaining("Codex skills"),
+        text: expect.stringContaining("Type `$skill-name` in this chat to run one directly."),
+        blocks: expect.arrayContaining([
+          expect.objectContaining({
+            buttons: expect.arrayContaining([
+              expect.objectContaining({ label: "$skill-a" }),
+              expect.objectContaining({ label: "$skill-b" }),
+            ]),
+          }),
+          expect.objectContaining({
+            buttons: expect.arrayContaining([
+              expect.objectContaining({ label: "Mode: toggle" }),
+              expect.objectContaining({ label: "Cancel" }),
+            ]),
+          }),
+        ]),
       }),
       expect.objectContaining({ accountId: "default" }),
     );
@@ -4400,12 +4414,82 @@ describe("Discord controller flows", () => {
     } as any);
 
     expect(editMessage).not.toHaveBeenCalled();
+    const pickerCall = sendMessageTelegram.mock.calls.at(-1) as unknown as
+      | [string, string, { buttons?: Array<Array<{ text: string }>> }]
+      | undefined;
+    expect(pickerCall?.[0]).toBe("123");
+    expect(pickerCall?.[1]).toContain("Type `$skill-name` in this chat to run one directly.");
+    expect(pickerCall?.[2]?.buttons?.flat().map((button) => button.text)).toEqual(
+      expect.arrayContaining(["$skill-a", "$skill-b", "Mode: toggle", "Cancel"]),
+    );
+  });
+
+  it("toggles skills picker into help mode and prints help without rewriting the picker", async () => {
+    const { controller, sendMessageTelegram } = await createControllerHarness();
+    const helpView = await (controller as any).store.putCallback({
+      kind: "picker-view",
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      view: {
+        mode: "skills",
+        page: 0,
+        clickMode: "help",
+      },
+    });
+    const editMessage = vi.fn(async (_payload: any) => {});
+
+    await controller.handleTelegramInteractive({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+      callback: { payload: helpView.token },
+      respond: {
+        clearButtons: vi.fn(async () => {}),
+        reply: vi.fn(async () => {}),
+        editMessage,
+      },
+    } as any);
+
+    expect(editMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("Mode: Click to Print Help. Page 1/1."),
+        buttons: expect.any(Array),
+      }),
+    );
+    const helpCallback = await (controller as any).store.putCallback({
+      kind: "show-skill-help",
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      skillName: "skill-a",
+      description: "Skill A",
+      cwd: "/repo/openclaw",
+      enabled: true,
+    });
+
+    await controller.handleTelegramInteractive({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+      callback: { payload: helpCallback.token },
+      respond: {
+        clearButtons: vi.fn(async () => {}),
+        reply: vi.fn(async () => {}),
+        editMessage,
+      },
+    } as any);
+
+    expect(editMessage).toHaveBeenCalledTimes(1);
     expect(sendMessageTelegram).toHaveBeenCalledWith(
       "123",
-      expect.stringContaining("skill-a"),
+      expect.stringContaining("Skill: $skill-a"),
       expect.objectContaining({
         accountId: "default",
-        buttons: expect.any(Array),
       }),
     );
   });

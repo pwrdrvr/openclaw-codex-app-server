@@ -663,6 +663,56 @@ export function formatSkills(params: {
   return lines.join("\n");
 }
 
+export function filterSkillsByQuery(skills: SkillSummary[], filter?: string): SkillSummary[] {
+  const normalizedFilter = filter?.trim().toLowerCase();
+  if (!normalizedFilter) {
+    return [...skills];
+  }
+  return skills.filter((skill) => {
+    const haystack = [skill.name, skill.description, skill.cwd].filter(Boolean).join("\n");
+    return haystack.toLowerCase().includes(normalizedFilter);
+  });
+}
+
+export function formatSkillsPickerText(params: {
+  workspaceDir: string;
+  skills: SkillSummary[];
+  page: number;
+  totalPages: number;
+  mode: "run" | "help";
+  filter?: string;
+}): string {
+  if (params.skills.length === 0) {
+    return params.filter?.trim()
+      ? `No Codex skills matched "${params.filter.trim()}".`
+      : `No Codex skills found for ${params.workspaceDir}.`;
+  }
+  const modeLabel = params.mode === "run" ? "Click to Run" : "Click to Print Help";
+  const lines = [
+    "Codex skills. Type `$skill-name` in this chat to run one directly.",
+    `Mode: ${modeLabel}. Page ${params.page + 1}/${params.totalPages}.`,
+  ];
+  if (params.filter?.trim()) {
+    lines.push(`Filter: ${params.filter.trim()}`);
+  }
+  return lines.join("\n");
+}
+
+export function formatSkillHelpText(skill: SkillSummary): string {
+  const lines = [`Skill: $${skill.name}`];
+  if (skill.description?.trim()) {
+    lines.push(skill.description.trim());
+  }
+  if (skill.cwd?.trim()) {
+    lines.push(`Workspace: ${skill.cwd.trim()}`);
+  }
+  if (skill.enabled === false) {
+    lines.push("Status: disabled");
+  }
+  lines.push(`Type \`$${skill.name}\` in this chat to run it.`);
+  return lines.join("\n");
+}
+
 export function formatExperimentalFeatures(features: ExperimentalFeatureSummary[]): string {
   if (features.length === 0) {
     return "No Codex experimental features reported.";

@@ -34,6 +34,9 @@ import {
   formatCodexReviewFindingMessage,
   formatCodexStatusText,
   formatExperimentalFeatures,
+  formatSkillHelpText,
+  formatSkillsPickerText,
+  filterSkillsByQuery,
   formatMcpServers,
   formatModels,
   parseCodexReviewOutput,
@@ -104,6 +107,7 @@ type ActiveRunRecord = {
 
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
+const SKILLS_PICKER_PAGE_SIZE = 4;
 const PLUGIN_VERSION = (() => {
   try {
     const packageJson = require("../package.json") as { version?: unknown };
@@ -136,6 +140,7 @@ type DesiredThreadConfiguration = {
 
 type PickerResponders = {
   conversation: ConversationTarget;
+  acknowledge?: () => Promise<void>;
   clear: () => Promise<void>;
   reply: (text: string) => Promise<void>;
   editPicker: (picker: PickerRender) => Promise<void>;
@@ -1101,6 +1106,7 @@ export class CodexPluginController {
         parentConversationId: ctx.parentConversationId,
         threadId: ctx.threadId,
       },
+      acknowledge: async () => {},
       clear: async () => {
         await ctx.respond.clearButtons().catch(() => undefined);
       },
@@ -1176,6 +1182,17 @@ export class CodexPluginController {
       }
       await this.dispatchCallbackAction(callback, {
         conversation,
+        acknowledge: async () => {
+          if (interactionSettled) {
+            return;
+          }
+          await ctx.respond
+            .acknowledge()
+            .then(() => {
+              interactionSettled = true;
+            })
+            .catch(() => undefined);
+        },
         clear: async () => {
           const messageId = ctx.interaction.messageId?.trim();
           if ((callback.kind === "pending-input" || callback.kind === "pending-questionnaire") && messageId) {
@@ -2124,6 +2141,133 @@ export class CodexPluginController {
     };
   }
 
+  private async buildSkillsPicker(
+    conversation: ConversationTarget,
+    binding: StoredBinding | null,
+    opts: {
+      page: number;
+      clickMode: "run" | "help";
+      filter?: string;
+    },
+  ): Promise<PickerRender> {
+    const workspaceDir = resolveWorkspaceDir({
+      bindingWorkspaceDir: binding?.workspaceDir,
+      configuredWorkspaceDir: this.settings.defaultWorkspaceDir,
+      serviceWorkspaceDir: this.serviceWorkspaceDir,
+    });
+    const skills = await this.client.listSkills({
+      profile: this.getPermissionsMode(binding),
+      sessionKey: binding?.sessionKey,
+      workspaceDir,
+    });
+    const filtered = filterSkillsByQuery(skills, opts.filter);
+    const paged = paginateItems(filtered, opts.page, SKILLS_PICKER_PAGE_SIZE);
+    const buttons: PluginInteractiveButtons = [];
+
+    for (let index = 0; index < paged.items.length; index += 2) {
+      const pair = paged.items.slice(index, index + 2);
+      const row = await Promise.all(
+        pair.map(async (skill) => {
+          const callback =
+            opts.clickMode === "run"
+              ? await this.store.putCallback({
+                  kind: "run-skill",
+                  conversation,
+                  skillName: skill.name,
+                  workspaceDir: binding?.workspaceDir || workspaceDir,
+                })
+              : await this.store.putCallback({
+                  kind: "show-skill-help",
+                  conversation,
+                  skillName: skill.name,
+                  description: skill.description,
+                  cwd: skill.cwd,
+                  enabled: skill.enabled,
+                });
+          return {
+            text: `$${skill.name}`,
+            callback_data: `${INTERACTIVE_NAMESPACE}:${callback.token}`,
+          };
+        }),
+      );
+      buttons.push(row);
+    }
+
+    if (paged.totalPages > 1) {
+      const [prevView, nextView] = await Promise.all([
+        this.store.putCallback({
+          kind: "picker-view",
+          conversation,
+          view: {
+            mode: "skills",
+            page: Math.max(0, paged.page - 1),
+            filter: opts.filter,
+            clickMode: opts.clickMode,
+          },
+        }),
+        this.store.putCallback({
+          kind: "picker-view",
+          conversation,
+          view: {
+            mode: "skills",
+            page: Math.min(paged.totalPages - 1, paged.page + 1),
+            filter: opts.filter,
+            clickMode: opts.clickMode,
+          },
+        }),
+      ]);
+      buttons.push([
+        {
+          text: "Prev",
+          callback_data: `${INTERACTIVE_NAMESPACE}:${prevView.token}`,
+        },
+        {
+          text: "Next",
+          callback_data: `${INTERACTIVE_NAMESPACE}:${nextView.token}`,
+        },
+      ]);
+    }
+
+    const [toggleMode, cancel] = await Promise.all([
+      this.store.putCallback({
+        kind: "picker-view",
+        conversation,
+        view: {
+          mode: "skills",
+          page: paged.page,
+          filter: opts.filter,
+          clickMode: opts.clickMode === "run" ? "help" : "run",
+        },
+      }),
+      this.store.putCallback({
+        kind: "cancel-picker",
+        conversation,
+      }),
+    ]);
+    buttons.push([
+      {
+        text: "Mode: toggle",
+        callback_data: `${INTERACTIVE_NAMESPACE}:${toggleMode.token}`,
+      },
+      {
+        text: "Cancel",
+        callback_data: `${INTERACTIVE_NAMESPACE}:${cancel.token}`,
+      },
+    ]);
+
+    return {
+      text: formatSkillsPickerText({
+        workspaceDir,
+        skills: filtered,
+        page: paged.page,
+        totalPages: paged.totalPages,
+        mode: opts.clickMode,
+        filter: opts.filter,
+      }),
+      buttons,
+    };
+  }
+
   private async handleStopCommand(conversation: ConversationTarget | null): Promise<ReplyPayload> {
     if (!conversation) {
       return { text: "This command needs a Telegram or Discord conversation." };
@@ -2327,48 +2471,33 @@ export class CodexPluginController {
       sessionKey: binding?.sessionKey,
       workspaceDir,
     });
-    const text = formatSkills({
-      workspaceDir,
-      skills,
-      filter: args,
-    });
     if (!conversation) {
-      return { text };
+      return {
+        text: formatSkills({
+          workspaceDir,
+          skills,
+          filter: args,
+        }),
+      };
     }
-    const filtered = args.trim()
-      ? skills.filter((skill) => {
-          const haystack = [skill.name, skill.description, skill.cwd].filter(Boolean).join("\n");
-          return haystack.toLowerCase().includes(args.trim().toLowerCase());
-        })
-      : skills;
-    const buttons: PluginInteractiveButtons = [];
-    for (const skill of filtered.slice(0, 8)) {
-      const callback = await this.store.putCallback({
-        kind: "run-prompt",
-        conversation,
-        prompt: `$${skill.name}`,
-        workspaceDir: binding?.workspaceDir || workspaceDir,
-      });
-      buttons.push([
-        {
-          text: `$${skill.name}`,
-          callback_data: `${INTERACTIVE_NAMESPACE}:${callback.token}`,
-        },
-      ]);
-    }
-    if (conversation && isDiscordChannel(conversation.channel) && buttons.length > 0) {
+    const picker = await this.buildSkillsPicker(conversation, binding, {
+      filter: args,
+      page: 0,
+      clickMode: "run",
+    });
+    if (conversation && isDiscordChannel(conversation.channel) && picker.buttons) {
       try {
         await this.sendReply(conversation, {
-          text,
-          buttons,
+          text: picker.text,
+          buttons: picker.buttons,
         });
         return { text: "Sent Codex skills to this Discord conversation." };
       } catch (error) {
         this.api.logger.warn(`codex discord skills send failed: ${String(error)}`);
-        return { text };
+        return { text: picker.text };
       }
     }
-    return buildReplyWithButtons(text, buttons.length > 0 ? buttons : undefined);
+    return buildReplyWithButtons(picker.text, picker.buttons);
   }
 
   private async handleExperimentalCommand(binding: StoredBinding | null): Promise<ReplyPayload> {
@@ -4570,6 +4699,7 @@ export class CodexPluginController {
     if (callback.kind === "show-skills") {
       const binding = this.store.getBinding(callback.conversation);
       await this.store.removeCallback(callback.token);
+      await responders.acknowledge?.();
       const payload = await this.handleSkillsCommand(
         {
           ...callback.conversation,
@@ -4589,9 +4719,68 @@ export class CodexPluginController {
       }
       return;
     }
+    if (callback.kind === "run-skill") {
+      const binding = this.store.getBinding(callback.conversation);
+      await this.store.removeCallback(callback.token);
+      await responders.acknowledge?.();
+      const conversation = {
+        ...callback.conversation,
+        threadId: responders.conversation.threadId,
+      };
+      const workspaceDir =
+        callback.workspaceDir?.trim() ||
+        binding?.workspaceDir ||
+        resolveWorkspaceDir({
+          bindingWorkspaceDir: binding?.workspaceDir,
+          configuredWorkspaceDir: this.settings.defaultWorkspaceDir,
+          serviceWorkspaceDir: this.serviceWorkspaceDir,
+        });
+      const prompt = `$${callback.skillName}`;
+      const active = this.activeRuns.get(buildConversationKey(conversation));
+      const ackText = this.buildRunPromptAckText(prompt);
+      if (active) {
+        if (active.mode === "plan") {
+          this.activeRuns.delete(buildConversationKey(conversation));
+          await active.handle.interrupt().catch(() => undefined);
+        } else {
+          const handled = await active.handle.queueMessage(prompt);
+          if (handled) {
+            await this.sendText(conversation, ackText);
+            return;
+          }
+        }
+      }
+      await this.startTurn({
+        conversation,
+        binding,
+        workspaceDir,
+        prompt,
+        reason: "command",
+      });
+      await this.sendText(conversation, ackText);
+      return;
+    }
+    if (callback.kind === "show-skill-help") {
+      await this.store.removeCallback(callback.token);
+      await responders.acknowledge?.();
+      await this.sendText(
+        {
+          ...callback.conversation,
+          threadId: responders.conversation.threadId,
+        },
+        formatSkillHelpText({
+          name: callback.skillName,
+          description: callback.description,
+          cwd: callback.cwd,
+          enabled: callback.enabled,
+        }),
+      );
+      return;
+    }
     if (callback.kind === "show-mcp") {
       const binding = this.store.getBinding(callback.conversation);
       await this.store.removeCallback(callback.token);
+      await responders.acknowledge?.();
       const payload = await this.handleMcpCommand(binding, "");
       await this.sendReplyPayloadToConversation(
         {
@@ -4722,28 +4911,31 @@ export class CodexPluginController {
     }
     const binding = this.store.getBinding(callback.conversation);
     await this.store.removeCallback(callback.token);
-    const parsed = {
-      includeAll: callback.view.includeAll,
-      listProjects: callback.view.mode === "projects",
-      startNew:
-        (callback.view.mode === "projects" && callback.view.action === "start-new-thread") ||
-        callback.view.mode === "workspaces",
-      syncTopic: callback.view.syncTopic ?? false,
-      cwd: callback.view.workspaceDir,
-      requestedModel: callback.view.requestedModel,
-      requestedFast: callback.view.requestedFast,
-      requestedYolo: callback.view.requestedYolo,
-      query:
-        callback.view.mode === "threads" || callback.view.mode === "projects"
-          ? callback.view.query ?? ""
-          : "",
-    };
+    const parsed =
+      callback.view.mode === "skills"
+        ? null
+        : {
+            includeAll: callback.view.includeAll,
+            listProjects: callback.view.mode === "projects",
+            startNew:
+              (callback.view.mode === "projects" && callback.view.action === "start-new-thread") ||
+              callback.view.mode === "workspaces",
+            syncTopic: callback.view.syncTopic ?? false,
+            cwd: callback.view.workspaceDir,
+            requestedModel: callback.view.requestedModel,
+            requestedFast: callback.view.requestedFast,
+            requestedYolo: callback.view.requestedYolo,
+            query:
+              callback.view.mode === "threads" || callback.view.mode === "projects"
+                ? callback.view.query ?? ""
+                : "",
+          };
     const picker =
       callback.view.mode === "projects"
         ? await this.renderProjectPicker(
             responders.conversation,
             binding,
-            parsed,
+            parsed!,
             callback.view.page,
             callback.view.action ?? "resume-thread",
           )
@@ -4751,14 +4943,24 @@ export class CodexPluginController {
           ? await this.renderNewThreadWorkspacePicker(
               responders.conversation,
               binding,
-              parsed,
+              parsed!,
               callback.view.page,
               callback.view.projectName,
+            )
+        : callback.view.mode === "skills"
+          ? await this.buildSkillsPicker(
+              responders.conversation,
+              binding,
+              {
+                page: callback.view.page,
+                filter: callback.view.filter,
+                clickMode: callback.view.clickMode,
+              },
             )
           : await this.renderThreadPicker(
               responders.conversation,
               binding,
-              parsed,
+              parsed!,
               callback.view.page,
               callback.view.projectName,
             );
