@@ -675,6 +675,34 @@ describe("Discord controller flows", () => {
     );
   });
 
+  it("deduplicates skills with the same name in the skills picker", async () => {
+    const { controller, clientMock } = await createControllerHarness();
+    clientMock.listSkills.mockResolvedValueOnce([
+      { name: "last30days", description: "Variant A", cwd: "/repo/openclaw" },
+      { name: "last30days", description: "Variant B", cwd: "/repo/openclaw" },
+      { name: "agent-browser", description: "Browser", cwd: "/repo/openclaw" },
+    ]);
+
+    const picker = await (controller as any).buildSkillsPicker(
+      {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      null,
+      {
+        page: 0,
+        clickMode: "run",
+      },
+    );
+
+    const labels = (picker.buttons as Array<Array<{ text: string }>> | undefined)
+      ?.flat()
+      .map((button) => button.text) ?? [];
+    expect(labels.filter((label) => label === "$last30days")).toHaveLength(1);
+    expect(labels).toEqual(expect.arrayContaining(["$last30days", "$agent-browser"]));
+  });
+
   it("refreshes Discord pickers by editing the original interaction message", async () => {
     const { controller, sendComponentMessage } = await createControllerHarness();
     const callback = await (controller as any).store.putCallback({

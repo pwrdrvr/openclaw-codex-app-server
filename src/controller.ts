@@ -107,7 +107,6 @@ type ActiveRunRecord = {
 
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
-const SKILLS_PICKER_PAGE_SIZE = 4;
 const PLUGIN_VERSION = (() => {
   try {
     const packageJson = require("../package.json") as { version?: unknown };
@@ -118,6 +117,24 @@ const PLUGIN_VERSION = (() => {
     return "unknown";
   }
 })();
+
+function getSkillsPickerPageSize(channel: string): number {
+  return channel === "discord" ? 6 : 8;
+}
+
+function dedupeSkillsByName(skills: import("./types.js").SkillSummary[]): import("./types.js").SkillSummary[] {
+  const seen = new Set<string>();
+  const deduped = [];
+  for (const skill of skills) {
+    const key = skill.name.trim().toLowerCase();
+    if (!key || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push(skill);
+  }
+  return deduped;
+}
 
 type PickerRender = {
   text: string;
@@ -2155,13 +2172,13 @@ export class CodexPluginController {
       configuredWorkspaceDir: this.settings.defaultWorkspaceDir,
       serviceWorkspaceDir: this.serviceWorkspaceDir,
     });
-    const skills = await this.client.listSkills({
+    const skills = dedupeSkillsByName(await this.client.listSkills({
       profile: this.getPermissionsMode(binding),
       sessionKey: binding?.sessionKey,
       workspaceDir,
-    });
+    }));
     const filtered = filterSkillsByQuery(skills, opts.filter);
-    const paged = paginateItems(filtered, opts.page, SKILLS_PICKER_PAGE_SIZE);
+    const paged = paginateItems(filtered, opts.page, getSkillsPickerPageSize(conversation.channel));
     const buttons: PluginInteractiveButtons = [];
 
     for (let index = 0; index < paged.items.length; index += 2) {
@@ -2466,11 +2483,11 @@ export class CodexPluginController {
       configuredWorkspaceDir: this.settings.defaultWorkspaceDir,
       serviceWorkspaceDir: this.serviceWorkspaceDir,
     });
-    const skills = await this.client.listSkills({
+    const skills = dedupeSkillsByName(await this.client.listSkills({
       profile: this.getPermissionsMode(binding),
       sessionKey: binding?.sessionKey,
       workspaceDir,
-    });
+    }));
     if (!conversation) {
       return {
         text: formatSkills({
