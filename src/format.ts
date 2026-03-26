@@ -50,6 +50,37 @@ function truncateMiddle(value: string, maxLength: number): string {
   return `${value.slice(0, left)}...${value.slice(value.length - right)}`;
 }
 
+function maskEmailPartPrefix(value: string, visibleChars: number): string {
+  const prefix = value.slice(0, Math.min(visibleChars, value.length));
+  return value.length > visibleChars ? `${prefix}...` : prefix;
+}
+
+function maskEmailDomain(value: string): string {
+  const parts = value.split(".").filter(Boolean);
+  if (parts.length === 0) {
+    return value;
+  }
+  const domainNameIndex = Math.max(0, parts.length - 2);
+  const domainName = parts[domainNameIndex] ?? parts[0] ?? "";
+  const publicSuffix =
+    parts.length > 1 ? `.${parts.slice(domainNameIndex + 1).join(".")}` : "";
+  if (domainName.length <= 3) {
+    return `${domainName}${publicSuffix}`;
+  }
+  return `...${domainName.slice(-3)}${publicSuffix}`;
+}
+
+function formatMaskedEmail(email: string): string {
+  const trimmed = email.trim();
+  const atIndex = trimmed.lastIndexOf("@");
+  if (atIndex <= 0 || atIndex >= trimmed.length - 1) {
+    return trimmed;
+  }
+  const localPart = trimmed.slice(0, atIndex);
+  const domainPart = trimmed.slice(atIndex + 1);
+  return `${maskEmailPartPrefix(localPart, 3)}@${maskEmailDomain(domainPart)}`;
+}
+
 function formatThreadButtonTitle(thread: ThreadSummary): string {
   return thread.title?.trim() || thread.threadId;
 }
@@ -283,8 +314,8 @@ export function formatCodexAccountText(account: AccountSummary | null | undefine
   }
   if (account.type === "chatgpt" && account.email?.trim()) {
     return account.planType?.trim()
-      ? `${account.email.trim()} (${account.planType.trim()})`
-      : account.email.trim();
+      ? `${formatMaskedEmail(account.email)} (${account.planType.trim()})`
+      : formatMaskedEmail(account.email);
   }
   if (account.type === "apiKey") {
     return "API key";
@@ -593,7 +624,7 @@ export function formatBoundThreadSummary(params: {
 export function formatAccountSummary(account: AccountSummary, limits: RateLimitSummary[]): string {
   const lines = ["Codex account:"];
   if (account.email) {
-    lines.push(`Email: ${account.email}`);
+    lines.push(`Email: ${formatMaskedEmail(account.email)}`);
   }
   if (account.planType) {
     lines.push(`Plan: ${account.planType}`);

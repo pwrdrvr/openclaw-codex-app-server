@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildCodexPlanMarkdownPreview,
+  formatAccountSummary,
   formatBoundThreadSummary,
   formatCodexPlanAttachmentFallback,
   formatCodexPlanAttachmentSummary,
@@ -25,6 +26,7 @@ const TEST_PLUGIN_VERSION = packageJson.version ?? "unknown";
 const TEST_WORKTREE_PATH = "/workspace/.codex/worktrees/41fb/openclaw";
 const TEST_PROJECT_PATH = "/workspace/openclaw";
 const TEST_EMAIL = "user@example.com";
+const TEST_MASKED_EMAIL = "use...@...ple.com";
 
 function shortenHomePathForTest(value: string): string {
   const home = os.homedir();
@@ -151,7 +153,7 @@ describe("formatCodexStatusText", () => {
     expect(text).toContain("Plan mode: off");
     expect(text).toContain("Context usage: unavailable until Codex emits a token-usage update");
     expect(text).toContain("Permissions: Default");
-    expect(text).toContain(`Account: ${TEST_EMAIL} (pro)`);
+    expect(text).toContain(`Account: ${TEST_MASKED_EMAIL} (pro)`);
     expect(text).toContain("Thread: 019cc00d-6cf4-7c11-afcd-2673db349a21");
     expect(text).toContain("Rate limits timezone:");
     expect(text).toContain("5h limit: 85% left");
@@ -472,6 +474,22 @@ describe("formatSkills", () => {
         ],
       }),
     ).toContain("skill-creator - Create or update a Codex skill");
+  });
+});
+
+describe("formatAccountSummary", () => {
+  it("masks account emails in the detailed account summary", () => {
+    const text = formatAccountSummary(
+      {
+        type: "chatgpt",
+        email: TEST_EMAIL,
+        planType: "pro",
+      },
+      [],
+    );
+
+    expect(text).toContain(`Email: ${TEST_MASKED_EMAIL}`);
+    expect(text).not.toContain(`Email: ${TEST_EMAIL}`);
   });
 });
 
