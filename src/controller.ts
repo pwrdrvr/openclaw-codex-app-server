@@ -1160,11 +1160,14 @@ export class CodexPluginController {
         parentConversationId: ctx.parentConversationId,
         threadId: ctx.threadId,
       },
-      sourceMessage: {
-        provider: "telegram",
-        messageId: String(ctx.callback.messageId),
-        chatId: ctx.callback.chatId,
-      },
+      sourceMessage:
+        ctx.callback.messageId != null && ctx.callback.chatId?.trim()
+          ? {
+              provider: "telegram",
+              messageId: String(ctx.callback.messageId),
+              chatId: ctx.callback.chatId,
+            }
+          : undefined,
       acknowledge: async () => {},
       clear: async () => {
         await ctx.respond.clearButtons().catch(() => undefined);
@@ -2228,6 +2231,18 @@ export class CodexPluginController {
                 : ""
             }`,
           callback_data: `${INTERACTIVE_NAMESPACE}:${callback.token}`,
+        },
+      ]);
+    }
+    if (opts?.returnToStatus) {
+      const cancel = await this.store.putCallback({
+        kind: "refresh-status",
+        conversation,
+      });
+      buttons.push([
+        {
+          text: "Cancel",
+          callback_data: `${INTERACTIVE_NAMESPACE}:${cancel.token}`,
         },
       ]);
     }
@@ -5190,11 +5205,33 @@ export class CodexPluginController {
         await responders.reply("No Codex binding for this conversation.");
         return;
       }
+      const conversation = {
+        ...callback.conversation,
+        threadId: responders.conversation.threadId,
+      };
+      if (responders.sourceMessage) {
+        const [picker, statusCard] = await Promise.all([
+          this.buildModelPicker(
+            conversation,
+            binding,
+            {
+              returnToStatus: true,
+            },
+          ),
+          this.buildStatusCard(
+            conversation,
+            binding,
+            true,
+          ),
+        ]);
+        await responders.editPicker({
+          text: statusCard.text,
+          buttons: picker.buttons,
+        });
+        return;
+      }
       const picker = await this.buildModelPicker(
-        {
-          ...callback.conversation,
-          threadId: responders.conversation.threadId,
-        },
+        conversation,
         binding,
         {
           returnToStatus: true,
@@ -5202,13 +5239,7 @@ export class CodexPluginController {
         },
       );
       await responders.acknowledge?.();
-      await this.sendPickerToConversation(
-        {
-          ...callback.conversation,
-          threadId: responders.conversation.threadId,
-        },
-        picker,
-      );
+      await this.sendPickerToConversation(conversation, picker);
       return;
     }
     if (callback.kind === "set-model") {
