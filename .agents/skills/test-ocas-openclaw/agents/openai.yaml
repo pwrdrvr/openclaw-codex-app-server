@@ -1,4 +1,4 @@
 interface:
   display_name: "Test OCAS"
-  short_description: "Run OCAS integration regression checks"
-  default_prompt: "Use $test-ocas-openclaw to regression test OCAS against local OpenClaw chat integrations."
+  short_description: "Run live OCAS Telegram or Discord E2E checks"
+  default_prompt: "Use $test-ocas-openclaw to run the live OCAS E2E chat test suite against local OpenClaw integrations, not repo-local unit tests."

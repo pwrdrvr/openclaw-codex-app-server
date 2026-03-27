@@ -1,11 +1,17 @@
 ---
 name: test-ocas-openclaw
-description: "Regression test the OpenClaw Codex App Server plugin against a live local OpenClaw instance in Telegram or Discord. Use when the user wants an end-to-end OCAS manual test pass, wants to verify binding, `/cas_resume` or `/cas_status` flags for model/fast/yolo, approvals, plan mode, review, compact, status-card controls, split default-vs-full-access permission behavior, stop-button interrupt handling, rename, or other slash-command behavior, or wants reproducible bug notes from a live chat integration run."
+description: "Regression test the OpenClaw Codex App Server plugin against a live local OpenClaw instance in Telegram or Discord. Use when the user wants the OCAS test suite, an end-to-end OCAS manual test pass, or verification of binding, `/cas_resume` or `/cas_status` flags for model/fast/yolo, approvals, plan mode, review, compact, status-card controls, split default-vs-full-access permission behavior, stop-button interrupt handling, rename, or other slash-command behavior. This skill is for browser-driven chat E2E testing, not `pnpm test`, `pnpm typecheck`, or any other repo-local automated test command."
 ---
 
 # Test OCAS OpenClaw
 
 Use this skill for manual regression passes of this plugin against a real local OpenClaw instance.
+
+## Scope
+
+- Treat requests like "run the test suite" or "run the OCAS tests" as a request for this live chat E2E flow, not for repo-local unit tests or typechecking.
+- Do not run `pnpm test`, `pnpm typecheck`, or other local automated test commands unless the user separately asks for them outside this skill.
+- If browser automation is unavailable or chat login is missing, stop and say the E2E pass could not be run. Do not substitute a different kind of testing.
 
 ## Preconditions
 
@@ -13,6 +19,7 @@ Use this skill for manual regression passes of this plugin against a real local 
 - Prefer Playwright MCP or Chrome MCP for Telegram Web. It was more reliable than `agent-browser` in recent passes.
 - Use [$agent-browser](https://github.com/vercel-labs/agent-browser) only as fallback. Read [references/agent-browser.md](references/agent-browser.md) only if you intentionally choose that path.
 - If Telegram Web or Discord is not logged in, stop and ask the user to complete login.
+- Anchor the run to the exact conversation the user asked for. In this repo, if the user says only "run the test suite" and does not name a topic, default to the `OCAS Test` topic in the `PwrDrvr` Telegram supergroup.
 - Prefer a low-risk Codex thread unless the user asks otherwise. In this repo, `discrawl` and `dupcanon` are safe defaults for resume tests.
 - Treat `Permissions: toggle` as switching between `Default` and `Full Access`. If Full Access is unavailable in the current Codex Desktop session, expect the status card to stay in Default mode with an explanatory note.
 
@@ -37,15 +44,18 @@ Treat the state files as diagnostic evidence, not as a thing to hand-edit.
 ## Preferred Browser Path
 
 - Keep the browser anchored to the requested topic or channel for the full pass.
+- Confirm the browser is actually inside the intended topic before sending any slash commands or text. Do not continue from the chat list, `General`, or the wrong topic.
 - For Telegram topics, keep the topic fragment in the URL when possible.
 - If the UI looks stale but local state shows the expected pending request or callbacks, refresh Telegram Web with `Cmd+R` before calling it a backend bug.
 - Separate browser-navigation failures from OCAS failures. A browser can drift to `General` or the chat list without proving an OCAS routing bug.
+- If navigation to the requested topic fails, keep working the browser problem or report that blocker explicitly. Do not silently switch to non-E2E testing.
 
 ## Regression Flow
 
 1. Establish the target conversation.
 
 - Stay in the requested group, DM, channel, or topic for the entire pass.
+- Explicitly verify the topic title before starting the baseline step. For this repo's default run, that means the browser should show the `OCAS Test` topic inside `PwrDrvr`.
 - If the expected Telegram topic is missing, check whether `/cas_resume --sync` renamed it. Rename it back or create a fresh test topic if needed.
 - If slash-command routing leaks into `General`, log that separately and move the browser back to the intended topic before continuing.
 
