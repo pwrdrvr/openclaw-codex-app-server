@@ -15,6 +15,7 @@ import {
   formatMcpServers,
   formatModels,
   formatSkills,
+  formatThreadPicker,
   formatThreadPickerIntro,
   formatThreadButtonLabel,
   parseCodexReviewOutput,
@@ -67,6 +68,33 @@ describe("formatThreadButtonLabel", () => {
         includeProjectSuffix: true,
       }),
     ).toBe("019cbef1-376b-7312-98aa-24488c7499d4 (workspace)");
+  });
+
+  it("falls back to the thread summary when the name is missing", () => {
+    expect(
+      formatThreadButtonLabel({
+        thread: {
+          threadId: "019d2cbc-9fee-7862-8d02-683dfef71851",
+          summary: "What is wrong with this layout?",
+          projectKey: "/workspace/openclaw-app-server",
+        },
+        includeProjectSuffix: false,
+      }),
+    ).toBe("What is wrong with this layout?");
+  });
+});
+
+describe("formatThreadPicker", () => {
+  it("uses the preview summary before falling back to the thread id", () => {
+    expect(
+      formatThreadPicker([
+        {
+          threadId: "019d2cbc-9fee-7862-8d02-683dfef71851",
+          summary: "What is wrong with this layout?",
+          projectKey: "/workspace/openclaw-app-server",
+        },
+      ]),
+    ).toContain("1. What is wrong with this layout?");
   });
 });
 

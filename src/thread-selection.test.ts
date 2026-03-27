@@ -112,6 +112,22 @@ describe("thread selection", () => {
     });
   });
 
+  it("picks an exact summary fallback match when the thread has no explicit title", () => {
+    const threads: ThreadSummary[] = [
+      {
+        threadId: "019d2cbc-9fee-7862-8d02-683dfef71851",
+        summary: "What is wrong with this layout?",
+        projectKey: "/workspace/openclaw-app-server",
+      },
+      ...THREADS,
+    ];
+
+    expect(selectThreadFromMatches(threads, "What is wrong with this layout?")).toEqual({
+      kind: "unique",
+      thread: threads[0],
+    });
+  });
+
   it("does not auto-pick the first fuzzy match when multiple threads exist", () => {
     expect(selectThreadFromMatches(THREADS, "thread")).toEqual({
       kind: "ambiguous",

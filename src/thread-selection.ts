@@ -1,6 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 import { formatCommandUsage } from "./help.js";
+import { getThreadDisplayTitle } from "./thread-display.js";
 import type { ThreadSummary } from "./types.js";
 
 export type ParsedThreadSelectionArgs = {
@@ -140,7 +141,7 @@ export function selectThreadFromMatches(
   const loweredQuery = trimmedQuery.toLowerCase();
   const exactMatch =
     threads.find((thread) => thread.threadId === trimmedQuery) ??
-    threads.find((thread) => thread.title?.trim().toLowerCase() === loweredQuery);
+    threads.find((thread) => getThreadDisplayTitle(thread).toLowerCase() === loweredQuery);
 
   if (exactMatch) {
     return { kind: "unique", thread: exactMatch };

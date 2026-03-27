@@ -24,6 +24,7 @@ import {
 } from "openclaw/plugin-sdk/discord";
 import { resolvePluginSettings, resolveWorkspaceDir } from "./config.js";
 import { CodexAppServerModeClient, type ActiveCodexRun, isMissingThreadError } from "./client.js";
+import { getThreadDisplayTitle } from "./thread-display.js";
 import {
   formatAccountSummary,
   formatBinding,
@@ -1732,7 +1733,7 @@ export class CodexPluginController {
           serviceWorkspaceDir: this.serviceWorkspaceDir,
       }),
       permissionsMode: targetPermissionsMode,
-      threadTitle: selection.thread.title,
+      threadTitle: getThreadDisplayTitle(selection.thread),
       syncTopic: parsed.syncTopic,
       preferences,
       notifyBound: true,
@@ -1745,7 +1746,7 @@ export class CodexPluginController {
     }
     if (parsed.syncTopic) {
       const syncedName = buildResumeTopicName({
-        title: selection.thread.title,
+        title: getThreadDisplayTitle(selection.thread),
         projectKey: selection.thread.projectKey,
         threadId: selection.thread.threadId,
       });
