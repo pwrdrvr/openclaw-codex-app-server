@@ -3464,7 +3464,7 @@ describe("Discord controller flows", () => {
     );
   });
 
-  it("ignores non-image inbound media metadata", async () => {
+  it("forwards text file inbound media metadata as text turn input", async () => {
     const { controller, stateDir } = await createControllerHarness();
     const filePath = path.join(stateDir, "tmp", "note.txt");
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -3507,7 +3507,114 @@ describe("Discord controller flows", () => {
     expect(startTurn).toHaveBeenCalledWith(
       expect.objectContaining({
         prompt: "Read this file",
-        input: [{ type: "text", text: "Read this file" }],
+        input: [
+          { type: "text", text: "Read this file" },
+          {
+            type: "text",
+            text: "Attached file: note.txt\nContent-Type: text/plain\n\nhello",
+          },
+        ],
+      }),
+    );
+  });
+
+  it("detects markdown attachments by file extension when mime metadata is absent", async () => {
+    const { controller, stateDir } = await createControllerHarness();
+    const filePath = path.join(stateDir, "tmp", "README.md");
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, "# Heading\n\nBody text.\n");
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: TEST_TELEGRAM_PEER_ID,
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+    const startTurn = vi.fn(() => ({
+      result: Promise.resolve({
+        threadId: "thread-1",
+        text: "handled",
+      }),
+      getThreadId: () => "thread-1",
+      queueMessage: vi.fn(async () => true),
+      interrupt: vi.fn(async () => {}),
+      isAwaitingInput: () => false,
+      submitPendingInput: vi.fn(async () => false),
+      submitPendingInputPayload: vi.fn(async () => false),
+    }));
+    (controller as any).client.startTurn = startTurn;
+
+    const result = await controller.handleInboundClaim({
+      content: "",
+      channel: "telegram",
+      accountId: "default",
+      conversationId: TEST_TELEGRAM_PEER_ID,
+      isGroup: false,
+      metadata: { mediaPath: filePath },
+    });
+
+    expect(result).toEqual({ handled: true });
+    expect(startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: "",
+        input: [
+          {
+            type: "text",
+            text: "Attached file: README.md\n\n# Heading\n\nBody text.\n",
+          },
+        ],
+      }),
+    );
+  });
+
+  it("still ignores unsupported binary document attachments", async () => {
+    const { controller, stateDir } = await createControllerHarness();
+    const filePath = path.join(stateDir, "tmp", "manual.pdf");
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, "%PDF");
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:1481858418548412579",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+    const startTurn = vi.fn(() => ({
+      result: Promise.resolve({
+        threadId: "thread-1",
+        text: "handled",
+      }),
+      getThreadId: () => "thread-1",
+      queueMessage: vi.fn(async () => true),
+      interrupt: vi.fn(async () => {}),
+      isAwaitingInput: () => false,
+      submitPendingInput: vi.fn(async () => false),
+      submitPendingInputPayload: vi.fn(async () => false),
+    }));
+    (controller as any).client.startTurn = startTurn;
+
+    const result = await controller.handleInboundClaim({
+      content: "Read this document",
+      channel: "discord",
+      accountId: "default",
+      conversationId: "1481858418548412579",
+      isGroup: true,
+      metadata: { guildId: "guild-1", mediaPath: filePath, mediaType: "application/pdf" },
+    });
+
+    expect(result).toEqual({ handled: true });
+    expect(startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: "Read this document",
+        input: [{ type: "text", text: "Read this document" }],
       }),
     );
   });
@@ -3882,6 +3989,73 @@ describe("Discord controller flows", () => {
     expect(api.logger.warn).toHaveBeenCalledWith(
       expect.stringContaining("reached an active run but was not accepted; restarting"),
     );
+  });
+
+  it("restarts instead of queueing when structured text input is provided to an active run", async () => {
+    const { controller } = await createControllerHarness();
+    const staleInterrupt = vi.fn(async () => {});
+    const staleQueueMessage = vi.fn(async () => true);
+    (controller as any).activeRuns.set("discord::default::channel:chan-1::", {
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:chan-1",
+      },
+      workspaceDir: "/repo/openclaw",
+      mode: "default",
+      handle: {
+        result: Promise.resolve({ threadId: "thread-1", text: "stale" }),
+        queueMessage: staleQueueMessage,
+        getThreadId: () => "thread-1",
+        interrupt: staleInterrupt,
+        isAwaitingInput: () => false,
+        submitPendingInput: vi.fn(async () => false),
+        submitPendingInputPayload: vi.fn(async () => false),
+      },
+    });
+    const startTurn = vi.fn(() => ({
+      result: Promise.resolve({
+        threadId: "thread-1",
+        text: "fresh",
+      }),
+      getThreadId: () => "thread-1",
+      queueMessage: vi.fn(async () => true),
+      interrupt: vi.fn(async () => {}),
+      isAwaitingInput: () => false,
+      submitPendingInput: vi.fn(async () => false),
+      submitPendingInputPayload: vi.fn(async () => false),
+    }));
+    (controller as any).client.startTurn = startTurn;
+
+    await (controller as any).startTurn({
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:chan-1",
+      },
+      binding: {
+        conversation: {
+          channel: "discord",
+          accountId: "default",
+          conversationId: "channel:chan-1",
+        },
+        sessionKey: "session-1",
+        threadId: "thread-1",
+        workspaceDir: "/repo/openclaw",
+        updatedAt: Date.now(),
+      },
+      workspaceDir: "/repo/openclaw",
+      prompt: "Read this file",
+      input: [
+        { type: "text", text: "Read this file" },
+        { type: "text", text: "Attached file: note.txt\n\nhello" },
+      ],
+      reason: "inbound",
+    });
+
+    expect(staleQueueMessage).not.toHaveBeenCalled();
+    expect(staleInterrupt).toHaveBeenCalled();
+    expect(startTurn).toHaveBeenCalled();
   });
 
   it("does not send the plan keepalive after a questionnaire is already visible", async () => {

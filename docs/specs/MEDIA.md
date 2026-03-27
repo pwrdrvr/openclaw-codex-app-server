@@ -177,7 +177,8 @@ That means:
 - text-only turns still work as before
 - mixed text + image turns can be forwarded into Codex
 - image-only inbound turns can be forwarded into Codex
-- non-image inbound media is ignored for now
+- staged text attachments such as `.txt`, `.md`, `.json`, `.yaml`, and `.yml` can be read and forwarded as additional `text` items
+- unsupported binary non-image inbound media is still ignored for now
 
 ## OpenClaw Plugin SDK: Outbound Media
 
@@ -413,10 +414,12 @@ Within this repository, future media support would require at least:
   - local image path -> `localImage`
   - remote/data URL image -> `image`
   - mixed text + image turn input
-  - non-image attachments ignored or downgraded to text references
+  - text attachments read and forwarded as `text`
+  - unsupported binary attachments ignored or downgraded to text references
 
-Until then, the practical answer is:
+The remaining practical boundary is:
 
-- Codex app-server already supports images
+- Codex app-server already supports images plus ordinary text items
 - OpenClaw already supports outbound attachments from plugins
-- but this plugin cannot yet accept inbound JPEG/PNG/etc. from OpenClaw as Codex turn input because the current plugin boundary does not expose those attachments
+- this plugin can now turn staged inbound images into Codex image input and staged inbound text files into Codex text input
+- richer binary formats such as PDF, audio, and video still need preprocessing before they can be meaningfully sent to Codex

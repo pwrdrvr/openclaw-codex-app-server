@@ -111,6 +111,28 @@ type ActiveRunRecord = {
 
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
+const TEXT_ATTACHMENT_FILE_EXTENSIONS = new Set([
+  ".json",
+  ".log",
+  ".markdown",
+  ".md",
+  ".txt",
+  ".yaml",
+  ".yml",
+]);
+const TEXT_ATTACHMENT_MIME_TYPES = new Set([
+  "application/json",
+  "application/x-ndjson",
+  "application/x-yaml",
+  "application/yaml",
+  "text/json",
+  "text/markdown",
+  "text/plain",
+  "text/x-markdown",
+  "text/yaml",
+]);
+const MAX_TEXT_ATTACHMENT_BYTES = 64 * 1024;
+const MAX_TEXT_ATTACHMENT_CHARS = 16_000;
 const PLUGIN_VERSION = (() => {
   try {
     const packageJson = require("../package.json") as { version?: unknown };
@@ -451,12 +473,36 @@ function isImageMimeType(value: string | undefined): boolean {
   return Boolean(value?.trim().toLowerCase().startsWith("image/"));
 }
 
+function normalizeMimeType(value: string | undefined): string | undefined {
+  const trimmed = value?.trim().toLowerCase();
+  if (!trimmed) {
+    return undefined;
+  }
+  return trimmed.split(";", 1)[0]?.trim() || undefined;
+}
+
 function isImagePathLike(value: string | undefined): boolean {
   const normalized = normalizeInboundMediaPath(value);
   if (!normalized) {
     return false;
   }
   return IMAGE_FILE_EXTENSIONS.has(path.extname(normalized).toLowerCase());
+}
+
+function isTextAttachmentMimeType(value: string | undefined): boolean {
+  const normalized = normalizeMimeType(value);
+  return Boolean(
+    normalized &&
+      (normalized.startsWith("text/") || TEXT_ATTACHMENT_MIME_TYPES.has(normalized)),
+  );
+}
+
+function isTextAttachmentPathLike(value: string | undefined): boolean {
+  const normalized = normalizeInboundMediaPath(value);
+  if (!normalized || isUrlLike(normalized)) {
+    return false;
+  }
+  return TEXT_ATTACHMENT_FILE_EXTENSIONS.has(path.extname(normalized).toLowerCase());
 }
 
 function isUrlLike(value: string | undefined): boolean {
@@ -505,7 +551,7 @@ function toCodexImageInputItem(media: PluginInboundMedia): CodexTurnInputItem | 
   ) {
     return null;
   }
-  const normalizedPath = normalizeInboundMediaPath(media.path);
+  const normalizedPath = normalizeInboundMediaPath(media.path ?? media.url);
   if (normalizedPath && path.isAbsolute(normalizedPath)) {
     return { type: "localImage", path: normalizedPath };
   }
@@ -516,18 +562,73 @@ function toCodexImageInputItem(media: PluginInboundMedia): CodexTurnInputItem | 
   return null;
 }
 
-function buildInboundTurnInput(event: {
+async function toCodexTextAttachmentInputItem(
+  media: PluginInboundMedia,
+): Promise<CodexTurnInputItem | null> {
+  if (
+    media.kind === "image" ||
+    !(
+      isTextAttachmentMimeType(media.mimeType) ||
+      isTextAttachmentPathLike(media.path) ||
+      isTextAttachmentPathLike(media.url)
+    )
+  ) {
+    return null;
+  }
+  const normalizedPath = normalizeInboundMediaPath(media.path ?? media.url);
+  if (!normalizedPath || !path.isAbsolute(normalizedPath)) {
+    return null;
+  }
+  const stats = await fs.stat(normalizedPath).catch(() => undefined);
+  if (!stats?.isFile()) {
+    return null;
+  }
+  const bytesToRead = Math.min(stats.size, MAX_TEXT_ATTACHMENT_BYTES);
+  const handle = await fs.open(normalizedPath, "r").catch(() => undefined);
+  if (!handle) {
+    return null;
+  }
+  let rawContent = "";
+  try {
+    const buffer = Buffer.alloc(bytesToRead);
+    const { bytesRead } = await handle.read(buffer, 0, bytesToRead, 0);
+    rawContent = buffer.subarray(0, bytesRead).toString("utf8");
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
+  const normalizedContent = rawContent.replace(/\r\n/g, "\n");
+  const truncatedByBytes = stats.size > MAX_TEXT_ATTACHMENT_BYTES;
+  const truncatedByChars = normalizedContent.length > MAX_TEXT_ATTACHMENT_CHARS;
+  const content =
+    truncatedByChars
+      ? normalizedContent.slice(0, MAX_TEXT_ATTACHMENT_CHARS)
+      : normalizedContent;
+  const displayName =
+    media.fileName?.trim() || path.basename(normalizedPath) || "attached-file.txt";
+  const mimeType = normalizeMimeType(media.mimeType);
+  const lines = [`Attached file: ${displayName}`];
+  if (mimeType) {
+    lines.push(`Content-Type: ${mimeType}`);
+  }
+  lines.push("", content.trim().length > 0 ? content : "[File is empty]");
+  if (truncatedByBytes || truncatedByChars) {
+    lines.push("", "[Truncated]");
+  }
+  return { type: "text", text: lines.join("\n") };
+}
+
+async function buildInboundTurnInput(event: {
   content: string;
   media?: PluginInboundMedia[];
   metadata?: Record<string, unknown>;
-}): CodexTurnInputItem[] {
+}): Promise<CodexTurnInputItem[]> {
   const items: CodexTurnInputItem[] = [];
   if (event.content.trim()) {
     items.push({ type: "text", text: event.content });
   }
   const seen = new Set<string>();
   for (const media of [...(event.media ?? []), ...extractInboundMetadataMedia(event.metadata)]) {
-    const item = toCodexImageInputItem(media);
+    const item = toCodexImageInputItem(media) ?? (await toCodexTextAttachmentInputItem(media));
     if (!item) {
       continue;
     }
@@ -544,6 +645,16 @@ function buildInboundTurnInput(event: {
     items.push(item);
   }
   return items;
+}
+
+function isQueueCompatibleTurnInput(
+  prompt: string,
+  input: readonly CodexTurnInputItem[] | undefined,
+): boolean {
+  if (!input?.length) {
+    return true;
+  }
+  return input.length === 1 && input[0]?.type === "text" && input[0].text === prompt;
 }
 
 function buildReplyWithButtons(text: string, buttons?: PluginInteractiveButtons): ReplyPayload {
@@ -1208,8 +1319,8 @@ export class CodexPluginController {
       if (!conversation) {
         return { handled: false };
       }
-      const input = buildInboundTurnInput(event);
-      const hasNonTextInput = input.some((item) => item.type !== "text");
+      const input = await buildInboundTurnInput(event);
+      const requiresStructuredInput = !isQueueCompatibleTurnInput(event.content, input);
       const activeKey = buildConversationKey(conversation);
       const active = this.activeRuns.get(activeKey);
       if (active) {
@@ -1232,9 +1343,9 @@ export class CodexPluginController {
               return { handled: true };
             }
           }
-          if (hasNonTextInput) {
+          if (requiresStructuredInput) {
             this.api.logger.debug?.(
-              `codex inbound claim restarting active run for multimodal input conversation=${conversation.conversationId}`,
+              `codex inbound claim restarting active run for structured input conversation=${conversation.conversationId}`,
             );
           } else {
             try {
@@ -3182,6 +3293,12 @@ export class CodexPluginController {
       if (existing.mode === "plan" && (params.collaborationMode?.mode ?? "default") !== "plan") {
         this.api.logger.debug?.(
           `codex turn request replacing active plan run ${this.formatConversationForLog(params.conversation)}`,
+        );
+        this.activeRuns.delete(key);
+        await existing.handle.interrupt().catch(() => undefined);
+      } else if (!isQueueCompatibleTurnInput(params.prompt, params.input)) {
+        this.api.logger.debug?.(
+          `codex turn request restarting active run for structured input ${this.formatConversationForLog(params.conversation)} mode=${existing.mode}`,
         );
         this.activeRuns.delete(key);
         await existing.handle.interrupt().catch(() => undefined);
