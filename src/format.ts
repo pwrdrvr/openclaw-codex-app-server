@@ -2,6 +2,7 @@ import os from "node:os";
 import { formatModelCapabilitySuffix } from "./model-capabilities.js";
 import type {
   AccountSummary,
+  ContextAlertLevel,
   ContextUsageSnapshot,
   ExperimentalFeatureSummary,
   McpServerSummary,
@@ -978,4 +979,15 @@ export function formatCodexPlanAttachmentFallback(
     lines.push("", preview);
   }
   return lines.join("\n").trim();
+}
+
+export function formatContextUsageAlert(params: {
+  level: ContextAlertLevel;
+  usage: ContextUsageSnapshot;
+}): string {
+  const usageText = formatCodexContextUsageSnapshot(params.usage) ?? "unknown usage";
+  if (params.level === "critical") {
+    return `Context alert: ${usageText}. Compact soon to avoid degraded output.`;
+  }
+  return `Context notice: ${usageText}. Consider compacting to free up space.`;
 }

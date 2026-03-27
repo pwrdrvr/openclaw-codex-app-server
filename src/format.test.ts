@@ -11,6 +11,7 @@ import {
   formatCodexPlanSteps,
   formatCodexReviewFindingMessage,
   formatCodexStatusText,
+  formatContextUsageAlert,
   getCodexStatusTimeZoneLabel,
   formatMcpServers,
   formatModels,
@@ -564,5 +565,35 @@ describe("formatCodexPlanInlineText", () => {
     expect(formatCodexPlanSteps(plan.steps)).toContain("- [x] Capture the current behavior");
     expect(formatCodexPlanInlineText(plan)).toContain("Break the work into safe increments.");
     expect(formatCodexPlanInlineText(plan)).toContain("# Plan");
+  });
+});
+
+describe("formatContextUsageAlert", () => {
+  it("returns a warning message when level is warning", () => {
+    const result = formatContextUsageAlert({
+      level: "warning",
+      usage: { totalTokens: 150_000, contextWindow: 200_000, remainingPercent: 25 },
+    });
+    expect(result).toContain("Context notice:");
+    expect(result).toContain("Consider compacting");
+    expect(result).toContain("150k / 200k tokens used");
+  });
+
+  it("returns a critical message when level is critical", () => {
+    const result = formatContextUsageAlert({
+      level: "critical",
+      usage: { totalTokens: 186_000, contextWindow: 200_000, remainingPercent: 7 },
+    });
+    expect(result).toContain("Context alert:");
+    expect(result).toContain("Compact soon");
+    expect(result).toContain("186k / 200k tokens used");
+  });
+
+  it("falls back to unknown usage when snapshot is empty", () => {
+    const result = formatContextUsageAlert({
+      level: "warning",
+      usage: {},
+    });
+    expect(result).toContain("unknown usage");
   });
 });

@@ -7,6 +7,8 @@ export const CALLBACK_TOKEN_BYTES = 9;
 export const CALLBACK_TTL_MS = 30 * 60_000;
 export const PENDING_INPUT_TTL_MS = 7 * 24 * 60 * 60_000;
 export const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
+export const CONTEXT_ALERT_WARNING_PERCENT = 25;
+export const CONTEXT_ALERT_CRITICAL_PERCENT = 10;
 
 export type CodexTransport = "stdio" | "websocket";
 export type PermissionsMode = "default" | "full-access";
@@ -266,9 +268,12 @@ export type StoredBinding = {
   threadTitle?: string;
   pinnedBindingMessage?: InteractiveMessageRef;
   contextUsage?: ContextUsageSnapshot;
+  lastContextAlertLevel?: ContextAlertLevel | null;
   preferences?: ConversationPreferences;
   updatedAt: number;
 };
+
+export type ContextAlertLevel = "warning" | "critical";
 
 export type InteractiveMessageRef =
   | {
