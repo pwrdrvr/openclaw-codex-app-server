@@ -18,6 +18,42 @@ describe("buildTurnStartPayloads", () => {
     ]);
   });
 
+  it("preserves mixed text and local image input when provided", () => {
+    expect(
+      __testing.buildTurnStartPayloads({
+        threadId: "thread-123",
+        prompt: "describe this screenshot",
+        input: [
+          { type: "text", text: "describe this screenshot" },
+          { type: "localImage", path: "/tmp/screenshot.png" },
+        ],
+      }),
+    ).toEqual([
+      {
+        threadId: "thread-123",
+        input: [
+          { type: "text", text: "describe this screenshot" },
+          { type: "localImage", path: "/tmp/screenshot.png" },
+        ],
+      },
+    ]);
+  });
+
+  it("supports image-only turn input", () => {
+    expect(
+      __testing.buildTurnStartPayloads({
+        threadId: "thread-123",
+        prompt: "",
+        input: [{ type: "image", url: "data:image/png;base64,abc" }],
+      }),
+    ).toEqual([
+      {
+        threadId: "thread-123",
+        input: [{ type: "image", url: "data:image/png;base64,abc" }],
+      },
+    ]);
+  });
+
   it("keeps collaboration payloads valid by including settings and preserving explicit null developer instructions", () => {
     expect(
       __testing.buildTurnStartPayloads({

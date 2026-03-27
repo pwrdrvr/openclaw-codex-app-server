@@ -245,6 +245,20 @@ export type TurnTerminalError = {
   httpStatusCode?: number;
 };
 
+export type CodexTurnInputItem =
+  | {
+      type: "text";
+      text: string;
+    }
+  | {
+      type: "image";
+      url: string;
+    }
+  | {
+      type: "localImage";
+      path: string;
+    };
+
 export type TurnResult = {
   threadId: string;
   text?: string;

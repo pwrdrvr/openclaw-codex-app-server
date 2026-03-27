@@ -26,6 +26,15 @@ declare module "openclaw/plugin-sdk" {
     debug: (message: string) => void;
   };
 
+  export type PluginInboundMedia = {
+    kind: "image" | "audio" | "video" | "document";
+    path?: string;
+    url?: string;
+    mimeType?: string;
+    fileName?: string;
+    source?: "attachment" | "staged" | "remote" | "metadata";
+  };
+
   export type PluginCommandContext = {
     senderId?: string;
     channel: string;
@@ -38,6 +47,7 @@ declare module "openclaw/plugin-sdk" {
     to?: string;
     accountId?: string;
     messageThreadId?: number;
+    media?: PluginInboundMedia[];
   };
 
   export type PluginInteractiveButtons = Array<
@@ -272,6 +282,7 @@ declare module "openclaw/plugin-sdk" {
         conversationId?: string;
         parentConversationId?: string;
         threadId?: string | number;
+        media?: PluginInboundMedia[];
       }) => Promise<{ handled: boolean }> | { handled: boolean },
     ) => void;
   };

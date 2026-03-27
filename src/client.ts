@@ -14,6 +14,7 @@ import {
   type CompactProgress,
   type CompactResult,
   type ContextUsageSnapshot,
+  type CodexTurnInputItem,
   type ExperimentalFeatureSummary,
   type McpServerSummary,
   type ModelSummary,
@@ -1051,7 +1052,13 @@ function normalizeSandboxMode(value: string | undefined): string | undefined {
   return trimmed;
 }
 
-function buildTurnInput(prompt: string): Array<Record<string, unknown>> {
+function buildTurnInput(
+  prompt: string,
+  input?: readonly CodexTurnInputItem[],
+): Array<Record<string, unknown>> {
+  if (input?.length) {
+    return input.map((item) => ({ ...item }));
+  }
   return [{ type: "text", text: prompt }];
 }
 
@@ -1110,6 +1117,7 @@ function buildCollaborationModePayloads(
 function buildTurnStartPayloads(params: {
   threadId: string;
   prompt: string;
+  input?: readonly CodexTurnInputItem[];
   model?: string;
   serviceTier?: string;
   collaborationMode?: CollaborationMode;
@@ -1117,7 +1125,7 @@ function buildTurnStartPayloads(params: {
 }): unknown[] {
   const base: Record<string, unknown> = {
     threadId: params.threadId,
-    input: buildTurnInput(params.prompt),
+    input: buildTurnInput(params.prompt, params.input),
   };
   if (params.model?.trim()) {
     base.model = params.model.trim();
@@ -3242,6 +3250,7 @@ export class CodexAppServerClient {
   startTurn(params: {
     sessionKey?: string;
     prompt: string;
+    input?: readonly CodexTurnInputItem[];
     workspaceDir: string;
     runId: string;
     existingThreadId?: string;
@@ -3561,6 +3570,7 @@ export class CodexAppServerClient {
         const turnStartPayloads = buildTurnStartPayloads({
           threadId,
           prompt: params.prompt,
+          input: params.input,
           model: params.model,
           serviceTier: params.serviceTier,
           collaborationMode,
