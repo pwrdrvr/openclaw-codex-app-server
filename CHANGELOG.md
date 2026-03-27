@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.5.0 - 2026-03-26
+
+### Highlights
+
+- Tightened `/cas_resume` recovery around Telegram bind approvals, so a successful bind still restores the thread summary even when Codex cannot replay the original rollout. @huntharo (#54)
+- Improved `/cas_status` interactions so model changes repaint the existing status card in place, preserve a clean cancel path, and avoid leaving behind stray picker messages. @huntharo (#56, #58)
+- Collapsed Codex worktrees onto their canonical project folder in the new-thread picker, so grouped project selections stop splintering into duplicate workspace choices. @huntharo (#52)
+
+### Fixes
+
+- Masked displayed OpenAI account emails in status and account-summary output so shared screens and chat logs expose less account detail. @huntharo (#57)
+
 ## v0.4.0 - 2026-03-25
 
 ### Highlights
