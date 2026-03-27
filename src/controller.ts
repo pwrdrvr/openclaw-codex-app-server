@@ -45,6 +45,7 @@ import {
   formatSkills,
   formatThreadButtonLabel,
   formatThreadPickerIntro,
+  formatContextUsageAlert,
   formatTurnCompletion,
 } from "./format.js";
 import {
@@ -58,6 +59,7 @@ import { formatCommandUsage, renderCommandHelpText } from "./help.js";
 import type {
   AccountSummary,
   CollaborationMode,
+  ContextAlertLevel,
   ConversationPreferences,
   InteractiveMessageRef,
   PermissionsMode,
@@ -89,6 +91,8 @@ import {
   paginateItems,
 } from "./thread-picker.js";
 import {
+  CONTEXT_ALERT_CRITICAL_PERCENT,
+  CONTEXT_ALERT_WARNING_PERCENT,
   INTERACTIVE_NAMESPACE,
   PLUGIN_ID,
   type CallbackAction,
@@ -2643,6 +2647,7 @@ export class CodexPluginController {
         await this.store.upsertBinding({
           ...binding,
           contextUsage: result.usage,
+          lastContextAlertLevel: null,
           updatedAt: Date.now(),
         });
       }
@@ -3150,6 +3155,12 @@ export class CodexPluginController {
               ? await this.describeEmptyTurnCompletion()
               : formatTurnCompletion(result);
         await this.sendText(params.conversation, completionText);
+        const updatedBinding = this.store.getBinding(params.conversation);
+        if (updatedBinding) {
+          await this.checkContextUsageAlert(params.conversation, updatedBinding).catch((alertError) => {
+            this.api.logger.debug?.(`codex context usage alert failed: ${String(alertError)}`);
+          });
+        }
       })
       .catch(async (error) => {
         const message = error instanceof Error ? error.message : String(error);
@@ -6589,5 +6600,59 @@ export class CodexPluginController {
         this.api.logger.warn(`codex discord channel rename failed: ${String(error)}`);
       });
     }
+  }
+
+  private async checkContextUsageAlert(
+    conversation: ConversationTarget,
+    binding: StoredBinding,
+  ): Promise<void> {
+    const usage = binding.contextUsage;
+    if (!usage || typeof usage.remainingPercent !== "number") {
+      return;
+    }
+    const remaining = usage.remainingPercent;
+    let level: ContextAlertLevel | null = null;
+    if (remaining <= CONTEXT_ALERT_CRITICAL_PERCENT) {
+      level = "critical";
+    } else if (remaining <= CONTEXT_ALERT_WARNING_PERCENT) {
+      level = "warning";
+    }
+    if (!level) {
+      if (binding.lastContextAlertLevel) {
+        await this.store.upsertBinding({
+          ...binding,
+          lastContextAlertLevel: null,
+          updatedAt: Date.now(),
+        });
+      }
+      return;
+    }
+    const previous = binding.lastContextAlertLevel;
+    if (previous === level) {
+      return;
+    }
+    if (previous === "critical" && level === "warning") {
+      return;
+    }
+    const alertText = formatContextUsageAlert({ level, usage });
+    const compactCallback = await this.store.putCallback({
+      kind: "run-prompt",
+      conversation,
+      prompt: "/cas_compact",
+    });
+    const buttons: PluginInteractiveButtons = [
+      [
+        {
+          text: "Compact Now",
+          callback_data: `${INTERACTIVE_NAMESPACE}:${compactCallback.token}`,
+        },
+      ],
+    ];
+    await this.sendText(conversation, alertText, { buttons });
+    await this.store.upsertBinding({
+      ...binding,
+      lastContextAlertLevel: level,
+      updatedAt: Date.now(),
+    });
   }
 }
