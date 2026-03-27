@@ -526,6 +526,7 @@ export function formatCodexContextUsageSnapshot(
 export function formatCodexStatusText(params: {
   pluginVersion?: string;
   threadState?: ThreadState;
+  bindingThreadTitle?: string;
   account?: AccountSummary | null;
   rateLimits: RateLimitSummary[];
   projectFolder?: string;
@@ -537,7 +538,9 @@ export function formatCodexStatusText(params: {
   threadNote?: string;
 }): string {
   const lines = [];
-  const bindingThreadName = params.threadState?.threadName?.trim();
+  const bindingThreadName =
+    params.threadState?.threadName?.trim() ||
+    params.bindingThreadTitle?.trim();
   const bindingProjectName = getProjectName(params.projectFolder ?? params.worktreeFolder);
   lines.push(
     params.bindingActive

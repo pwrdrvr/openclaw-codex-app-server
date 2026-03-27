@@ -5959,6 +5959,7 @@ export class CodexPluginController {
     return formatCodexStatusText({
       pluginVersion: PLUGIN_VERSION,
       threadState: displayThreadState,
+      bindingThreadTitle: binding?.threadTitle,
       account,
       rateLimits: limits,
       bindingActive,

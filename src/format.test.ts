@@ -240,6 +240,25 @@ describe("formatCodexStatusText", () => {
     expect(text).toContain("Context usage: 139k / 258k tokens used (54% full)");
   });
 
+  it("falls back to the bound thread title when status has no live thread name", () => {
+    const text = formatCodexStatusText({
+      bindingActive: true,
+      threadState: {
+        threadId: "019d2cbc-9fee-7862-8d02-683dfef71851",
+        model: "gpt-5.4",
+        modelProvider: "openai",
+        reasoningEffort: "high",
+        cwd: "/repo/openclaw-app-server",
+      },
+      projectFolder: "/repo/openclaw-app-server",
+      worktreeFolder: "/repo/openclaw-app-server",
+      rateLimits: [],
+      bindingThreadTitle: "What is wrong with this layout?",
+    });
+
+    expect(text).toContain("Binding: What is wrong with this layout? (openclaw-app-server)");
+  });
+
   it("shows plan mode on when the bound conversation has an active plan run", () => {
     const text = formatCodexStatusText({
       bindingActive: true,
