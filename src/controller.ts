@@ -1409,6 +1409,120 @@ export class CodexPluginController {
     }
   }
 
+  async handleMessageTranscribed(event: {
+    type?: string;
+    action?: string;
+    sessionKey?: string;
+    context?: Record<string, unknown>;
+  }): Promise<void> {
+    try {
+      if (!this.settings.enabled) {
+        return;
+      }
+      if (event.type !== "message" || event.action !== "transcribed") {
+        return;
+      }
+      await this.start();
+      const sessionKey = typeof event.sessionKey === "string" ? event.sessionKey : "";
+      const ctx = event.context ?? {};
+      const transcript = typeof ctx.transcript === "string" ? ctx.transcript.trim() : "";
+      if (!sessionKey || !transcript) {
+        return;
+      }
+      const binding = this.store.listBindings().find((entry) => entry.sessionKey === sessionKey) ?? null;
+      if (!binding) {
+        return;
+      }
+      const mediaType = typeof ctx.mediaType === "string" ? ctx.mediaType : "";
+      const conversation = binding.conversation;
+      this.api.logger.info(
+        `codex message:transcribed starting turn ${this.formatConversationForLog(conversation)} mediaType=${mediaType || "<unknown>"} prompt="${summarizeTextForLog(transcript)}"`,
+      );
+      await this.startTurn({
+        conversation,
+        binding,
+        workspaceDir: binding.workspaceDir,
+        prompt: transcript,
+        reason: "inbound",
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? `${error.message}\n${error.stack ?? ""}`.trim() : String(error);
+      this.api.logger.error(`codex message:transcribed failed: ${detail}`);
+    }
+  }
+
+  async handleMessagePreprocessed(event: {
+    type?: string;
+    action?: string;
+    sessionKey?: string;
+    context?: Record<string, unknown>;
+  }): Promise<void> {
+    try {
+      if (!this.settings.enabled) {
+        return;
+      }
+      if (event.type !== "message" || event.action !== "preprocessed") {
+        return;
+      }
+      await this.start();
+      const sessionKey = typeof event.sessionKey === "string" ? event.sessionKey : "";
+      const ctx = event.context ?? {};
+      const mediaPath = typeof ctx.mediaPath === "string" ? ctx.mediaPath : "";
+      const mediaType = typeof ctx.mediaType === "string" ? ctx.mediaType : "";
+      const existingTranscript = typeof ctx.transcript === "string" ? ctx.transcript.trim() : "";
+      if (
+        !sessionKey ||
+        !mediaPath ||
+        (!mediaType.startsWith("audio/") && !mediaPath.match(/\.(ogg|oga|opus|mp3|wav|m4a)$/i))
+      ) {
+        return;
+      }
+      const binding = this.store.listBindings().find((entry) => entry.sessionKey === sessionKey) ?? null;
+      if (!binding) {
+        return;
+      }
+      const mediaUnderstanding = (this.api as OpenClawPluginApi & {
+        runtime?: {
+          mediaUnderstanding?: {
+            transcribeAudioFile?: (params: {
+              filePath: string;
+              cfg?: unknown;
+              mime?: string;
+            }) => Promise<{ text?: string } | null | undefined>;
+          };
+        };
+        config?: unknown;
+      }).runtime?.mediaUnderstanding;
+      const transcript =
+        existingTranscript ||
+        (await mediaUnderstanding?.transcribeAudioFile?.({
+          filePath: mediaPath,
+          cfg: (this.api as { config?: unknown }).config,
+          mime: mediaType || undefined,
+        }))?.text?.trim() ||
+        "";
+      if (!transcript) {
+        this.api.logger.warn(
+          `codex message:preprocessed audio fallback produced no transcript ${this.formatConversationForLog(binding.conversation)} mediaPath=${mediaPath}`,
+        );
+        return;
+      }
+      this.api.logger.info(
+        `codex message:preprocessed audio fallback starting turn ${this.formatConversationForLog(binding.conversation)} prompt="${summarizeTextForLog(transcript)}"`,
+      );
+      await this.startTurn({
+        conversation: binding.conversation,
+        binding,
+        workspaceDir: binding.workspaceDir,
+        prompt: transcript,
+        reason: "inbound",
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? `${error.message}\n${error.stack ?? ""}`.trim() : String(error);
+      this.api.logger.error(`codex message:preprocessed fallback failed: ${detail}`);
+    }
+  }
+
   async handleTelegramInteractive(ctx: PluginInteractiveTelegramHandlerContext): Promise<void> {
     await this.start();
     const bindingApi = asScopedBindingApi(ctx);
