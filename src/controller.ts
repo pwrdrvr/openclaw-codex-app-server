@@ -607,7 +607,7 @@ async function toCodexTextAttachmentInputItem(
   const displayName =
     media.fileName?.trim() || path.basename(normalizedPath) || "attached-file.txt";
   const mimeType = normalizeMimeType(media.mimeType);
-  const lines = [`Attached file: ${displayName}`];
+  const lines = [`Attached file: ${displayName}`, `Local path: ${normalizedPath}`];
   if (mimeType) {
     lines.push(`Content-Type: ${mimeType}`);
   }
@@ -615,6 +615,32 @@ async function toCodexTextAttachmentInputItem(
   if (truncatedByBytes || truncatedByChars) {
     lines.push("", "[Truncated]");
   }
+  return { type: "text", text: lines.join("\n") };
+}
+
+function toCodexGenericFileReferenceInputItem(
+  media: PluginInboundMedia,
+): CodexTurnInputItem | null {
+  if (media.kind === "image") {
+    return null;
+  }
+  const normalizedPath = normalizeInboundMediaPath(media.path ?? media.url);
+  if (!normalizedPath || !path.isAbsolute(normalizedPath)) {
+    return null;
+  }
+  const displayName = media.fileName?.trim() || path.basename(normalizedPath) || "attached-file";
+  const mimeType = normalizeMimeType(media.mimeType);
+  const lines = [
+    `Attached file: ${displayName}`,
+    `Local path: ${normalizedPath}`,
+  ];
+  if (mimeType) {
+    lines.push(`Content-Type: ${mimeType}`);
+  }
+  lines.push(
+    "",
+    "Use this local file path directly from the server workspace. Do not ask the user to re-upload it unless the path is unreadable.",
+  );
   return { type: "text", text: lines.join("\n") };
 }
 
@@ -629,7 +655,10 @@ async function buildInboundTurnInput(event: {
   }
   const seen = new Set<string>();
   for (const media of [...(event.media ?? []), ...extractInboundMetadataMedia(event.metadata)]) {
-    const item = toCodexImageInputItem(media) ?? (await toCodexTextAttachmentInputItem(media));
+    const item =
+      toCodexImageInputItem(media) ??
+      (await toCodexTextAttachmentInputItem(media)) ??
+      toCodexGenericFileReferenceInputItem(media);
     if (!item) {
       continue;
     }
