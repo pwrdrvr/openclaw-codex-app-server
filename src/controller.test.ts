@@ -3582,7 +3582,7 @@ describe("Discord controller flows", () => {
           { type: "text", text: "Read this file" },
           {
             type: "text",
-            text: "Attached file: note.txt\nContent-Type: text/plain\n\nhello",
+            text: `Attached file: note.txt\nLocal path: ${filePath}\nContent-Type: text/plain\n\nhello`,
           },
         ],
       }),
@@ -3635,14 +3635,14 @@ describe("Discord controller flows", () => {
         input: [
           {
             type: "text",
-            text: "Attached file: README.md\n\n# Heading\n\nBody text.\n",
+            text: `Attached file: README.md\nLocal path: ${filePath}\n\n# Heading\n\nBody text.\n`,
           },
         ],
       }),
     );
   });
 
-  it("still ignores unsupported binary document attachments", async () => {
+  it("passes unsupported binary documents through as local file references", async () => {
     const { controller, stateDir } = await createControllerHarness();
     const filePath = path.join(stateDir, "tmp", "manual.pdf");
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -3685,7 +3685,14 @@ describe("Discord controller flows", () => {
     expect(startTurn).toHaveBeenCalledWith(
       expect.objectContaining({
         prompt: "Read this document",
-        input: [{ type: "text", text: "Read this document" }],
+        input: [
+          { type: "text", text: "Read this document" },
+          {
+            type: "text",
+            text:
+              `Attached file: manual.pdf\nLocal path: ${filePath}\nContent-Type: application/pdf\n\nUse this local file path directly from the server workspace. Do not ask the user to re-upload it unless the path is unreadable.`,
+          },
+        ],
       }),
     );
   });
