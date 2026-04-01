@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { existsSync, promises as fs } from "node:fs";
 import { createRequire } from "node:module";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -6836,6 +6837,10 @@ export class CodexPluginController {
           return token;
         }
       }
+      const topLevelToken = typeof telegram?.botToken === "string" ? telegram.botToken.trim() : "";
+      if (topLevelToken) {
+        return topLevelToken;
+      }
       return undefined;
     };
 
@@ -6844,10 +6849,11 @@ export class CodexPluginController {
       return configToken;
     }
 
-    for (const configPath of [
-      "/Volumes/InternalSpareStorage/openclaw/.openclaw/openclaw.json",
-      "/Users/pedrogonzalez/.openclaw/openclaw.json",
-    ]) {
+    const configPaths = new Set<string>([
+      path.join(this.api.runtime.state.resolveStateDir(), "openclaw.json"),
+      path.join(os.homedir(), ".openclaw", "openclaw.json"),
+    ]);
+    for (const configPath of configPaths) {
       try {
         const raw = await fs.readFile(configPath, "utf8");
         const parsed = JSON.parse(raw) as unknown;
