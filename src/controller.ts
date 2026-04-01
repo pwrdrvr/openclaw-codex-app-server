@@ -1411,6 +1411,10 @@ export class CodexPluginController {
 
   async handleTelegramInteractive(ctx: PluginInteractiveTelegramHandlerContext): Promise<void> {
     await this.start();
+    const runtimeConfig = (ctx as { config?: unknown }).config;
+    if (runtimeConfig !== undefined) {
+      this.lastRuntimeConfig = runtimeConfig;
+    }
     const bindingApi = asScopedBindingApi(ctx);
     const callback = this.store.getCallback(ctx.callback.payload);
     if (!callback) {
@@ -6319,22 +6323,58 @@ export class CodexPluginController {
         conversation.accountId,
         { fallbackLimit: 4000 },
       );
+      const runtimeSendTelegram = (this.api.runtime.channel.telegram as any)?.sendMessageTelegram as
+        | ((...args: any[]) => Promise<{ messageId: string; chatId: string }>)
+        | undefined;
+      const telegramToken = runtimeSendTelegram
+        ? undefined
+        : await this.resolveTelegramBotToken(conversation.accountId);
+      const sendTelegram = async (
+        chunk: string,
+        opts?: {
+          buttons?: PluginInteractiveButtons;
+          mediaUrl?: string;
+          mediaLocalRoots?: readonly string[];
+        },
+      ): Promise<{ messageId: string; chatId: string }> => {
+        if (runtimeSendTelegram) {
+          return await runtimeSendTelegram(
+            conversation.parentConversationId ?? conversation.conversationId,
+            chunk,
+            {
+              accountId: conversation.accountId,
+              messageThreadId: conversation.threadId,
+              mediaUrl: opts?.mediaUrl,
+              mediaLocalRoots: opts?.mediaLocalRoots,
+              buttons: opts?.buttons,
+            },
+          );
+        }
+        if (!telegramToken) {
+          throw new Error("Telegram send unavailable");
+        }
+        if (opts?.mediaUrl) {
+          throw new Error("Telegram media send unavailable");
+        }
+        return await this.callTelegramSendMessageApi(telegramToken, {
+          chat_id: conversation.parentConversationId ?? conversation.conversationId,
+          text: chunk,
+          ...(conversation.threadId != null
+            ? { message_thread_id: conversation.threadId }
+            : {}),
+          ...(opts?.buttons ? { reply_markup: buildTelegramReplyMarkup(opts.buttons) } : {}),
+        });
+      };
       const chunks = text
         ? this.api.runtime.channel.text.chunkText(text, limit).filter(Boolean)
         : [];
       let delivered: DeliveredMessageRef | null = null;
       if (hasMedia) {
-        const result = await this.api.runtime.channel.telegram.sendMessageTelegram(
-          conversation.parentConversationId ?? conversation.conversationId,
-          chunks[0] ?? text,
-          {
-            accountId: conversation.accountId,
-            messageThreadId: conversation.threadId,
-            mediaUrl: payload.mediaUrl,
-            mediaLocalRoots,
-            buttons: chunks.length <= 1 ? payload.buttons : undefined,
-          },
-        );
+        const result = await sendTelegram(chunks[0] ?? text, {
+          mediaUrl: payload.mediaUrl,
+          mediaLocalRoots,
+          buttons: chunks.length <= 1 ? payload.buttons : undefined,
+        });
         delivered = {
           provider: "telegram",
           messageId: result.messageId,
@@ -6345,15 +6385,9 @@ export class CodexPluginController {
           if (!chunk) {
             continue;
           }
-          const result = await this.api.runtime.channel.telegram.sendMessageTelegram(
-            conversation.parentConversationId ?? conversation.conversationId,
-            chunk,
-            {
-              accountId: conversation.accountId,
-              messageThreadId: conversation.threadId,
-              buttons: index === chunks.length - 1 ? payload.buttons : undefined,
-            },
-          );
+          const result = await sendTelegram(chunk, {
+            buttons: index === chunks.length - 1 ? payload.buttons : undefined,
+          });
           if (index === chunks.length - 1 || !delivered) {
             delivered = {
               provider: "telegram",
@@ -6373,15 +6407,9 @@ export class CodexPluginController {
         if (!chunk) {
           continue;
         }
-        const result = await this.api.runtime.channel.telegram.sendMessageTelegram(
-          conversation.parentConversationId ?? conversation.conversationId,
-          chunk,
-          {
-            accountId: conversation.accountId,
-            messageThreadId: conversation.threadId,
-            buttons: index === textChunks.length - 1 ? payload.buttons : undefined,
-          },
-        );
+        const result = await sendTelegram(chunk, {
+          buttons: index === textChunks.length - 1 ? payload.buttons : undefined,
+        });
         if (!delivered || index === textChunks.length - 1) {
           delivered = {
             provider: "telegram",
@@ -6574,7 +6602,11 @@ export class CodexPluginController {
     stop: () => void;
   } | null> {
     if (isTelegramChannel(conversation.channel)) {
-      return await this.api.runtime.channel.telegram.typing.start({
+      const typingApi = this.api.runtime.channel.telegram?.typing;
+      if (!typingApi?.start) {
+        return null;
+      }
+      return await typingApi.start({
         to: conversation.parentConversationId ?? conversation.conversationId,
         accountId: conversation.accountId,
         messageThreadId: conversation.threadId,
@@ -6614,6 +6646,15 @@ export class CodexPluginController {
       return null;
     }
     if (isTelegramChannel(conversation.channel)) {
+      const runtimeSendTelegram = (this.api.runtime.channel.telegram as any)?.sendMessageTelegram as
+        | ((...args: any[]) => Promise<{ messageId: string; chatId: string }>)
+        | undefined;
+      const telegramToken = runtimeSendTelegram
+        ? undefined
+        : await this.resolveTelegramBotToken(conversation.accountId);
+      if (!runtimeSendTelegram && !telegramToken) {
+        return null;
+      }
       const limit = this.api.runtime.channel.text.resolveTextChunkLimit(
         undefined,
         "telegram",
@@ -6624,14 +6665,22 @@ export class CodexPluginController {
       const textChunks = chunks.length > 0 ? chunks : [trimmed];
       let firstDelivered: DeliveredMessageRef | null = null;
       for (const chunk of textChunks) {
-        const result = await this.api.runtime.channel.telegram.sendMessageTelegram(
-          conversation.parentConversationId ?? conversation.conversationId,
-          chunk,
-          {
-            accountId: conversation.accountId,
-            messageThreadId: conversation.threadId,
-          },
-        );
+        const result = runtimeSendTelegram
+          ? await runtimeSendTelegram(
+              conversation.parentConversationId ?? conversation.conversationId,
+              chunk,
+              {
+                accountId: conversation.accountId,
+                messageThreadId: conversation.threadId,
+              },
+            )
+          : await this.callTelegramSendMessageApi(telegramToken!, {
+              chat_id: conversation.parentConversationId ?? conversation.conversationId,
+              text: chunk,
+              ...(conversation.threadId != null
+                ? { message_thread_id: conversation.threadId }
+                : {}),
+            });
         if (!firstDelivered) {
           firstDelivered = {
             provider: "telegram",
@@ -6756,12 +6805,62 @@ export class CodexPluginController {
   }
 
   private async resolveTelegramBotToken(accountId?: string): Promise<string | undefined> {
-    const resolution = this.api.runtime.channel.telegram.resolveTelegramToken?.(
+    const resolution = this.api.runtime.channel.telegram?.resolveTelegramToken?.(
       this.lastRuntimeConfig,
       { accountId },
     );
-    const token = resolution?.token?.trim();
-    return token || undefined;
+    const runtimeToken = resolution?.token?.trim();
+    if (runtimeToken) {
+      return runtimeToken;
+    }
+
+    const extractFromConfig = (raw: unknown): string | undefined => {
+      const root = asRecord(raw);
+      const channels = asRecord(root?.channels);
+      const telegram = asRecord(channels?.telegram);
+      const accountsValue = telegram?.accounts;
+      const accounts =
+        accountsValue && typeof accountsValue === "object" && !Array.isArray(accountsValue)
+          ? (accountsValue as Record<string, unknown>)
+          : {};
+      const preferredIds = [
+        accountId,
+        typeof telegram?.defaultAccount === "string" ? telegram.defaultAccount : undefined,
+      ]
+        .map((value) => value?.trim())
+        .filter((value): value is string => Boolean(value));
+      for (const id of preferredIds) {
+        const account = asRecord(accounts[id]);
+        const token = typeof account?.botToken === "string" ? account.botToken.trim() : "";
+        if (token) {
+          return token;
+        }
+      }
+      return undefined;
+    };
+
+    const configToken = extractFromConfig(this.lastRuntimeConfig);
+    if (configToken) {
+      return configToken;
+    }
+
+    for (const configPath of [
+      "/Volumes/InternalSpareStorage/openclaw/.openclaw/openclaw.json",
+      "/Users/pedrogonzalez/.openclaw/openclaw.json",
+    ]) {
+      try {
+        const raw = await fs.readFile(configPath, "utf8");
+        const parsed = JSON.parse(raw) as unknown;
+        const token = extractFromConfig(parsed);
+        if (token) {
+          return token;
+        }
+      } catch {
+        // Ignore config fallback failures.
+      }
+    }
+
+    return undefined;
   }
 
   private async resolveDiscordBotToken(accountId?: string): Promise<string | undefined> {
@@ -6797,6 +6896,35 @@ export class CodexPluginController {
         `Discord ${action} failed status=${response.status} body=${await response.text()}`,
       );
     }
+  }
+
+  private async callTelegramSendMessageApi(
+    token: string,
+    body: Record<string, unknown>,
+  ): Promise<{ messageId: string; chatId: string }> {
+    const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    const raw = await response.text();
+    if (!response.ok) {
+      throw new Error(`Telegram sendMessage failed status=${response.status} body=${raw}`);
+    }
+    const parsed = JSON.parse(raw) as {
+      result?: { message_id?: number | string; chat?: { id?: number | string } };
+    };
+    const messageId = parsed.result?.message_id;
+    const chatId = parsed.result?.chat?.id;
+    if (messageId == null || chatId == null) {
+      throw new Error(`Telegram sendMessage returned incomplete payload: ${raw}`);
+    }
+    return {
+      messageId: String(messageId),
+      chatId: String(chatId),
+    };
   }
 
   private async callTelegramPinApi(
@@ -6841,7 +6969,11 @@ export class CodexPluginController {
     name: string,
   ): Promise<void> {
     if (isTelegramChannel(conversation.channel) && conversation.threadId != null) {
-      await this.api.runtime.channel.telegram.conversationActions.renameTopic(
+      const renameTopic = this.api.runtime.channel.telegram?.conversationActions?.renameTopic;
+      if (!renameTopic) {
+        return;
+      }
+      await renameTopic(
         conversation.parentConversationId ?? conversation.conversationId,
         conversation.threadId,
         name,
