@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { existsSync, promises as fs } from "node:fs";
 import { createRequire } from "node:module";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -6811,7 +6812,18 @@ export class CodexPluginController {
     if (runtimeToken) {
       return runtimeToken;
     }
-    const cfg = asRecord(this.lastRuntimeConfig);
+    const configToken = this.extractTelegramBotTokenFromConfig(this.lastRuntimeConfig, accountId);
+    if (configToken) {
+      return configToken;
+    }
+    return await this.resolveTelegramBotTokenFromConfigFile(accountId);
+  }
+
+  private extractTelegramBotTokenFromConfig(
+    config: unknown,
+    accountId?: string,
+  ): string | undefined {
+    const cfg = asRecord(config);
     const channels = asRecord(cfg?.channels);
     const telegram = asRecord(channels?.telegram);
     const directToken = typeof telegram?.botToken === "string" ? telegram.botToken.trim() : "";
@@ -6819,16 +6831,67 @@ export class CodexPluginController {
       return directToken;
     }
     const accounts = asRecord(telegram?.accounts);
-    if (accountId && accounts) {
-      const account = asRecord(accounts[accountId]);
-      const accountToken =
-        typeof account?.botToken === "string"
-          ? account.botToken.trim()
-          : typeof account?.token === "string"
-            ? account.token.trim()
-            : "";
-      if (accountToken) {
-        return accountToken;
+    if (!accountId || !accounts) {
+      return undefined;
+    }
+    const account = asRecord(accounts[accountId]);
+    const accountToken =
+      typeof account?.botToken === "string"
+        ? account.botToken.trim()
+        : typeof account?.token === "string"
+          ? account.token.trim()
+          : "";
+    return accountToken || undefined;
+  }
+
+  private resolveOpenClawConfigCandidatePaths(): string[] {
+    const candidates = new Set<string>();
+    const addCandidate = (candidate?: string | null): void => {
+      const normalized = candidate ? expandHomeDir(candidate.trim()) : "";
+      if (!normalized) {
+        return;
+      }
+      candidates.add(path.resolve(normalized));
+    };
+    addCandidate(process.env.OPENCLAW_CONFIG_PATH);
+    const configDir = process.env.OPENCLAW_CONFIG_DIR?.trim();
+    if (configDir) {
+      addCandidate(path.join(configDir, "openclaw.json"));
+    }
+    const stateDir = this.api.runtime.state.resolveStateDir();
+    if (stateDir?.trim()) {
+      let current = path.resolve(stateDir);
+      while (true) {
+        addCandidate(path.join(current, "openclaw.json"));
+        const parent = path.dirname(current);
+        if (parent === current) {
+          break;
+        }
+        current = parent;
+      }
+    }
+    addCandidate(path.join(os.homedir(), ".openclaw", "openclaw.json"));
+    return [...candidates];
+  }
+
+  private async resolveTelegramBotTokenFromConfigFile(
+    accountId?: string,
+  ): Promise<string | undefined> {
+    for (const configPath of this.resolveOpenClawConfigCandidatePaths()) {
+      if (!existsSync(configPath)) {
+        continue;
+      }
+      try {
+        const raw = await fs.readFile(configPath, "utf8");
+        const parsed = JSON.parse(raw) as unknown;
+        const token = this.extractTelegramBotTokenFromConfig(parsed, accountId);
+        if (token) {
+          return token;
+        }
+      } catch (error) {
+        this.api.logger.debug?.(
+          `codex telegram token fallback config read failed path=${configPath}: ${String(error)}`,
+        );
       }
     }
     return undefined;

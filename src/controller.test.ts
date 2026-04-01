@@ -347,6 +347,56 @@ describe("Telegram runtime compatibility fallbacks", () => {
     });
   });
 
+  it("reads the Telegram token from openclaw.json when runtime config is unavailable", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => "",
+      json: async () => ({
+        ok: true,
+        result: {
+          message_id: 43,
+          chat: { id: 123 },
+        },
+      }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { controller, api, stateDir } = await createControllerHarness();
+    delete (api as any).runtime.channel.telegram;
+    (controller as any).lastRuntimeConfig = undefined;
+    fs.writeFileSync(
+      path.join(stateDir, "openclaw.json"),
+      JSON.stringify({
+        channels: {
+          telegram: {
+            botToken: "telegram-file-token",
+          },
+        },
+      }),
+    );
+
+    const delivered = await (controller as any).sendTextWithDeliveryRef(
+      {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      "hello from config-file fallback",
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.telegram.org/bottelegram-file-token/sendMessage",
+      expect.objectContaining({
+        method: "POST",
+      }),
+    );
+    expect(delivered).toEqual({
+      provider: "telegram",
+      messageId: "43",
+      chatId: "123",
+    });
+  });
+
   it("falls back to sendChatAction typing when channel.telegram is unavailable", async () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,
