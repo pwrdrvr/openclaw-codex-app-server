@@ -300,6 +300,131 @@ async function flushAsyncWork(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+describe("Telegram runtime compatibility fallbacks", () => {
+  it("falls back to Telegram Bot API for outbound sends when channel.telegram is unavailable", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => "",
+      json: async () => ({
+        ok: true,
+        result: {
+          message_id: 42,
+          chat: { id: 123 },
+        },
+      }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { controller, api } = await createControllerHarness();
+    delete (api as any).runtime.channel.telegram;
+    (controller as any).lastRuntimeConfig = {
+      channels: {
+        telegram: {
+          botToken: "telegram-token",
+        },
+      },
+    };
+
+    const delivered = await (controller as any).sendTextWithDeliveryRef(
+      {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      "hello from fallback",
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.telegram.org/bottelegram-token/sendMessage",
+      expect.objectContaining({
+        method: "POST",
+      }),
+    );
+    expect(delivered).toEqual({
+      provider: "telegram",
+      messageId: "42",
+      chatId: "123",
+    });
+  });
+
+  it("falls back to sendChatAction typing when channel.telegram is unavailable", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => "",
+      json: async () => ({
+        ok: true,
+        result: true,
+      }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { controller, api } = await createControllerHarness();
+    delete (api as any).runtime.channel.telegram;
+    (controller as any).lastRuntimeConfig = {
+      channels: {
+        telegram: {
+          botToken: "telegram-token",
+        },
+      },
+    };
+
+    const lease = await (controller as any).startTypingLease({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+      threadId: 77,
+    });
+
+    lease?.stop();
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.telegram.org/bottelegram-token/sendChatAction",
+      expect.objectContaining({
+        method: "POST",
+      }),
+    );
+  });
+
+  it("falls back to editForumTopic when Telegram conversationActions are unavailable", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => "",
+      json: async () => ({
+        ok: true,
+        result: true,
+      }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { controller, api } = await createControllerHarness();
+    delete (api as any).runtime.channel.telegram;
+    (controller as any).lastRuntimeConfig = {
+      channels: {
+        telegram: {
+          botToken: "telegram-token",
+        },
+      },
+    };
+
+    await (controller as any).renameConversationIfSupported(
+      {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+        threadId: 77,
+      },
+      "Renamed Topic",
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.telegram.org/bottelegram-token/editForumTopic",
+      expect.objectContaining({
+        method: "POST",
+      }),
+    );
+  });
+});
+
 describe("Discord controller flows", () => {
   it("starts cleanly without the legacy runtime.channel.bindings surface", async () => {
     const { controller } = await createControllerHarnessWithoutLegacyBindings();

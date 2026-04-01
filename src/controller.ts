@@ -6324,7 +6324,7 @@ export class CodexPluginController {
         : [];
       let delivered: DeliveredMessageRef | null = null;
       if (hasMedia) {
-        const result = await this.api.runtime.channel.telegram.sendMessageTelegram(
+        const result = await this.sendTelegramMessageCompat(
           conversation.parentConversationId ?? conversation.conversationId,
           chunks[0] ?? text,
           {
@@ -6345,7 +6345,7 @@ export class CodexPluginController {
           if (!chunk) {
             continue;
           }
-          const result = await this.api.runtime.channel.telegram.sendMessageTelegram(
+          const result = await this.sendTelegramMessageCompat(
             conversation.parentConversationId ?? conversation.conversationId,
             chunk,
             {
@@ -6373,7 +6373,7 @@ export class CodexPluginController {
         if (!chunk) {
           continue;
         }
-        const result = await this.api.runtime.channel.telegram.sendMessageTelegram(
+        const result = await this.sendTelegramMessageCompat(
           conversation.parentConversationId ?? conversation.conversationId,
           chunk,
           {
@@ -6574,11 +6574,46 @@ export class CodexPluginController {
     stop: () => void;
   } | null> {
     if (isTelegramChannel(conversation.channel)) {
-      return await this.api.runtime.channel.telegram.typing.start({
-        to: conversation.parentConversationId ?? conversation.conversationId,
-        accountId: conversation.accountId,
-        messageThreadId: conversation.threadId,
-      });
+      const telegramRuntime = (this.api.runtime.channel as { telegram?: unknown }).telegram as
+        | {
+            typing?: {
+              start?: (params: {
+                to: string;
+                accountId?: string;
+                messageThreadId?: number;
+              }) => Promise<{ refresh: () => Promise<void>; stop: () => void }>;
+            };
+          }
+        | undefined;
+      if (telegramRuntime?.typing?.start) {
+        return await telegramRuntime.typing.start({
+          to: conversation.parentConversationId ?? conversation.conversationId,
+          accountId: conversation.accountId,
+          messageThreadId: conversation.threadId,
+        });
+      }
+      const token = await this.resolveTelegramBotToken(conversation.accountId);
+      if (!token) {
+        return null;
+      }
+      const sendPulse = async (): Promise<void> => {
+        await this.callTelegramApiJson("sendChatAction", token, {
+          chat_id: conversation.parentConversationId ?? conversation.conversationId,
+          action: "typing",
+          ...(conversation.threadId != null ? { message_thread_id: conversation.threadId } : {}),
+        }).catch((error) => {
+          this.api.logger.debug?.(`codex telegram typing fallback failed: ${String(error)}`);
+        });
+      };
+      await sendPulse();
+      const timer = setInterval(() => {
+        void sendPulse();
+      }, 4_000);
+      return {
+        stop: () => {
+          clearInterval(timer);
+        },
+      };
     }
     if (isDiscordChannel(conversation.channel)) {
       if (conversation.conversationId.startsWith("user:")) {
@@ -6624,7 +6659,7 @@ export class CodexPluginController {
       const textChunks = chunks.length > 0 ? chunks : [trimmed];
       let firstDelivered: DeliveredMessageRef | null = null;
       for (const chunk of textChunks) {
-        const result = await this.api.runtime.channel.telegram.sendMessageTelegram(
+        const result = await this.sendTelegramMessageCompat(
           conversation.parentConversationId ?? conversation.conversationId,
           chunk,
           {
@@ -6756,12 +6791,47 @@ export class CodexPluginController {
   }
 
   private async resolveTelegramBotToken(accountId?: string): Promise<string | undefined> {
-    const resolution = this.api.runtime.channel.telegram.resolveTelegramToken?.(
+    const telegramRuntime = (this.api.runtime.channel as { telegram?: unknown }).telegram as
+      | {
+          resolveTelegramToken?: (
+            cfg?: unknown,
+            opts?: {
+              envToken?: string | null;
+              accountId?: string | null;
+              logMissingFile?: (message: string) => void;
+            },
+          ) => { token: string; source: string };
+        }
+      | undefined;
+    const resolution = telegramRuntime?.resolveTelegramToken?.(
       this.lastRuntimeConfig,
       { accountId },
     );
-    const token = resolution?.token?.trim();
-    return token || undefined;
+    const runtimeToken = resolution?.token?.trim();
+    if (runtimeToken) {
+      return runtimeToken;
+    }
+    const cfg = asRecord(this.lastRuntimeConfig);
+    const channels = asRecord(cfg?.channels);
+    const telegram = asRecord(channels?.telegram);
+    const directToken = typeof telegram?.botToken === "string" ? telegram.botToken.trim() : "";
+    if (directToken) {
+      return directToken;
+    }
+    const accounts = asRecord(telegram?.accounts);
+    if (accountId && accounts) {
+      const account = asRecord(accounts[accountId]);
+      const accountToken =
+        typeof account?.botToken === "string"
+          ? account.botToken.trim()
+          : typeof account?.token === "string"
+            ? account.token.trim()
+            : "";
+      if (accountToken) {
+        return accountToken;
+      }
+    }
+    return undefined;
   }
 
   private async resolveDiscordBotToken(accountId?: string): Promise<string | undefined> {
@@ -6818,6 +6888,140 @@ export class CodexPluginController {
     }
   }
 
+  private async callTelegramApiJson(
+    method: string,
+    token: string,
+    body: Record<string, unknown>,
+  ): Promise<unknown> {
+    const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      throw new Error(
+        `Telegram ${method} failed status=${response.status} body=${await response.text()}`,
+      );
+    }
+    const data = (await response.json()) as { ok?: boolean; description?: string; result?: unknown };
+    if (!data?.ok) {
+      throw new Error(`Telegram ${method} failed: ${data?.description ?? "unknown error"}`);
+    }
+    return data.result;
+  }
+
+  private async callTelegramApiFormData(
+    method: string,
+    token: string,
+    form: FormData,
+  ): Promise<unknown> {
+    const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+      method: "POST",
+      body: form,
+    });
+    if (!response.ok) {
+      throw new Error(
+        `Telegram ${method} failed status=${response.status} body=${await response.text()}`,
+      );
+    }
+    const data = (await response.json()) as { ok?: boolean; description?: string; result?: unknown };
+    if (!data?.ok) {
+      throw new Error(`Telegram ${method} failed: ${data?.description ?? "unknown error"}`);
+    }
+    return data.result;
+  }
+
+  private async sendTelegramMessageCompat(
+    to: string,
+    text: string,
+    opts?: {
+      accountId?: string;
+      messageThreadId?: number;
+      mediaUrl?: string;
+      mediaLocalRoots?: readonly string[];
+      plainText?: string;
+      textMode?: "markdown" | "html";
+      buttons?: PluginInteractiveButtons;
+    },
+  ): Promise<{ messageId: string; chatId: string }> {
+    const telegramRuntime = (this.api.runtime.channel as { telegram?: unknown }).telegram as
+      | {
+          sendMessageTelegram?: (
+            to: string,
+            text: string,
+            opts?: {
+              accountId?: string;
+              messageThreadId?: number;
+              mediaUrl?: string;
+              mediaLocalRoots?: readonly string[];
+              plainText?: string;
+              textMode?: "markdown" | "html";
+              buttons?: PluginInteractiveButtons;
+            },
+          ) => Promise<{ messageId: string; chatId: string }>;
+        }
+      | undefined;
+    if (telegramRuntime?.sendMessageTelegram) {
+      return await telegramRuntime.sendMessageTelegram(to, text, opts);
+    }
+    const token = await this.resolveTelegramBotToken(opts?.accountId);
+    if (!token) {
+      throw new Error("Telegram bot token unavailable");
+    }
+    const replyMarkup = buildTelegramReplyMarkup(opts?.buttons);
+    const bodyBase = {
+      chat_id: to,
+      ...(opts?.messageThreadId != null ? { message_thread_id: opts.messageThreadId } : {}),
+      ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+    };
+    if (opts?.mediaUrl) {
+      const mediaUrl = opts.mediaUrl.trim();
+      const caption = text.trim();
+      if (/^https?:\/\//i.test(mediaUrl)) {
+        const result = (await this.callTelegramApiJson("sendDocument", token, {
+          ...bodyBase,
+          document: mediaUrl,
+          ...(caption ? { caption: caption.slice(0, 1024) } : {}),
+        })) as { message_id?: number | string; chat?: { id?: number | string } };
+        return {
+          messageId: String(result.message_id ?? ""),
+          chatId: String(result.chat?.id ?? to),
+        };
+      }
+      const fileBuffer = await fs.readFile(mediaUrl);
+      const form = new FormData();
+      form.set("chat_id", to);
+      if (opts?.messageThreadId != null) {
+        form.set("message_thread_id", String(opts.messageThreadId));
+      }
+      if (caption) {
+        form.set("caption", caption.slice(0, 1024));
+      }
+      if (replyMarkup) {
+        form.set("reply_markup", JSON.stringify(replyMarkup));
+      }
+      form.set("document", new Blob([fileBuffer]), path.basename(mediaUrl) || "attachment");
+      const result = (await this.callTelegramApiFormData("sendDocument", token, form)) as {
+        message_id?: number | string;
+        chat?: { id?: number | string };
+      };
+      return {
+        messageId: String(result.message_id ?? ""),
+        chatId: String(result.chat?.id ?? to),
+      };
+    }
+    const result = (await this.callTelegramApiJson("sendMessage", token, {
+      ...bodyBase,
+      text,
+    })) as { message_id?: number | string; chat?: { id?: number | string } };
+    return {
+      messageId: String(result.message_id ?? ""),
+      chatId: String(result.chat?.id ?? to),
+    };
+  }
+
   private async callTelegramEditMessageApi(
     token: string,
     body: Record<string, unknown>,
@@ -6841,14 +7045,41 @@ export class CodexPluginController {
     name: string,
   ): Promise<void> {
     if (isTelegramChannel(conversation.channel) && conversation.threadId != null) {
-      await this.api.runtime.channel.telegram.conversationActions.renameTopic(
-        conversation.parentConversationId ?? conversation.conversationId,
-        conversation.threadId,
-        name,
-        {
-          accountId: conversation.accountId,
-        },
-      ).catch((error) => {
+      const threadId = conversation.threadId;
+      const telegramRuntime = (this.api.runtime.channel as { telegram?: unknown }).telegram as
+        | {
+            conversationActions?: {
+              renameTopic?: (
+                chatId: string,
+                messageThreadId: number,
+                name: string,
+                opts?: { accountId?: string },
+              ) => Promise<unknown>;
+            };
+          }
+        | undefined;
+      await (async () => {
+        if (telegramRuntime?.conversationActions?.renameTopic) {
+          await telegramRuntime.conversationActions.renameTopic(
+            conversation.parentConversationId ?? conversation.conversationId,
+            threadId,
+            name,
+            {
+              accountId: conversation.accountId,
+            },
+          );
+          return;
+        }
+        const token = await this.resolveTelegramBotToken(conversation.accountId);
+        if (!token) {
+          throw new Error("Telegram bot token unavailable");
+        }
+        await this.callTelegramApiJson("editForumTopic", token, {
+          chat_id: conversation.parentConversationId ?? conversation.conversationId,
+          message_thread_id: threadId,
+          name,
+        });
+      })().catch((error) => {
         this.api.logger.warn(`codex telegram topic rename failed: ${String(error)}`);
       });
       return;
