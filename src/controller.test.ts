@@ -4806,6 +4806,41 @@ describe("Discord controller flows", () => {
     );
   });
 
+  it("stores runtime config from Telegram interactive callbacks", async () => {
+    const { controller } = await createControllerHarness();
+    const callback = await (controller as any).store.putCallback({
+      kind: "reply-text",
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      text: "runtime-config-ok",
+    });
+    const config = {
+      channels: {
+        telegram: {
+          botToken: "telegram-token-from-callback",
+        },
+      },
+    };
+
+    await controller.handleTelegramInteractive({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+      callback: { payload: callback.token },
+      config,
+      respond: {
+        clearButtons: vi.fn(async () => {}),
+        reply: vi.fn(async () => {}),
+        editMessage: vi.fn(async () => {}),
+      },
+    } as any);
+
+    expect((controller as any).lastRuntimeConfig).toEqual(config);
+  });
+
   it("toggles fast mode from the status card even when the app server returns stale state", async () => {
     const { controller, clientMock } = await createControllerHarness();
     clientMock.setThreadServiceTier.mockImplementation(async () => ({

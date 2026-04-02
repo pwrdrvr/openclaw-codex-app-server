@@ -1438,6 +1438,10 @@ export class CodexPluginController {
 
   async handleTelegramInteractive(ctx: PluginInteractiveTelegramHandlerContext): Promise<void> {
     await this.start();
+    const runtimeConfig = (ctx as { config?: unknown }).config;
+    if (runtimeConfig !== undefined) {
+      this.lastRuntimeConfig = runtimeConfig;
+    }
     const bindingApi = asScopedBindingApi(ctx);
     const callback = this.store.getCallback(ctx.callback.payload);
     if (!callback) {
