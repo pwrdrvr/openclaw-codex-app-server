@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+- Updated Telegram delivery and token resolution so the plugin prefers the post-`2026.3.31` OpenClaw outbound adapter and account facade when available, but safely falls back to the legacy `runtime.channel.telegram` shim on older hosts. @huntharo @plgonzalezrx8 @zeolenon
+
+### Compatibility
+
+- This release line supports OpenClaw `2026.3.22` and newer.
+- `v0.6.0+` automatically chooses the new or legacy Telegram runtime surface at startup based on what the host exposes.
+
 ## v0.5.0 - 2026-03-26
 
 ### Highlights
