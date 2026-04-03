@@ -38,8 +38,6 @@ Compatibility:
 | `0.5.x` | `2026.3.22` and newer |
 | `0.6.0+` | `2026.3.22` and newer, with automatic fallback between the legacy Telegram runtime shim and the `2026.3.31+` outbound adapter facade |
 
-If you are using Telegram on OpenClaw `2026.3.31` or newer, prefer plugin `0.6.0+`. Plugin `0.5.x` still expects the older `api.runtime.channel.telegram` surface.
-
 Install:
 
 ```bash
@@ -106,7 +104,7 @@ Pre-release packages are published on matching npm dist-tags instead of `latest`
 - Uses your existing local Codex CLI setup instead of a separate hosted bridge.
 - Feels natural in chat: bind once with `/cas_resume`, then just talk.
 - Keeps useful controls close at hand with `/cas_status`, `/cas_plan`, `/cas_review`, and more.
-- Works well for Discord conversations, and for Telegram on OpenClaw builds where the Telegram runtime surface this release expects is still present.
+- Works well for Telegram and Discord conversations that you want tied to a real Codex thread.
 
 ## Typical Workflow
 
