@@ -38,6 +38,8 @@ Compatibility:
 | `0.5.x` | `2026.3.22` and newer |
 | `0.6.0+` | `2026.3.22` and newer, with automatic fallback between the legacy Telegram runtime shim and the `2026.3.31+` outbound adapter facade |
 
+If you are using Telegram on OpenClaw `2026.3.31` or newer, prefer plugin `0.6.0+`. Plugin `0.5.x` still expects the older `api.runtime.channel.telegram` surface.
+
 Install:
 
 ```bash
@@ -50,7 +52,52 @@ Uninstall:
 openclaw plugins uninstall openclaw-codex-app-server
 ```
 
-Plugin `0.6.0+` prefers the newer OpenClaw `2026.3.31+` outbound adapter and Telegram account facade when they are present, but it also falls back to the older `runtime.channel.telegram` interface used by OpenClaw `2026.3.22` through `2026.3.30`.
+OpenClaw `2026.3.22` and newer include the binding and plugin interface changes this package originally targeted. Plugin `0.6.0+` prefers the newer OpenClaw `2026.3.31+` outbound adapter and Telegram account facade when they are present, but it also falls back to the older `runtime.channel.telegram` interface used by OpenClaw `2026.3.22` through `2026.3.30`.
+
+### Why OpenClaw may flag this plugin as unsafe
+
+This plugin intentionally starts your local `codex app-server` process so OpenClaw can talk to the Codex App Server protocol over stdio or WebSocket. The package is therefore expected to trip OpenClaw's dangerous-code scan for Node `child_process` usage.
+
+The flagged code path is the plugin's normal bridge startup in [`src/client.ts`](./src/client.ts), where it spawns `codex app-server`. It is not a hidden extra shell runner beyond the Codex App Server bridge this plugin is built around.
+
+If your OpenClaw build supports the force-install path, retry with:
+
+```bash
+openclaw plugins install --dangerously-force-unsafe-install openclaw-codex-app-server
+```
+
+### If install is still blocked on OpenClaw `2026.3.31`
+
+Some OpenClaw `2026.3.31` installs still block this package even with `--dangerously-force-unsafe-install`. That behavior is tracked upstream in [openclaw/openclaw#59241](https://github.com/openclaw/openclaw/issues/59241).
+
+When that happens, use this manual path:
+
+1. Download and unpack the published package into OpenClaw's extension directory.
+
+```bash
+cd /tmp
+npm --userconfig /tmp/empty-npmrc pack openclaw-codex-app-server@latest
+rm -rf /tmp/openclaw-cas
+mkdir -p /tmp/openclaw-cas
+tar -xzf openclaw-codex-app-server-*.tgz -C /tmp/openclaw-cas
+mkdir -p ~/.openclaw/extensions/openclaw-codex-app-server
+cp -R /tmp/openclaw-cas/package/. ~/.openclaw/extensions/openclaw-codex-app-server/
+```
+
+2. Add this plugin id to OpenClaw's allowlist, preserving any existing entries you already have in `plugins.allow`.
+
+```bash
+openclaw config set plugins.allow '["openclaw-codex-app-server"]'
+```
+
+3. Restart the gateway and confirm the plugin loads.
+
+```bash
+openclaw gateway restart
+openclaw plugins inspect openclaw-codex-app-server
+```
+
+If you already allow other plugins, merge `openclaw-codex-app-server` into that existing JSON array instead of replacing it.
 
 Pre-release packages are published on matching npm dist-tags instead of `latest`. For example, a tag such as `v0.3.0-beta.1` publishes to `openclaw-codex-app-server@beta`, so `npm install openclaw-codex-app-server@latest` stays on the newest stable release.
 
@@ -59,7 +106,7 @@ Pre-release packages are published on matching npm dist-tags instead of `latest`
 - Uses your existing local Codex CLI setup instead of a separate hosted bridge.
 - Feels natural in chat: bind once with `/cas_resume`, then just talk.
 - Keeps useful controls close at hand with `/cas_status`, `/cas_plan`, `/cas_review`, and more.
-- Works well for Telegram and Discord conversations that you want tied to a real Codex thread.
+- Works well for Discord conversations, and for Telegram on OpenClaw builds where the Telegram runtime surface this release expects is still present.
 
 ## Typical Workflow
 
