@@ -52,18 +52,18 @@ openclaw plugins uninstall openclaw-codex-app-server
 
 OpenClaw `2026.3.22` and newer include the binding and plugin interface changes this package originally targeted. Plugin `0.6.0+` prefers the newer OpenClaw `2026.3.31+` outbound adapter and Telegram account facade when they are present, but it also falls back to the older `runtime.channel.telegram` interface used by OpenClaw `2026.3.22` through `2026.3.30`. Older plugin `0.5.x` releases only match that legacy path and are not compatible with Telegram on OpenClaw `2026.3.31+`.
 
-⚠️ OpenClaw flags this plugin as unsafe because it must launch `codex app-server`. That process spawn is the whole bridge, not an optional extra.
+> ⚠️ OpenClaw flags this plugin as unsafe because it must launch `codex app-server`. That process spawn is the whole bridge, not an optional extra.
 
 ### Updating on OpenClaw `2026.3.31` through at least `2026.4.3`
 
-⚠️ On released OpenClaw builds through `2026.4.3`, `plugins update` still cannot accept the unsafe-install flag for this plugin. The fix is merged upstream but not deployed yet, so for now the reliable update path is:
+> ⚠️ On released OpenClaw builds through `2026.4.3`, `plugins update` still cannot accept the unsafe-install flag for this plugin. The fix is merged upstream but not deployed yet, so for now the reliable update path is:
 
 ```bash
 openclaw plugins uninstall openclaw-codex-app-server
 openclaw plugins install --dangerously-force-unsafe-install openclaw-codex-app-server
 ```
 
-OpenClaw's docs currently show `plugins update` supporting `--dangerously-force-unsafe-install`, but in practice affected releases still need the uninstall/reinstall path for this plugin.
+> OpenClaw's docs currently show `plugins update` supporting `--dangerously-force-unsafe-install`, but in practice affected releases still need the uninstall/reinstall path for this plugin.
 
 ### If install is still blocked on OpenClaw `2026.3.31`
 
