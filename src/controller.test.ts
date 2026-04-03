@@ -1335,6 +1335,131 @@ describe("Discord controller flows", () => {
     expect(followUp).not.toHaveBeenCalled();
   });
 
+  it("clears superseded Telegram pending-input buttons before sending the next prompt", async () => {
+    const { controller, sendMessageTelegram } = await createControllerHarness();
+    const conversation = {
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+    };
+    const run = {
+      getThreadId: vi.fn(() => "thread-1"),
+    };
+
+    await (controller as any).handlePendingInputState(
+      conversation,
+      "/repo/openclaw",
+      {
+        requestId: "pending-1",
+        options: ["Approve Once"],
+        actions: [
+          {
+            kind: "approval",
+            label: "Approve Once",
+            decision: "accept",
+            responseDecision: "accept",
+          },
+        ],
+        expiresAt: Date.now() + 60_000,
+        promptText: "Codex command approval requested (pending-1)",
+      },
+      run,
+    );
+
+    await (controller as any).handlePendingInputState(
+      conversation,
+      "/repo/openclaw",
+      {
+        requestId: "pending-2",
+        options: ["Approve Once"],
+        actions: [
+          {
+            kind: "approval",
+            label: "Approve Once",
+            decision: "accept",
+            responseDecision: "accept",
+          },
+        ],
+        expiresAt: Date.now() + 60_000,
+        promptText: "Codex command approval requested (pending-2)",
+      },
+      run,
+    );
+
+    expect(sendMessageTelegram).toHaveBeenCalledTimes(2);
+    expect((controller as any).store.getPendingRequestById("pending-1")).toBeNull();
+    expect((controller as any).store.getPendingRequestById("pending-2")).toEqual(
+      expect.objectContaining({
+        requestId: "pending-2",
+      }),
+    );
+
+    const fetchMock = vi.mocked(fetch);
+    const editCall = fetchMock.mock.calls.find((call) =>
+      String(call[0]).includes("/editMessageText"),
+    );
+    expect(editCall).toBeDefined();
+    const body = JSON.parse(String((editCall?.[1] as RequestInit | undefined)?.body ?? "{}"));
+    expect(body).toEqual(
+      expect.objectContaining({
+        chat_id: "123",
+        message_id: 1,
+        text: "Codex command approval requested (pending-1)",
+        reply_markup: {
+          inline_keyboard: [],
+        },
+      }),
+    );
+  });
+
+  it("clears Telegram pending-input buttons when the request is removed", async () => {
+    const { controller } = await createControllerHarness();
+    const conversation = {
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+    };
+    const run = {
+      getThreadId: vi.fn(() => "thread-1"),
+    };
+
+    await (controller as any).handlePendingInputState(
+      conversation,
+      "/repo/openclaw",
+      {
+        requestId: "pending-1",
+        options: ["Approve Once"],
+        actions: [
+          {
+            kind: "approval",
+            label: "Approve Once",
+            decision: "accept",
+            responseDecision: "accept",
+          },
+        ],
+        expiresAt: Date.now() + 60_000,
+        promptText: "Codex command approval requested (pending-1)",
+      },
+      run,
+    );
+
+    await (controller as any).handlePendingInputState(
+      conversation,
+      "/repo/openclaw",
+      null,
+      run,
+    );
+
+    expect((controller as any).store.getPendingRequestById("pending-1")).toBeNull();
+    const fetchMock = vi.mocked(fetch);
+    const editCall = fetchMock.mock.calls.find((call) =>
+      String(call[0]).includes("/editMessageText"),
+    );
+    expect(editCall).toBeDefined();
+    const body = JSON.parse(String((editCall?.[1] as RequestInit | undefined)?.body ?? "{}"));
+    expect(body.reply_markup).toEqual({ inline_keyboard: [] });
+  });
+
   it("does not send a second Discord response after completing a questionnaire", async () => {
     const { controller } = await createControllerHarness();
     await (controller as any).store.upsertPendingRequest({

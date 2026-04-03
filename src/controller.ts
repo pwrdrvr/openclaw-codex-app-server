@@ -2450,6 +2450,17 @@ export class CodexPluginController {
     message: InteractiveMessageRef,
     statusCard: StatusCardRender,
   ): Promise<boolean> {
+    return await this.updateInteractiveMessage(conversation, message, {
+      text: statusCard.text,
+      buttons: statusCard.buttons,
+    });
+  }
+
+  private async updateInteractiveMessage(
+    conversation: ConversationTarget,
+    message: InteractiveMessageRef,
+    content: { text: string; buttons?: PluginInteractiveButtons },
+  ): Promise<boolean> {
     try {
       if (message.provider === "telegram") {
         const token = await this.resolveTelegramBotToken(conversation.accountId);
@@ -2459,21 +2470,21 @@ export class CodexPluginController {
         await this.callTelegramEditMessageApi(token, {
           chat_id: message.chatId,
           message_id: Number(message.messageId),
-          text: statusCard.text,
-          reply_markup: buildTelegramReplyMarkup(statusCard.buttons) ?? { inline_keyboard: [] },
+          text: content.text,
+          reply_markup: buildTelegramReplyMarkup(content.buttons) ?? { inline_keyboard: [] },
         });
         return true;
       }
       const builtPicker = this.buildDiscordPickerMessage({
-        text: statusCard.text,
-        buttons: statusCard.buttons,
+        text: content.text,
+        buttons: content.buttons,
       });
       await editDiscordComponentMessage(
         message.channelId,
         message.messageId,
         this.buildDiscordPickerSpec({
-          text: statusCard.text,
-          buttons: statusCard.buttons,
+          text: content.text,
+          buttons: content.buttons,
         }),
         {
           accountId: conversation.accountId,
@@ -3474,6 +3485,7 @@ export class CodexPluginController {
         this.activeRuns.delete(key);
         const pending = this.store.getPendingRequestByConversation(params.conversation);
         if (pending) {
+          await this.clearPendingRequestMessage(params.conversation, pending);
           await this.store.removePendingRequest(pending.requestId);
         }
         await this.applyPendingBindingPermissionsModeMigration(params.conversation);
@@ -3747,6 +3759,7 @@ export class CodexPluginController {
         this.activeRuns.delete(key);
         const pending = this.store.getPendingRequestByConversation(params.conversation);
         if (pending) {
+          await this.clearPendingRequestMessage(params.conversation, pending);
           await this.store.removePendingRequest(pending.requestId);
         }
         await this.applyPendingBindingPermissionsModeMigration(params.conversation);
@@ -3925,9 +3938,15 @@ export class CodexPluginController {
     if (!state) {
       const existing = this.store.getPendingRequestByConversation(conversation);
       if (existing) {
+        await this.clearPendingRequestMessage(conversation, existing);
         await this.store.removePendingRequest(existing.requestId);
       }
       return;
+    }
+    const superseded = this.store.getPendingRequestByConversation(conversation);
+    if (superseded && superseded.requestId !== state.requestId) {
+      await this.clearPendingRequestMessage(conversation, superseded);
+      await this.store.removePendingRequest(superseded.requestId);
     }
     if (state.questionnaire) {
       const existing = this.store.getPendingRequestById(state.requestId);
@@ -3937,10 +3956,23 @@ export class CodexPluginController {
         threadId: run.getThreadId() ?? this.store.getBinding(conversation)?.threadId ?? "",
         workspaceDir,
         state,
+        pendingMessage: existing?.pendingMessage,
         createdAt: existing?.createdAt ?? Date.now(),
         updatedAt: Date.now(),
       });
-      await this.sendPendingQuestionnaire(conversation, state);
+      const delivered = await this.sendPendingQuestionnaire(conversation, state);
+      if (delivered) {
+        await this.store.upsertPendingRequest({
+          requestId: state.requestId,
+          conversation,
+          threadId: run.getThreadId() ?? this.store.getBinding(conversation)?.threadId ?? "",
+          workspaceDir,
+          state,
+          pendingMessage: delivered,
+          createdAt: existing?.createdAt ?? Date.now(),
+          updatedAt: Date.now(),
+        });
+      }
       return;
     }
     const callbacks = await Promise.all(
@@ -3956,16 +3988,20 @@ export class CodexPluginController {
     );
     const buttons = this.buildPendingButtons(state, callbacks);
     const existing = this.store.getPendingRequestById(state.requestId);
+    const delivered = await this.sendReplyWithDeliveryRef(conversation, {
+      text: state.promptText ?? "Codex needs input.",
+      buttons,
+    });
     await this.store.upsertPendingRequest({
       requestId: state.requestId,
       conversation,
       threadId: run.getThreadId() ?? this.store.getBinding(conversation)?.threadId ?? "",
       workspaceDir,
       state,
+      pendingMessage: delivered ?? existing?.pendingMessage,
       createdAt: existing?.createdAt ?? Date.now(),
       updatedAt: Date.now(),
     });
-    await this.sendText(conversation, state.promptText ?? "Codex needs input.", { buttons });
   }
 
   private buildQuestionnaireSubmissionPayload(pending: StoredPendingRequest): unknown {
@@ -3991,18 +4027,35 @@ export class CodexPluginController {
     opts?: {
       editMessage?: (text: string, buttons: PluginInteractiveButtons) => Promise<void>;
     },
-  ): Promise<void> {
+  ): Promise<DeliveredMessageRef | null> {
     const questionnaire = state.questionnaire;
     if (!questionnaire) {
-      return;
+      return null;
     }
     const buttons = await this.buildPendingQuestionnaireButtons(conversation, state);
     const text = formatPendingQuestionnairePrompt(questionnaire);
     if (opts?.editMessage) {
       await opts.editMessage(text, buttons);
+      return null;
+    }
+    return await this.sendReplyWithDeliveryRef(conversation, { text, buttons });
+  }
+
+  private async clearPendingRequestMessage(
+    conversation: ConversationTarget,
+    pending: StoredPendingRequest,
+  ): Promise<void> {
+    if (!pending.pendingMessage) {
       return;
     }
-    await this.sendText(conversation, text, { buttons });
+    const text =
+      pending.state.questionnaire
+        ? formatPendingQuestionnairePrompt(pending.state.questionnaire)
+        : pending.state.promptText?.trim() || "That Codex action is no longer active.";
+    await this.updateInteractiveMessage(conversation, pending.pendingMessage, {
+      text,
+      buttons: [],
+    }).catch(() => undefined);
   }
 
   private async buildPendingQuestionnaireButtons(
@@ -4136,6 +4189,7 @@ export class CodexPluginController {
       if (!submitted) {
         return false;
       }
+      await this.clearPendingRequestMessage(conversation, pending);
       await this.store.removePendingRequest(pending.requestId);
       await this.sendText(conversation, "Recorded your answers and sent them to Codex.");
       return true;
@@ -5054,6 +5108,7 @@ export class CodexPluginController {
           return;
         }
         await responders.clear().catch(() => undefined);
+        await this.clearPendingRequestMessage(callback.conversation, pending);
         await this.store.removePendingRequest(pending.requestId);
         if (callback.conversation.channel !== "discord") {
           await responders.reply("Recorded your answers and sent them to Codex.");
