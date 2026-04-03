@@ -52,11 +52,11 @@ openclaw plugins uninstall openclaw-codex-app-server
 
 OpenClaw `2026.3.22` and newer include the binding and plugin interface changes this package originally targeted. Plugin `0.6.0+` prefers the newer OpenClaw `2026.3.31+` outbound adapter and Telegram account facade when they are present, but it also falls back to the older `runtime.channel.telegram` interface used by OpenClaw `2026.3.22` through `2026.3.30`. Older plugin `0.5.x` releases only match that legacy path and are not compatible with Telegram on OpenClaw `2026.3.31+`.
 
-Short note: OpenClaw flags this plugin because it must start `codex app-server` to bridge to the Codex App Server protocol. That `child_process` usage is a core requirement of this plugin, not an optional extra.
+⚠️ OpenClaw flags this plugin as unsafe because it must launch `codex app-server`. That process spawn is the whole bridge, not an optional extra.
 
 ### Updating on OpenClaw `2026.3.31` through at least `2026.4.3`
 
-Until the upstream fix lands in a release after `2026.4.3`, the reliable update path is to uninstall and then install again with the unsafe-install flag:
+⚠️ On released OpenClaw builds through `2026.4.3`, `plugins update` still cannot accept the unsafe-install flag for this plugin. The fix is merged upstream but not deployed yet, so for now the reliable update path is:
 
 ```bash
 openclaw plugins uninstall openclaw-codex-app-server
