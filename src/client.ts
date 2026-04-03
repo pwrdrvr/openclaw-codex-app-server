@@ -2408,6 +2408,7 @@ export function isMissingThreadError(error: unknown): boolean {
   const normalized = message.trim().toLowerCase();
   return (
     normalized.includes("no rollout found for thread id") ||
+    normalized.includes("thread not loaded") ||
     normalized.includes("not materialized yet") ||
     normalized.includes("includeturns is unavailable before first user message") ||
     normalized.includes("thread not found") ||

@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { OpenClawPluginApi, PluginCommandContext } from "openclaw/plugin-sdk";
+import type { OpenClawPluginApi, PluginCommandContext, ReplyPayload } from "openclaw/plugin-sdk";
 import { CodexAppServerClient } from "./client.js";
 import { CodexPluginController } from "./controller.js";
 
@@ -23,11 +23,19 @@ const discordSdkState = vi.hoisted(() => ({
   resolveDiscordAccount: vi.fn(() => ({ accountId: "default" })),
 }));
 
+const telegramSdkState = vi.hoisted(() => ({
+  resolveTelegramAccount: vi.fn(() => ({ accountId: "default", token: "telegram-token" })),
+}));
+
 vi.mock("openclaw/plugin-sdk/discord", () => ({
   buildDiscordComponentMessage: discordSdkState.buildDiscordComponentMessage,
   editDiscordComponentMessage: discordSdkState.editDiscordComponentMessage,
   registerBuiltDiscordComponentMessage: discordSdkState.registerBuiltDiscordComponentMessage,
   resolveDiscordAccount: discordSdkState.resolveDiscordAccount,
+}));
+
+vi.mock("openclaw/plugin-sdk/telegram-account", () => ({
+  resolveTelegramAccount: telegramSdkState.resolveTelegramAccount,
 }));
 
 function makeStateDir(): string {
@@ -36,15 +44,57 @@ function makeStateDir(): string {
 
 function createApiMock() {
   const stateDir = makeStateDir();
-  const sendComponentMessage = vi.fn(async () => ({ messageId: "discord-component-1", channelId: "channel:chan-1" }));
-  const sendMessageDiscord = vi.fn(async () => ({ messageId: "discord-msg-1", channelId: "channel:chan-1" }));
-  const sendMessageTelegram = vi.fn(async () => ({ messageId: "1", chatId: "123" }));
+  const sendComponentMessage = vi.fn(async (..._args: unknown[]) => ({ messageId: "discord-component-1", channelId: "channel:chan-1" }));
+  const sendMessageDiscord = vi.fn(async (..._args: unknown[]) => ({ messageId: "discord-msg-1", channelId: "channel:chan-1" }));
+  const sendMessageTelegram = vi.fn(async (..._args: unknown[]) => ({ messageId: "1", chatId: "123" }));
   const discordTypingStart = vi.fn(async () => ({ refresh: vi.fn(async () => {}), stop: vi.fn() }));
   const renameTopic = vi.fn(async () => ({}));
   const resolveTelegramToken = vi.fn(() => ({ token: "telegram-token", source: "config" }));
   const editChannel = vi.fn(async () => ({}));
+  const telegramOutbound = {
+    sendText: vi.fn(async (ctx: { to: string; text: string; accountId?: string; threadId?: string | number }) =>
+      await sendMessageTelegram(ctx.to, ctx.text, {
+        accountId: ctx.accountId,
+        messageThreadId: typeof ctx.threadId === "number" ? ctx.threadId : undefined,
+      }),
+    ),
+    sendMedia: vi.fn(
+      async (ctx: {
+        to: string;
+        text: string;
+        mediaUrl: string;
+        accountId?: string;
+        threadId?: string | number;
+        mediaLocalRoots?: readonly string[];
+      }) =>
+        await sendMessageTelegram(ctx.to, ctx.text, {
+          accountId: ctx.accountId,
+          messageThreadId: typeof ctx.threadId === "number" ? ctx.threadId : undefined,
+          mediaUrl: ctx.mediaUrl,
+          mediaLocalRoots: ctx.mediaLocalRoots,
+        }),
+    ),
+    sendPayload: vi.fn(
+      async (ctx: {
+        to: string;
+        payload: ReplyPayload;
+        accountId?: string;
+        threadId?: string | number;
+        mediaLocalRoots?: readonly string[];
+      }) =>
+        await sendMessageTelegram(ctx.to, ctx.payload.text ?? "", {
+          accountId: ctx.accountId,
+          messageThreadId: typeof ctx.threadId === "number" ? ctx.threadId : undefined,
+          mediaUrl: ctx.payload.mediaUrl,
+          mediaLocalRoots: ctx.mediaLocalRoots,
+          buttons: (ctx.payload.channelData as { telegram?: { buttons?: unknown } } | undefined)
+            ?.telegram?.buttons as any,
+        }),
+    ),
+  };
   const api = {
     id: "test-plugin",
+    config: {},
     pluginConfig: {
       enabled: true,
       defaultWorkspaceDir: "/repo/openclaw",
@@ -69,6 +119,9 @@ function createApiMock() {
           chunkText: (text: string) => [text],
           resolveTextChunkLimit: (_cfg: unknown, _provider?: string, _accountId?: string | null, opts?: { fallbackLimit?: number }) =>
             opts?.fallbackLimit ?? 2000,
+        },
+        outbound: {
+          loadAdapter: vi.fn(async (channel: string) => (channel === "telegram" ? telegramOutbound : undefined)),
         },
         telegram: {
           sendMessageTelegram,
@@ -103,6 +156,7 @@ function createApiMock() {
     sendComponentMessage,
     sendMessageDiscord,
     sendMessageTelegram,
+    telegramOutbound,
     discordTypingStart,
     renameTopic,
     resolveTelegramToken,
@@ -227,6 +281,82 @@ async function createControllerHarnessWithoutLegacyBindings() {
   };
 }
 
+async function createControllerHarnessWithoutTelegramOutbound() {
+  const harness = createApiMock();
+  delete (harness.api as any).runtime.channel.outbound;
+  const controller = new CodexPluginController(harness.api);
+  await controller.start();
+  const clientMock = {
+    readThreadState: vi.fn(async () => ({
+      threadId: "thread-1",
+      threadName: "Discord Thread",
+      model: "openai/gpt-5.4",
+      cwd: "/repo/openclaw",
+      serviceTier: "default",
+      approvalPolicy: "on-request",
+      sandbox: "workspace-write",
+    })),
+    readThreadContext: vi.fn(async () => ({
+      lastUserMessage: undefined,
+      lastAssistantMessage: undefined,
+    })),
+    readAccount: vi.fn(async () => ({
+      email: "test@example.com",
+      planType: "pro",
+      type: "chatgpt",
+    })),
+    readRateLimits: vi.fn(async () => []),
+  };
+  (controller as any).client = clientMock;
+  (controller as any).readThreadHasChanges = vi.fn(async () => false);
+  return {
+    controller,
+    sendMessageTelegram: harness.sendMessageTelegram,
+  };
+}
+
+async function createControllerHarnessWithoutTelegramPayloadSupport() {
+  const harness = createApiMock();
+  (harness.api as any).runtime.channel.outbound.loadAdapter = vi.fn(async (channel: string) =>
+    channel === "telegram"
+      ? {
+          sendText: harness.telegramOutbound.sendText,
+          sendMedia: harness.telegramOutbound.sendMedia,
+        }
+      : undefined,
+  );
+  const controller = new CodexPluginController(harness.api);
+  await controller.start();
+  const clientMock = {
+    readThreadState: vi.fn(async () => ({
+      threadId: "thread-1",
+      threadName: "Discord Thread",
+      model: "openai/gpt-5.4",
+      cwd: "/repo/openclaw",
+      serviceTier: "default",
+      approvalPolicy: "on-request",
+      sandbox: "workspace-write",
+    })),
+    readThreadContext: vi.fn(async () => ({
+      lastUserMessage: undefined,
+      lastAssistantMessage: undefined,
+    })),
+    readAccount: vi.fn(async () => ({
+      email: "test@example.com",
+      planType: "pro",
+      type: "chatgpt",
+    })),
+    readRateLimits: vi.fn(async () => []),
+  };
+  (controller as any).client = clientMock;
+  (controller as any).readThreadHasChanges = vi.fn(async () => false);
+  return {
+    controller,
+    api: harness.api,
+    sendMessageTelegram: harness.sendMessageTelegram,
+  };
+}
+
 const require = createRequire(import.meta.url);
 const packageJson = require("../package.json") as { version?: string };
 const TEST_PLUGIN_VERSION = packageJson.version ?? "unknown";
@@ -283,6 +413,7 @@ beforeEach(() => {
   discordSdkState.editDiscordComponentMessage.mockClear();
   discordSdkState.registerBuiltDiscordComponentMessage.mockClear();
   discordSdkState.resolveDiscordAccount.mockClear();
+  telegramSdkState.resolveTelegramAccount.mockClear();
   vi.spyOn(CodexAppServerClient.prototype, "logStartupProbe").mockResolvedValue();
   vi.stubGlobal(
     "fetch",
@@ -1746,6 +1877,75 @@ describe("Discord controller flows", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("falls back to the legacy Telegram runtime when outbound adapters are unavailable", async () => {
+    const { controller, sendMessageTelegram } = await createControllerHarnessWithoutTelegramOutbound();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+
+    const reply = await controller.handleCommand(
+      "cas_status",
+      buildTelegramCommandContext({
+        commandBody: "/cas_status",
+        getCurrentConversationBinding: vi.fn(async () => ({ bindingId: "b1" })),
+      }),
+    );
+
+    expect(reply).toEqual({});
+    expect(sendMessageTelegram).toHaveBeenCalledTimes(1);
+    expect(sendMessageTelegram).toHaveBeenCalledWith(
+      "123",
+      expect.stringContaining("Binding: Discord Thread"),
+      expect.objectContaining({
+        accountId: "default",
+        buttons: expect.any(Array),
+      }),
+    );
+  });
+
+  it("preserves Telegram buttons when the outbound adapter lacks sendPayload", async () => {
+    const { controller, sendMessageTelegram } =
+      await createControllerHarnessWithoutTelegramPayloadSupport();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+
+    const reply = await controller.handleCommand(
+      "cas_status",
+      buildTelegramCommandContext({
+        commandBody: "/cas_status",
+        getCurrentConversationBinding: vi.fn(async () => ({ bindingId: "b1" })),
+      }),
+    );
+
+    expect(reply).toEqual({});
+    expect(sendMessageTelegram).toHaveBeenCalledTimes(1);
+    expect(sendMessageTelegram).toHaveBeenCalledWith(
+      "123",
+      expect.stringContaining("Binding: Discord Thread"),
+      expect.objectContaining({
+        accountId: "default",
+        buttons: expect.any(Array),
+      }),
+    );
+  });
+
   it("shows pending default controls when the bound thread is not materialized yet", async () => {
     const { controller, sendMessageTelegram, clientMock } = await createControllerHarness();
     clientMock.readThreadState.mockRejectedValue(
@@ -2599,6 +2799,87 @@ describe("Discord controller flows", () => {
       new Error(
         "codex app server rpc error (-32600): thread thread-new is not materialized yet; includeTurns is unavailable before first user message",
       ),
+    );
+
+    await (controller as any).store.upsertPendingBind({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123:topic:456",
+        parentConversationId: "123",
+      },
+      threadId: "thread-new",
+      workspaceDir: "/repo/openclaw",
+      threadTitle: "Fresh Thread",
+      syncTopic: false,
+      notifyBound: true,
+      updatedAt: Date.now(),
+    });
+
+    await expect(
+      controller.handleConversationBindingResolved({
+        status: "approved",
+        binding: {
+          bindingId: "binding-1",
+          pluginId: "openclaw-codex-app-server",
+          pluginRoot: "/plugins/codex",
+          channel: "telegram",
+          accountId: "default",
+          conversationId: "123:topic:456",
+          parentConversationId: "123",
+          threadId: 456,
+          boundAt: Date.now(),
+        },
+        decision: "allow-once",
+        request: {
+          summary: "Bind this conversation to Codex thread Fresh Thread.",
+          conversation: {
+            channel: "telegram",
+            accountId: "default",
+            conversationId: "123:topic:456",
+            parentConversationId: "123",
+            threadId: 456,
+          },
+        },
+      } as any),
+    ).resolves.toBeUndefined();
+
+    const approvedLastCall = sendMessageTelegram.mock.calls.at(-1) as
+      | [string, string, { buttons?: Array<Array<{ text: string }>>; messageThreadId?: number }]
+      | undefined;
+    expect(approvedLastCall?.[0]).toBe("123");
+    expect(approvedLastCall?.[1]).toContain("Binding: Fresh Thread (openclaw)");
+    expect(approvedLastCall?.[1]).toContain("Thread: thread-new");
+    expect(approvedLastCall?.[2]?.messageThreadId).toBe(456);
+    expect(
+      (controller as any).store.getPendingBind({
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123:topic:456",
+        parentConversationId: "123",
+      }),
+    ).toBeNull();
+  });
+
+  it("still sends the bound status output when a new thread replay read reports thread not loaded", async () => {
+    const { controller, sendMessageTelegram } = await createControllerHarness();
+    (controller as any).client.readThreadState = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new Error("codex app server rpc error (-32600): no rollout found for thread id thread-new"),
+      )
+      .mockRejectedValueOnce(
+        new Error("codex app server rpc error (-32600): thread not loaded: thread-new"),
+      )
+      .mockResolvedValue({
+        threadId: "thread-new",
+        threadName: "Fresh Thread",
+        cwd: "/repo/openclaw",
+        model: "openai/gpt-5.4",
+        serviceTier: "default",
+      });
+    (controller as any).client.readThreadContext = vi.fn().mockRejectedValue(
+      new Error("codex app server rpc error (-32600): thread not loaded: thread-new"),
     );
 
     await (controller as any).store.upsertPendingBind({
@@ -4681,6 +4962,75 @@ describe("Discord controller flows", () => {
         text: expect.stringContaining("Fast mode: on"),
         buttons: expect.any(Array),
       }),
+    );
+  });
+
+  it("stores runtime config from Telegram interactive callbacks", async () => {
+    const { controller } = await createControllerHarness();
+    const callback = await (controller as any).store.putCallback({
+      kind: "reply-text",
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      text: "runtime-config-ok",
+    });
+    const config = {
+      channels: {
+        telegram: {
+          botToken: "telegram-token-from-callback",
+        },
+      },
+    };
+
+    await controller.handleTelegramInteractive({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+      callback: { payload: callback.token },
+      config,
+      respond: {
+        clearButtons: vi.fn(async () => {}),
+        reply: vi.fn(async () => {}),
+        editMessage: vi.fn(async () => {}),
+      },
+    } as any);
+
+    expect((controller as any).lastRuntimeConfig).toEqual(config);
+  });
+
+  it("warns when the raw Telegram topic rename fallback returns ok false", async () => {
+    const { controller, api } = await createControllerHarness();
+    const fetchMock = vi.mocked(fetch);
+    delete (api as any).runtime.channel.telegram.conversationActions;
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({
+          ok: false,
+          description: "Bad Request: not enough rights to manage topics",
+        }),
+    } as Response);
+
+    await (controller as any).renameConversationIfSupported(
+      {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123:topic:456",
+        parentConversationId: "123",
+        threadId: 456,
+      },
+      "Fresh Thread",
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.telegram.org/bottelegram-token/editForumTopic",
+      expect.any(Object),
+    );
+    expect(api.logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("not enough rights to manage topics"),
     );
   });
 

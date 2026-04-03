@@ -158,6 +158,7 @@ declare module "openclaw/plugin-sdk" {
 
   export type OpenClawPluginApi = {
     id: string;
+    config: unknown;
     pluginConfig?: Record<string, unknown>;
     logger: PluginLogger;
     runtime: {
@@ -188,6 +189,37 @@ declare module "openclaw/plugin-sdk" {
             accountId?: string | null,
             opts?: { fallbackLimit?: number },
           ) => number;
+        };
+        outbound?: {
+          loadAdapter: (channel: string) => Promise<
+            | {
+                sendText?: (ctx: {
+                  cfg: unknown;
+                  to: string;
+                  text: string;
+                  accountId?: string;
+                  threadId?: string | number;
+                }) => Promise<{ messageId: string; chatId?: string; channelId?: string }>;
+                sendMedia?: (ctx: {
+                  cfg: unknown;
+                  to: string;
+                  text: string;
+                  mediaUrl: string;
+                  accountId?: string;
+                  threadId?: string | number;
+                  mediaLocalRoots?: readonly string[];
+                }) => Promise<{ messageId: string; chatId?: string; channelId?: string }>;
+                sendPayload?: (ctx: {
+                  cfg: unknown;
+                  to: string;
+                  payload: ReplyPayload;
+                  accountId?: string;
+                  threadId?: string | number;
+                  mediaLocalRoots?: readonly string[];
+                }) => Promise<{ messageId: string; chatId?: string; channelId?: string }>;
+              }
+            | undefined
+          >;
         };
         telegram: {
           sendMessageTelegram: (
@@ -335,6 +367,10 @@ declare module "openclaw/plugin-sdk/discord" {
     };
     messageId: string;
   }): void;
+}
+
+declare module "openclaw/plugin-sdk/telegram-account" {
+  export function resolveTelegramAccount(...args: any[]): any;
 }
 
 declare module "ws" {

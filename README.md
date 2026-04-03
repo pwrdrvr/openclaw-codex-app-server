@@ -29,7 +29,14 @@ Buttons are presented for project and thread selection, model switching, and ski
 
 ## Install In OpenClaw
 
-These are the intended install commands for OpenClaw `2026.3.22` and newer, which include the binding and plugin interface this package requires.
+These are the intended install commands for OpenClaw `2026.3.22` and newer.
+
+Compatibility:
+
+| Plugin release | OpenClaw compatibility |
+| --- | --- |
+| `0.5.x` | `2026.3.22` and newer |
+| `0.6.0+` | `2026.3.22` and newer, with automatic fallback between the legacy Telegram runtime shim and the `2026.3.31+` outbound adapter facade |
 
 Install:
 
@@ -43,7 +50,7 @@ Uninstall:
 openclaw plugins uninstall openclaw-codex-app-server
 ```
 
-OpenClaw `2026.3.22` and newer include the required binding and plugin interface changes. If you are testing before that release, use the local developer workflow at the bottom of this document.
+Plugin `0.6.0+` prefers the newer OpenClaw `2026.3.31+` outbound adapter and Telegram account facade when they are present, but it also falls back to the older `runtime.channel.telegram` interface used by OpenClaw `2026.3.22` through `2026.3.30`.
 
 Pre-release packages are published on matching npm dist-tags instead of `latest`. For example, a tag such as `v0.3.0-beta.1` publishes to `openclaw-codex-app-server@beta`, so `npm install openclaw-codex-app-server@latest` stays on the newest stable release.
 
