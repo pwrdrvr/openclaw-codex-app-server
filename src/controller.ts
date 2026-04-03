@@ -6607,23 +6607,48 @@ export class CodexPluginController {
     text: string,
     opts?: { buttons?: PluginInteractiveButtons },
   ): Promise<{ messageId: string; chatId?: string }> {
-    if (outbound?.sendText) {
-      return await outbound.sendText({
+    const target = conversation.parentConversationId ?? conversation.conversationId;
+    const buttons = opts?.buttons;
+    if (buttons && outbound?.sendPayload) {
+      return await outbound.sendPayload({
         cfg: this.getOpenClawConfig(),
-        to: conversation.parentConversationId ?? conversation.conversationId,
-        text,
+        to: target,
+        payload: {
+          text,
+          channelData: {
+            telegram: {
+              buttons,
+            },
+          },
+        },
         accountId: conversation.accountId,
         threadId: conversation.threadId,
       });
     }
     const legacySend = this.api.runtime.channel.telegram?.sendMessageTelegram;
+    if (buttons && typeof legacySend === "function") {
+      return await legacySend(target, text, {
+        accountId: conversation.accountId,
+        messageThreadId: typeof conversation.threadId === "number" ? conversation.threadId : undefined,
+        buttons,
+      });
+    }
+    if (outbound?.sendText) {
+      return await outbound.sendText({
+        cfg: this.getOpenClawConfig(),
+        to: target,
+        text,
+        accountId: conversation.accountId,
+        threadId: conversation.threadId,
+      });
+    }
     if (typeof legacySend !== "function") {
       throw new Error("Telegram send runtime unavailable");
     }
-    return await legacySend(conversation.parentConversationId ?? conversation.conversationId, text, {
+    return await legacySend(target, text, {
       accountId: conversation.accountId,
       messageThreadId: typeof conversation.threadId === "number" ? conversation.threadId : undefined,
-      buttons: opts?.buttons,
+      buttons,
     });
   }
 
@@ -6640,10 +6665,39 @@ export class CodexPluginController {
     if (!opts.mediaUrl) {
       throw new Error("Telegram media send requires mediaUrl");
     }
+    const target = conversation.parentConversationId ?? conversation.conversationId;
+    if (opts.buttons && outbound?.sendPayload) {
+      return await outbound.sendPayload({
+        cfg: this.getOpenClawConfig(),
+        to: target,
+        payload: {
+          text,
+          mediaUrl: opts.mediaUrl,
+          channelData: {
+            telegram: {
+              buttons: opts.buttons,
+            },
+          },
+        },
+        mediaLocalRoots: opts.mediaLocalRoots,
+        accountId: conversation.accountId,
+        threadId: conversation.threadId,
+      });
+    }
+    const legacySend = this.api.runtime.channel.telegram?.sendMessageTelegram;
+    if (opts.buttons && typeof legacySend === "function") {
+      return await legacySend(target, text, {
+        accountId: conversation.accountId,
+        messageThreadId: typeof conversation.threadId === "number" ? conversation.threadId : undefined,
+        mediaUrl: opts.mediaUrl,
+        mediaLocalRoots: opts.mediaLocalRoots,
+        buttons: opts.buttons,
+      });
+    }
     if (outbound?.sendMedia) {
       return await outbound.sendMedia({
         cfg: this.getOpenClawConfig(),
-        to: conversation.parentConversationId ?? conversation.conversationId,
+        to: target,
         text,
         mediaUrl: opts.mediaUrl,
         mediaLocalRoots: opts.mediaLocalRoots,
@@ -6651,11 +6705,10 @@ export class CodexPluginController {
         threadId: conversation.threadId,
       });
     }
-    const legacySend = this.api.runtime.channel.telegram?.sendMessageTelegram;
     if (typeof legacySend !== "function") {
       throw new Error("Telegram media send runtime unavailable");
     }
-    return await legacySend(conversation.parentConversationId ?? conversation.conversationId, text, {
+    return await legacySend(target, text, {
       accountId: conversation.accountId,
       messageThreadId: typeof conversation.threadId === "number" ? conversation.threadId : undefined,
       mediaUrl: opts.mediaUrl,
@@ -7007,8 +7060,8 @@ export class CodexPluginController {
     }
   }
 
-  private async callTelegramPinApi(
-    method: "pinChatMessage" | "unpinChatMessage",
+  private async callTelegramBotApi(
+    method: string,
     token: string,
     body: Record<string, unknown>,
   ): Promise<void> {
@@ -7019,47 +7072,53 @@ export class CodexPluginController {
       },
       body: JSON.stringify(body),
     });
+    const responseText = await response.text();
     if (!response.ok) {
       throw new Error(
-        `Telegram ${method} failed status=${response.status} body=${await response.text()}`,
+        `Telegram ${method} failed status=${response.status} body=${responseText}`,
       );
     }
+    const trimmedBody = responseText.trim();
+    if (!trimmedBody) {
+      return;
+    }
+    try {
+      const parsed = JSON.parse(trimmedBody) as { ok?: unknown; description?: unknown };
+      if (parsed.ok === false) {
+        const description =
+          typeof parsed.description === "string" && parsed.description.trim()
+            ? parsed.description.trim()
+            : trimmedBody;
+        throw new Error(`Telegram ${method} failed body=${description}`);
+      }
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        return;
+      }
+      throw error;
+    }
+  }
+
+  private async callTelegramPinApi(
+    method: "pinChatMessage" | "unpinChatMessage",
+    token: string,
+    body: Record<string, unknown>,
+  ): Promise<void> {
+    await this.callTelegramBotApi(method, token, body);
   }
 
   private async callTelegramEditMessageApi(
     token: string,
     body: Record<string, unknown>,
   ): Promise<void> {
-    const response = await fetch(`https://api.telegram.org/bot${token}/editMessageText`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(body),
-    });
-    if (!response.ok) {
-      throw new Error(
-        `Telegram editMessageText failed status=${response.status} body=${await response.text()}`,
-      );
-    }
+    await this.callTelegramBotApi("editMessageText", token, body);
   }
 
   private async callTelegramTopicEditApi(
     token: string,
     body: Record<string, unknown>,
   ): Promise<void> {
-    const response = await fetch(`https://api.telegram.org/bot${token}/editForumTopic`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(body),
-    });
-    if (!response.ok) {
-      throw new Error(
-        `Telegram editForumTopic failed status=${response.status} body=${await response.text()}`,
-      );
-    }
+    await this.callTelegramBotApi("editForumTopic", token, body);
   }
 
   private async renameConversationIfSupported(

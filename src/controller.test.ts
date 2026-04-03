@@ -156,6 +156,7 @@ function createApiMock() {
     sendComponentMessage,
     sendMessageDiscord,
     sendMessageTelegram,
+    telegramOutbound,
     discordTypingStart,
     renameTopic,
     resolveTelegramToken,
@@ -310,6 +311,48 @@ async function createControllerHarnessWithoutTelegramOutbound() {
   (controller as any).readThreadHasChanges = vi.fn(async () => false);
   return {
     controller,
+    sendMessageTelegram: harness.sendMessageTelegram,
+  };
+}
+
+async function createControllerHarnessWithoutTelegramPayloadSupport() {
+  const harness = createApiMock();
+  (harness.api as any).runtime.channel.outbound.loadAdapter = vi.fn(async (channel: string) =>
+    channel === "telegram"
+      ? {
+          sendText: harness.telegramOutbound.sendText,
+          sendMedia: harness.telegramOutbound.sendMedia,
+        }
+      : undefined,
+  );
+  const controller = new CodexPluginController(harness.api);
+  await controller.start();
+  const clientMock = {
+    readThreadState: vi.fn(async () => ({
+      threadId: "thread-1",
+      threadName: "Discord Thread",
+      model: "openai/gpt-5.4",
+      cwd: "/repo/openclaw",
+      serviceTier: "default",
+      approvalPolicy: "on-request",
+      sandbox: "workspace-write",
+    })),
+    readThreadContext: vi.fn(async () => ({
+      lastUserMessage: undefined,
+      lastAssistantMessage: undefined,
+    })),
+    readAccount: vi.fn(async () => ({
+      email: "test@example.com",
+      planType: "pro",
+      type: "chatgpt",
+    })),
+    readRateLimits: vi.fn(async () => []),
+  };
+  (controller as any).client = clientMock;
+  (controller as any).readThreadHasChanges = vi.fn(async () => false);
+  return {
+    controller,
+    api: harness.api,
     sendMessageTelegram: harness.sendMessageTelegram,
   };
 }
@@ -1836,6 +1879,41 @@ describe("Discord controller flows", () => {
 
   it("falls back to the legacy Telegram runtime when outbound adapters are unavailable", async () => {
     const { controller, sendMessageTelegram } = await createControllerHarnessWithoutTelegramOutbound();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+
+    const reply = await controller.handleCommand(
+      "cas_status",
+      buildTelegramCommandContext({
+        commandBody: "/cas_status",
+        getCurrentConversationBinding: vi.fn(async () => ({ bindingId: "b1" })),
+      }),
+    );
+
+    expect(reply).toEqual({});
+    expect(sendMessageTelegram).toHaveBeenCalledTimes(1);
+    expect(sendMessageTelegram).toHaveBeenCalledWith(
+      "123",
+      expect.stringContaining("Binding: Discord Thread"),
+      expect.objectContaining({
+        accountId: "default",
+        buttons: expect.any(Array),
+      }),
+    );
+  });
+
+  it("preserves Telegram buttons when the outbound adapter lacks sendPayload", async () => {
+    const { controller, sendMessageTelegram } =
+      await createControllerHarnessWithoutTelegramPayloadSupport();
     await (controller as any).store.upsertBinding({
       conversation: {
         channel: "telegram",
@@ -4920,6 +4998,40 @@ describe("Discord controller flows", () => {
     } as any);
 
     expect((controller as any).lastRuntimeConfig).toEqual(config);
+  });
+
+  it("warns when the raw Telegram topic rename fallback returns ok false", async () => {
+    const { controller, api } = await createControllerHarness();
+    const fetchMock = vi.mocked(fetch);
+    delete (api as any).runtime.channel.telegram.conversationActions;
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({
+          ok: false,
+          description: "Bad Request: not enough rights to manage topics",
+        }),
+    } as Response);
+
+    await (controller as any).renameConversationIfSupported(
+      {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123:topic:456",
+        parentConversationId: "123",
+        threadId: 456,
+      },
+      "Fresh Thread",
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.telegram.org/bottelegram-token/editForumTopic",
+      expect.any(Object),
+    );
+    expect(api.logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("not enough rights to manage topics"),
+    );
   });
 
   it("toggles fast mode from the status card even when the app server returns stale state", async () => {
