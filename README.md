@@ -35,13 +35,13 @@ Compatibility:
 
 | Plugin release | OpenClaw compatibility |
 | --- | --- |
-| `0.5.x` | `2026.3.22` and newer |
 | `0.6.0+` | `2026.3.22` and newer, with automatic fallback between the legacy Telegram runtime shim and the `2026.3.31+` outbound adapter facade |
+| `0.5.x` | `2026.3.22` through `2026.3.30`; Telegram breaks on `2026.3.31+` |
 
 Install:
 
 ```bash
-openclaw plugins install openclaw-codex-app-server
+openclaw plugins install --dangerously-force-unsafe-install openclaw-codex-app-server
 ```
 
 Uninstall:
@@ -50,19 +50,20 @@ Uninstall:
 openclaw plugins uninstall openclaw-codex-app-server
 ```
 
-OpenClaw `2026.3.22` and newer include the binding and plugin interface changes this package originally targeted. Plugin `0.6.0+` prefers the newer OpenClaw `2026.3.31+` outbound adapter and Telegram account facade when they are present, but it also falls back to the older `runtime.channel.telegram` interface used by OpenClaw `2026.3.22` through `2026.3.30`.
+OpenClaw `2026.3.22` and newer include the binding and plugin interface changes this package originally targeted. Plugin `0.6.0+` prefers the newer OpenClaw `2026.3.31+` outbound adapter and Telegram account facade when they are present, but it also falls back to the older `runtime.channel.telegram` interface used by OpenClaw `2026.3.22` through `2026.3.30`. Older plugin `0.5.x` releases only match that legacy path and are not compatible with Telegram on OpenClaw `2026.3.31+`.
 
-### Why OpenClaw may flag this plugin as unsafe
+Short note: OpenClaw flags this plugin because it must start `codex app-server` to bridge to the Codex App Server protocol. That `child_process` usage is a core requirement of this plugin, not an optional extra.
 
-This plugin intentionally starts your local `codex app-server` process so OpenClaw can talk to the Codex App Server protocol over stdio or WebSocket. The package is therefore expected to trip OpenClaw's dangerous-code scan for Node `child_process` usage.
+### Updating on OpenClaw `2026.3.31` through at least `2026.4.3`
 
-The flagged code path is the plugin's normal bridge startup in [`src/client.ts`](./src/client.ts), where it spawns `codex app-server`. It is not a hidden extra shell runner beyond the Codex App Server bridge this plugin is built around.
-
-If your OpenClaw build supports the force-install path, retry with:
+Until the upstream fix lands in a release after `2026.4.3`, the reliable update path is to uninstall and then install again with the unsafe-install flag:
 
 ```bash
+openclaw plugins uninstall openclaw-codex-app-server
 openclaw plugins install --dangerously-force-unsafe-install openclaw-codex-app-server
 ```
+
+OpenClaw's docs currently show `plugins update` supporting `--dangerously-force-unsafe-install`, but in practice affected releases still need the uninstall/reinstall path for this plugin.
 
 ### If install is still blocked on OpenClaw `2026.3.31`
 
