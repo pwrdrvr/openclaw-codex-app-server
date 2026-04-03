@@ -634,7 +634,7 @@ async function toCodexTextAttachmentInputItem(
   const displayName =
     media.fileName?.trim() || path.basename(normalizedPath) || "attached-file.txt";
   const mimeType = normalizeMimeType(media.mimeType);
-  const lines = [`Attached file: ${displayName}`];
+  const lines = [`Attached file: ${displayName}`, `Local path: ${normalizedPath}`];
   if (mimeType) {
     lines.push(`Content-Type: ${mimeType}`);
   }
@@ -642,6 +642,32 @@ async function toCodexTextAttachmentInputItem(
   if (truncatedByBytes || truncatedByChars) {
     lines.push("", "[Truncated]");
   }
+  return { type: "text", text: lines.join("\n") };
+}
+
+function toCodexGenericFileReferenceInputItem(
+  media: PluginInboundMedia,
+): CodexTurnInputItem | null {
+  if (media.kind === "image") {
+    return null;
+  }
+  const normalizedPath = normalizeInboundMediaPath(media.path ?? media.url);
+  if (!normalizedPath || !path.isAbsolute(normalizedPath)) {
+    return null;
+  }
+  const displayName = media.fileName?.trim() || path.basename(normalizedPath) || "attached-file";
+  const mimeType = normalizeMimeType(media.mimeType);
+  const lines = [
+    `Attached file: ${displayName}`,
+    `Local path: ${normalizedPath}`,
+  ];
+  if (mimeType) {
+    lines.push(`Content-Type: ${mimeType}`);
+  }
+  lines.push(
+    "",
+    "Use this local file path directly from the server workspace. Do not ask the user to re-upload it unless the path is unreadable.",
+  );
   return { type: "text", text: lines.join("\n") };
 }
 
@@ -656,7 +682,10 @@ async function buildInboundTurnInput(event: {
   }
   const seen = new Set<string>();
   for (const media of [...(event.media ?? []), ...extractInboundMetadataMedia(event.metadata)]) {
-    const item = toCodexImageInputItem(media) ?? (await toCodexTextAttachmentInputItem(media));
+    const item =
+      toCodexImageInputItem(media) ??
+      (await toCodexTextAttachmentInputItem(media)) ??
+      toCodexGenericFileReferenceInputItem(media);
     if (!item) {
       continue;
     }
@@ -1433,6 +1462,120 @@ export class CodexPluginController {
         error instanceof Error ? `${error.message}\n${error.stack ?? ""}`.trim() : String(error);
       this.api.logger.error(`codex inbound claim failed: ${detail}`);
       throw error;
+    }
+  }
+
+  async handleMessageTranscribed(event: {
+    type?: string;
+    action?: string;
+    sessionKey?: string;
+    context?: Record<string, unknown>;
+  }): Promise<void> {
+    try {
+      if (!this.settings.enabled) {
+        return;
+      }
+      if (event.type !== "message" || event.action !== "transcribed") {
+        return;
+      }
+      await this.start();
+      const sessionKey = typeof event.sessionKey === "string" ? event.sessionKey : "";
+      const ctx = event.context ?? {};
+      const transcript = typeof ctx.transcript === "string" ? ctx.transcript.trim() : "";
+      if (!sessionKey || !transcript) {
+        return;
+      }
+      const binding = this.store.listBindings().find((entry) => entry.sessionKey === sessionKey) ?? null;
+      if (!binding) {
+        return;
+      }
+      const mediaType = typeof ctx.mediaType === "string" ? ctx.mediaType : "";
+      const conversation = binding.conversation;
+      this.api.logger.info(
+        `codex message:transcribed starting turn ${this.formatConversationForLog(conversation)} mediaType=${mediaType || "<unknown>"} prompt="${summarizeTextForLog(transcript)}"`,
+      );
+      await this.startTurn({
+        conversation,
+        binding,
+        workspaceDir: binding.workspaceDir,
+        prompt: transcript,
+        reason: "inbound",
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? `${error.message}\n${error.stack ?? ""}`.trim() : String(error);
+      this.api.logger.error(`codex message:transcribed failed: ${detail}`);
+    }
+  }
+
+  async handleMessagePreprocessed(event: {
+    type?: string;
+    action?: string;
+    sessionKey?: string;
+    context?: Record<string, unknown>;
+  }): Promise<void> {
+    try {
+      if (!this.settings.enabled) {
+        return;
+      }
+      if (event.type !== "message" || event.action !== "preprocessed") {
+        return;
+      }
+      await this.start();
+      const sessionKey = typeof event.sessionKey === "string" ? event.sessionKey : "";
+      const ctx = event.context ?? {};
+      const mediaPath = typeof ctx.mediaPath === "string" ? ctx.mediaPath : "";
+      const mediaType = typeof ctx.mediaType === "string" ? ctx.mediaType : "";
+      const existingTranscript = typeof ctx.transcript === "string" ? ctx.transcript.trim() : "";
+      if (
+        !sessionKey ||
+        !mediaPath ||
+        (!mediaType.startsWith("audio/") && !mediaPath.match(/\.(ogg|oga|opus|mp3|wav|m4a)$/i))
+      ) {
+        return;
+      }
+      const binding = this.store.listBindings().find((entry) => entry.sessionKey === sessionKey) ?? null;
+      if (!binding) {
+        return;
+      }
+      const mediaUnderstanding = (this.api as OpenClawPluginApi & {
+        runtime?: {
+          mediaUnderstanding?: {
+            transcribeAudioFile?: (params: {
+              filePath: string;
+              cfg?: unknown;
+              mime?: string;
+            }) => Promise<{ text?: string } | null | undefined>;
+          };
+        };
+        config?: unknown;
+      }).runtime?.mediaUnderstanding;
+      const transcript =
+        existingTranscript ||
+        (await mediaUnderstanding?.transcribeAudioFile?.({
+          filePath: mediaPath,
+          cfg: (this.api as { config?: unknown }).config,
+          mime: mediaType || undefined,
+        }))?.text?.trim() ||
+        "";
+      if (!transcript) {
+        this.api.logger.warn(
+          `codex message:preprocessed audio fallback produced no transcript ${this.formatConversationForLog(binding.conversation)} mediaPath=${mediaPath}`,
+        );
+        return;
+      }
+      this.api.logger.info(
+        `codex message:preprocessed audio fallback starting turn ${this.formatConversationForLog(binding.conversation)} prompt="${summarizeTextForLog(transcript)}"`,
+      );
+      await this.startTurn({
+        conversation: binding.conversation,
+        binding,
+        workspaceDir: binding.workspaceDir,
+        prompt: transcript,
+        reason: "inbound",
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? `${error.message}\n${error.stack ?? ""}`.trim() : String(error);
+      this.api.logger.error(`codex message:preprocessed fallback failed: ${detail}`);
     }
   }
 
