@@ -63,8 +63,6 @@ openclaw plugins uninstall openclaw-codex-app-server
 openclaw plugins install --dangerously-force-unsafe-install openclaw-codex-app-server
 ```
 
-> OpenClaw's docs currently show `plugins update` supporting `--dangerously-force-unsafe-install`, but in practice affected releases still need the uninstall/reinstall path for this plugin.
-
 ### If install is still blocked on OpenClaw `2026.3.31`
 
 Some OpenClaw `2026.3.31` installs still block this package even with `--dangerously-force-unsafe-install`. That behavior is tracked upstream in [openclaw/openclaw#59241](https://github.com/openclaw/openclaw/issues/59241).
