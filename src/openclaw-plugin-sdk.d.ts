@@ -46,7 +46,7 @@ declare module "openclaw/plugin-sdk" {
     from?: string;
     to?: string;
     accountId?: string;
-    messageThreadId?: number;
+    messageThreadId?: string | number;
     media?: PluginInboundMedia[];
   };
 
@@ -255,6 +255,22 @@ declare module "openclaw/plugin-sdk" {
               opts?: { accountId?: string },
             ) => Promise<unknown>;
           };
+        };
+        feishu: {
+          sendMessageFeishu: (
+            to: string,
+            text: string,
+            opts?: {
+              accountId?: string;
+              replyInThread?: boolean;
+            },
+          ) => Promise<{ messageId?: string; chatId?: string }>;
+          sendCardFeishu?: (params: {
+            to: string;
+            card: Record<string, unknown>;
+            accountId?: string;
+            replyInThread?: boolean;
+          }) => Promise<{ messageId?: string; chatId?: string }>;
         };
       };
     };

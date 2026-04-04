@@ -1,10 +1,9 @@
 {
   "name": "openclaw-codex-app-server",
-  "version": "0.0.0",
+  "version": "0.5.0",
   "description": "Independent OpenClaw plugin for the Codex App Server protocol",
   "author": "PwrDrvr LLC",
   "license": "MIT",
-  "packageManager": "pnpm@10.29.3",
   "type": "module",
   "openclaw": {
     "extensions": [
@@ -19,16 +18,6 @@
       "pluginSdkVersion": "2026.3.22"
     }
   },
-  "scripts": {
-    "project:sync": "node ./.agents/skills/project-manager/scripts/sync-work-items.mjs",
-    "test": "vitest run",
-    "typecheck": "tsc --noEmit",
-    "smoke:app-server-permissions": "node ./scripts/app-server-permissions-smoke.mjs",
-    "smoke:app-server-thread-permissions": "node ./scripts/app-server-thread-permissions-smoke.mjs",
-    "pack:smoke": "node ./scripts/pack-smoke.mjs",
-    "release:metadata": "node ./scripts/release-metadata.mjs",
-    "release:apply-version": "node ./scripts/apply-release-version.mjs"
-  },
   "peerDependencies": {
     "openclaw": ">=2026.3.22"
   },
@@ -40,5 +29,15 @@
     "typescript": "^5.9.2",
     "vitest": "^3.2.4",
     "yaml": "^2.8.2"
+  },
+  "scripts": {
+    "project:sync": "node ./.agents/skills/project-manager/scripts/sync-work-items.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "smoke:app-server-permissions": "node ./scripts/app-server-permissions-smoke.mjs",
+    "smoke:app-server-thread-permissions": "node ./scripts/app-server-thread-permissions-smoke.mjs",
+    "pack:smoke": "node ./scripts/pack-smoke.mjs",
+    "release:metadata": "node ./scripts/release-metadata.mjs",
+    "release:apply-version": "node ./scripts/apply-release-version.mjs"
   }
 }

@@ -1,7 +1,13 @@
+import fs from "node:fs";
 import type { PluginSettings } from "./types.js";
 import {
   DEFAULT_REQUEST_TIMEOUT_MS,
 } from "./types.js";
+
+const FALLBACK_CODEX_COMMAND_PATHS = [
+  "/Applications/Codex.app/Contents/Resources/codex",
+  "/Applications/Codex.app/Contents/MacOS/codex",
+];
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -56,6 +62,22 @@ function readNumber(
   return fallback;
 }
 
+function resolveDefaultCodexCommand(): string {
+  const envCandidates = [
+    process.env.OPENCLAW_CODEX_COMMAND,
+    process.env.CODEX_COMMAND,
+  ]
+    .map((value) => value?.trim())
+    .filter((value): value is string => Boolean(value));
+  if (envCandidates.length > 0) {
+    return envCandidates[0];
+  }
+  for (const candidate of FALLBACK_CODEX_COMMAND_PATHS) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return "codex";
+}
+
 export function resolvePluginSettings(rawConfig: unknown): PluginSettings {
   const record = asRecord(rawConfig);
   const transport = record.transport === "websocket" ? "websocket" : "stdio";
@@ -69,7 +91,7 @@ export function resolvePluginSettings(rawConfig: unknown): PluginSettings {
   return {
     enabled: record.enabled !== false,
     transport,
-    command: readString(record, "command") ?? "codex",
+    command: readString(record, "command") ?? resolveDefaultCodexCommand(),
     args: readStringArray(record, "args"),
     url: readString(record, "url"),
     headers: Object.keys(headers).length > 0 ? headers : undefined,

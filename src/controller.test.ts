@@ -39,6 +39,17 @@ function createApiMock() {
   const sendComponentMessage = vi.fn(async () => ({ messageId: "discord-component-1", channelId: "channel:chan-1" }));
   const sendMessageDiscord = vi.fn(async () => ({ messageId: "discord-msg-1", channelId: "channel:chan-1" }));
   const sendMessageTelegram = vi.fn(async () => ({ messageId: "1", chatId: "123" }));
+  const sendMessageFeishu = vi.fn(async () => ({ messageId: "feishu-msg-1", chatId: "oc_group_chat" }));
+  const sendCardFeishu = vi.fn(async () => ({ messageId: "feishu-card-1", chatId: "oc_group_chat" }));
+  const sendOutboundText = vi.fn(async () => ({ channel: "feishu", ok: true, messageId: "feishu-outbound-1" }));
+  const loadOutboundAdapter = vi.fn(async (channelId: string) => {
+    if (channelId !== "feishu" && channelId !== "lark") {
+      return undefined;
+    }
+    return {
+      sendText: sendOutboundText,
+    };
+  });
   const discordTypingStart = vi.fn(async () => ({ refresh: vi.fn(async () => {}), stop: vi.fn() }));
   const renameTopic = vi.fn(async () => ({}));
   const resolveTelegramToken = vi.fn(() => ({ token: "telegram-token", source: "config" }));
@@ -90,6 +101,13 @@ function createApiMock() {
             editChannel,
           },
         },
+        feishu: {
+          sendMessageFeishu,
+          sendCardFeishu,
+        },
+        outbound: {
+          loadAdapter: loadOutboundAdapter,
+        },
       },
     },
     registerService: vi.fn(),
@@ -103,6 +121,10 @@ function createApiMock() {
     sendComponentMessage,
     sendMessageDiscord,
     sendMessageTelegram,
+    sendMessageFeishu,
+    sendCardFeishu,
+    sendOutboundText,
+    loadOutboundAdapter,
     discordTypingStart,
     renameTopic,
     resolveTelegramToken,
@@ -117,6 +139,10 @@ async function createControllerHarness() {
     sendComponentMessage,
     sendMessageDiscord,
     sendMessageTelegram,
+    sendMessageFeishu,
+    sendCardFeishu,
+    sendOutboundText,
+    loadOutboundAdapter,
     discordTypingStart,
     renameTopic,
     resolveTelegramToken,
@@ -208,6 +234,10 @@ async function createControllerHarness() {
     sendComponentMessage,
     sendMessageDiscord,
     sendMessageTelegram,
+    sendMessageFeishu,
+    sendCardFeishu,
+    sendOutboundText,
+    loadOutboundAdapter,
     discordTypingStart,
     renameTopic,
     resolveTelegramToken,
@@ -271,6 +301,69 @@ function buildTelegramCommandContext(
     getCurrentConversationBinding: vi.fn(async () => null),
     ...overrides,
   } as unknown as PluginCommandContext;
+}
+
+function buildFeishuCommandContext(
+  overrides: Partial<PluginCommandContext> & Record<string, unknown> = {},
+): PluginCommandContext {
+  return {
+    senderId: "ou_user_1",
+    channel: "feishu",
+    channelId: "feishu",
+    isAuthorizedSender: true,
+    args: "",
+    commandBody: "/cas_status",
+    config: {},
+    from: "feishu:group:oc_group_chat",
+    to: "feishu:group:oc_group_chat",
+    originatingTo: "chat:oc_group_chat",
+    accountId: "default",
+    messageThreadId: "om_topic_root",
+    requestConversationBinding: vi.fn(async () => ({ status: "bound" as const })),
+    detachConversationBinding: vi.fn(async () => ({ removed: true })),
+    getCurrentConversationBinding: vi.fn(async () => null),
+    ...overrides,
+  } as unknown as PluginCommandContext;
+}
+
+function collectFeishuActionValues(node: unknown, out: Array<Record<string, unknown>> = []): Array<Record<string, unknown>> {
+  if (Array.isArray(node)) {
+    for (const entry of node) {
+      collectFeishuActionValues(entry, out);
+    }
+    return out;
+  }
+  if (!node || typeof node !== "object") {
+    return out;
+  }
+  const record = node as Record<string, unknown>;
+  if (record.oc === "ocf1") {
+    out.push(record);
+  }
+  for (const value of Object.values(record)) {
+    collectFeishuActionValues(value, out);
+  }
+  return out;
+}
+
+function collectFeishuMarkdownContents(node: unknown, out: string[] = []): string[] {
+  if (Array.isArray(node)) {
+    for (const entry of node) {
+      collectFeishuMarkdownContents(entry, out);
+    }
+    return out;
+  }
+  if (!node || typeof node !== "object") {
+    return out;
+  }
+  const record = node as Record<string, unknown>;
+  if (record.tag === "markdown" && typeof record.content === "string") {
+    out.push(record.content);
+  }
+  for (const value of Object.values(record)) {
+    collectFeishuMarkdownContents(value, out);
+  }
+  return out;
 }
 
 afterEach(() => {
@@ -511,6 +604,256 @@ describe("Discord controller flows", () => {
     const token = callbackData.split(":").pop() ?? "";
     const callback = (controller as any).store.getCallback(token);
     expect(callback?.kind).toBe("start-new-thread");
+  });
+
+  it("renders a text thread list with thread ids for Feishu /cas_resume", async () => {
+    const { controller, clientMock, api, sendMessageFeishu } = await createControllerHarness();
+    delete (api as any).runtime.channel.feishu.sendCardFeishu;
+    clientMock.listThreads.mockResolvedValue([
+      ...Array.from({ length: 9 }).map((_, index) => ({
+        threadId: `thread-${index + 1}`,
+        title: `Thread ${index + 1}`,
+        projectKey: "/repo/openclaw",
+        createdAt: Date.now() - (index + 1) * 1_000,
+        updatedAt: Date.now() - index * 1_000,
+      })),
+    ]);
+
+    const reply = await controller.handleCommand(
+      "cas_resume",
+      buildFeishuCommandContext({
+        args: "",
+        commandBody: "/cas_resume",
+        messageThreadId: undefined,
+      }),
+    );
+
+    expect(reply).toEqual({});
+    const sentText = ((sendMessageFeishu.mock.calls as unknown) as Array<[string, string, unknown?]>)
+      .map(([, value]) => value)
+      .join("\n");
+    expect(sentText).toContain("Threads on this page:");
+    expect(sentText).toContain("id: thread-1");
+    expect(sentText).toContain("Next page: /cas_resume --page 2");
+    expect(sentText).toContain("Bind exact thread: /cas_resume <threadId>");
+    expect(sentText).not.toContain("Tap a thread to resume it.");
+    expect(sentText).toContain("Use card buttons below when available.");
+  });
+
+  it("sends Feishu /cas_resume as a structured card when card runtime is available", async () => {
+    const { controller, sendCardFeishu, sendMessageFeishu } = await createControllerHarness();
+
+    const result = await controller.handleInboundClaim({
+      content: "/cas_resume",
+      channel: "feishu",
+      accountId: "default",
+      conversationId: "oc_group_chat",
+      senderId: "ou_user_1",
+      metadata: {
+        originatingTo: "chat:oc_group_chat",
+      },
+    });
+
+    expect(result).toEqual({ handled: true });
+    expect(sendCardFeishu).toHaveBeenCalledTimes(1);
+    expect(sendMessageFeishu).not.toHaveBeenCalled();
+    const payload = ((sendCardFeishu.mock.calls as unknown) as Array<[Record<string, unknown>]>)?.[0]?.[0];
+    expect(payload).toEqual(expect.objectContaining({
+      to: "oc_group_chat",
+      accountId: "default",
+    }));
+    const actions = collectFeishuActionValues(payload?.card);
+    expect(actions.length).toBeGreaterThan(0);
+    expect(actions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        oc: "ocf1",
+        k: "quick",
+        a: "openclaw.codex.callback",
+        c: expect.objectContaining({
+          h: "oc_group_chat",
+        }),
+      }),
+    ]));
+    expect(actions.some((action) => typeof action.q === "string" && action.q.startsWith("/cas_click "))).toBe(true);
+    const markdownContents = collectFeishuMarkdownContents(payload?.card).join("\n");
+    expect(markdownContents).toContain("Use the buttons below to continue.");
+    expect(markdownContents).not.toContain("Threads on this page:");
+    const serializedCard = JSON.stringify(payload?.card);
+    expect(serializedCard).toContain("\"schema\":\"1.0\"");
+    expect(serializedCard).toContain("\"tag\":\"action\"");
+  });
+
+  it("falls back to Feishu text for /cas_resume when card runtime is unavailable and notes the downgrade", async () => {
+    const { controller, api, sendMessageFeishu, sendCardFeishu } = await createControllerHarness();
+    delete (api as any).runtime.channel.feishu.sendCardFeishu;
+
+    const result = await controller.handleInboundClaim({
+      content: "/cas_resume",
+      channel: "feishu",
+      accountId: "default",
+      conversationId: "oc_group_chat",
+      senderId: "ou_user_1",
+      metadata: {
+        originatingTo: "chat:oc_group_chat",
+      },
+    });
+
+    expect(result).toEqual({ handled: true });
+    expect(sendCardFeishu).not.toHaveBeenCalled();
+    expect(sendMessageFeishu).toHaveBeenCalled();
+    const sentText = ((sendMessageFeishu.mock.calls as unknown) as Array<[string, string, unknown?]>)
+      .map(([, value]) => value)
+      .join("\n");
+    expect(sentText).toContain("Feishu cards unavailable");
+    expect(sentText).toContain("Bind exact thread: /cas_resume <threadId>");
+  });
+
+  it("supports --page for Feishu /cas_resume --projects text fallback", async () => {
+    const { controller, clientMock, api, sendMessageFeishu } = await createControllerHarness();
+    delete (api as any).runtime.channel.feishu.sendCardFeishu;
+    clientMock.listThreads.mockResolvedValue([
+      ...Array.from({ length: 12 }).map((_, index) => ({
+        threadId: `thread-${index + 1}`,
+        title: `Thread ${index + 1}`,
+        projectKey: `/repo/project-${index + 1}`,
+        createdAt: Date.now() - (index + 1) * 1_000,
+        updatedAt: Date.now() - index * 1_000,
+      })),
+    ]);
+
+    const reply = await controller.handleCommand(
+      "cas_resume",
+      buildFeishuCommandContext({
+        args: "--projects --page 2",
+        commandBody: "/cas_resume --projects --page 2",
+        messageThreadId: undefined,
+      }),
+    );
+
+    expect(reply).toEqual({});
+    const sentText = ((sendMessageFeishu.mock.calls as unknown) as Array<[string, string, unknown?]>)
+      .map(([, value]) => value)
+      .join("\n");
+    expect(sentText).toContain("Page 2/2.");
+    expect(sentText).toContain("Projects on this page:");
+    expect(sentText).toContain("project-12");
+    expect(sentText).toContain("Prev page: /cas_resume --projects");
+  });
+
+  it("falls back to global thread search for Feishu /cas_resume <threadId>", async () => {
+    const { controller, clientMock } = await createControllerHarness();
+    const targetThreadId = "019d5133-b02c-73f1-8574-5ddad7f8d0a5";
+    (clientMock.listThreads as any).mockImplementation(async (params: { workspaceDir?: string; filter?: string }) => {
+      if (params.workspaceDir === "/repo/openclaw") {
+        return [];
+      }
+      if (!params.workspaceDir && params.filter === targetThreadId) {
+        return [
+          {
+            threadId: targetThreadId,
+            title: "PV_DIR_103757 你现在在哪个目录？",
+            projectKey: "/Users/leonzhao/.openclaw",
+            createdAt: Date.now() - 30_000,
+            updatedAt: Date.now() - 10_000,
+          },
+        ];
+      }
+      return [];
+    });
+
+    const requestConversationBinding = vi.fn(async () => ({ status: "bound" as const }));
+    const reply = await controller.handleCommand(
+      "cas_resume",
+      buildFeishuCommandContext({
+        args: `<${targetThreadId}>`,
+        commandBody: `/cas_resume <${targetThreadId}>`,
+        messageThreadId: undefined,
+        requestConversationBinding,
+      }),
+    );
+
+    expect(reply.text).not.toContain("No Codex thread matched");
+    expect(clientMock.listThreads).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      workspaceDir: "/repo/openclaw",
+      filter: targetThreadId,
+    }));
+    expect(clientMock.listThreads).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      workspaceDir: undefined,
+      filter: targetThreadId,
+    }));
+    expect(requestConversationBinding).toHaveBeenCalledWith(
+      expect.objectContaining({
+        summary: expect.stringContaining("Bind this conversation to Codex thread"),
+      }),
+    );
+    const bindings = (controller as any).store.listBindings() as Array<{
+      threadId: string;
+    }>;
+    expect(bindings).toContainEqual(expect.objectContaining({
+      threadId: targetThreadId,
+    }));
+  });
+
+  it("filters Feishu /cas_resume <project> thread picker when global results are not pre-filtered", async () => {
+    const { controller, clientMock, api, sendMessageFeishu } = await createControllerHarness();
+    delete (api as any).runtime.channel.feishu.sendCardFeishu;
+    const projectQuery = "dailywork";
+    (clientMock.listThreads as any).mockImplementation(async (params: { workspaceDir?: string; filter?: string }) => {
+      if (params.workspaceDir === "/repo/openclaw") {
+        return [];
+      }
+      if (!params.workspaceDir && params.filter === projectQuery) {
+        return [
+          {
+            threadId: "019d6000-1111-7222-8333-aaaaaaaaaaaa",
+            title: "dailywork task alpha",
+            projectKey: "/Users/leonzhao/dailywork",
+            createdAt: Date.now() - 90_000,
+            updatedAt: Date.now() - 50_000,
+          },
+          {
+            threadId: "019d6000-1111-7222-8333-bbbbbbbbbbbb",
+            title: "dailywork task beta",
+            projectKey: "/Users/leonzhao/dailywork",
+            createdAt: Date.now() - 80_000,
+            updatedAt: Date.now() - 40_000,
+          },
+          {
+            threadId: "019d6000-1111-7222-8333-cccccccccccc",
+            title: "openclaw unrelated",
+            projectKey: "/Users/leonzhao/.openclaw",
+            createdAt: Date.now() - 70_000,
+            updatedAt: Date.now() - 30_000,
+          },
+        ];
+      }
+      return [];
+    });
+
+    const requestConversationBinding = vi.fn(async () => ({ status: "bound" as const }));
+    const reply = await controller.handleCommand(
+      "cas_resume",
+      buildFeishuCommandContext({
+        args: `<${projectQuery}>`,
+        commandBody: `/cas_resume <${projectQuery}>`,
+        messageThreadId: undefined,
+        requestConversationBinding,
+      }),
+    );
+
+    expect(reply).toEqual({});
+    const sentText = ((sendMessageFeishu.mock.calls as unknown) as Array<[string, string, unknown?]>)
+      .map(([, value]) => value)
+      .join("\n");
+    expect(sentText).toContain('Showing threads matching "dailywork" from all projects.');
+    expect(sentText).toContain("Threads on this page:");
+    expect(sentText).toContain("project: /Users/leonzhao/dailywork");
+    expect(sentText).not.toContain("project: /Users/leonzhao/.openclaw");
+    expect(requestConversationBinding).not.toHaveBeenCalled();
+    expect(clientMock.listThreads).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceDir: undefined,
+      filter: projectQuery,
+    }));
   });
 
   it("collapses matching worktrees to one project root in the /cas_resume --new picker", async () => {
@@ -1594,6 +1937,118 @@ describe("Discord controller flows", () => {
     expect(reply.text).not.toContain("Session: session-1");
   });
 
+  it("renders cas_status as plain text for Feishu without sending interactive controls", async () => {
+    const { controller, sendMessageFeishu, sendComponentMessage, sendMessageTelegram } = await createControllerHarness();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "feishu",
+        accountId: "default",
+        conversationId: "oc_group_chat:topic:om_topic_root",
+        parentConversationId: "oc_group_chat",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      threadTitle: "Feishu Thread",
+      updatedAt: Date.now(),
+    });
+
+    const reply = await controller.handleCommand(
+      "cas_status",
+      buildFeishuCommandContext({
+        commandBody: "/cas_status",
+        getCurrentConversationBinding: vi.fn(async () => ({ bindingId: "b1" })),
+      }),
+    );
+
+    expect(reply.text).toContain("Binding: Discord Thread (openclaw)");
+    expect(reply.text).toContain("Use /cas_model, /cas_stop, or /cas_detach for text-only control in Feishu.");
+    expect(sendMessageFeishu).not.toHaveBeenCalled();
+    expect(sendComponentMessage).not.toHaveBeenCalled();
+    expect(sendMessageTelegram).not.toHaveBeenCalled();
+  });
+
+  it("binds a Feishu conversation locally when core binding helpers are unavailable", async () => {
+    const { controller } = await createControllerHarness();
+
+    const reply = await controller.handleCommand(
+      "cas_resume",
+      buildFeishuCommandContext({
+        args: "thread-1",
+        commandBody: "/cas_resume thread-1",
+        from: "feishu:ou_user_1",
+        to: "user:ou_user_1",
+        messageThreadId: undefined,
+        requestConversationBinding: undefined,
+      }),
+    );
+
+    expect(reply).toEqual({});
+    expect(
+      (controller as any).store.getBinding({
+        channel: "feishu",
+        accountId: "default",
+        conversationId: "oc_group_chat",
+      }),
+    ).toEqual(expect.objectContaining({
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+    }));
+  });
+
+  it("sends Feishu text through outbound adapter when direct Feishu sender is unavailable", async () => {
+    const { controller, api, loadOutboundAdapter, sendOutboundText } = await createControllerHarness();
+    delete (api as any).runtime.channel.feishu;
+
+    await (controller as any).sendTextWithDeliveryRef(
+      {
+        channel: "feishu",
+        accountId: "default",
+        conversationId: "oc_group_chat",
+        parentConversationId: "oc_group_chat",
+      },
+      "where are you",
+    );
+
+    expect(loadOutboundAdapter).toHaveBeenCalledWith("feishu");
+    expect(sendOutboundText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "oc_group_chat",
+        text: "where are you",
+        accountId: "default",
+      }),
+    );
+  });
+
+  it("renders cas_model as plain text for Feishu without sending interactive controls", async () => {
+    const { controller, sendMessageFeishu, sendComponentMessage } = await createControllerHarness();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "feishu",
+        accountId: "default",
+        conversationId: "oc_group_chat:topic:om_topic_root",
+        parentConversationId: "oc_group_chat",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+
+    const reply = await controller.handleCommand(
+      "cas_model",
+      buildFeishuCommandContext({
+        commandBody: "/cas_model",
+        getCurrentConversationBinding: vi.fn(async () => ({ bindingId: "b1" })),
+      }),
+    );
+
+    expect(reply.text).toContain("openai/gpt-5.4");
+    expect(reply.text).toContain("Reply with /cas_model <model>");
+    expect(sendMessageFeishu).not.toHaveBeenCalled();
+    expect(sendComponentMessage).not.toHaveBeenCalled();
+  });
+
   it("does not hydrate a denied pending bind into cas_status", async () => {
     const { controller } = await createControllerHarness();
     await (controller as any).store.upsertPendingBind({
@@ -2229,6 +2684,635 @@ describe("Discord controller flows", () => {
         }),
       }),
     );
+  });
+
+  it("detaches a Feishu conversation without requiring Telegram or Discord", async () => {
+    const { controller } = await createControllerHarness();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "feishu",
+        accountId: "default",
+        conversationId: "oc_group_chat:topic:om_topic_root",
+        parentConversationId: "oc_group_chat",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+
+    const reply = await controller.handleCommand(
+      "cas_detach",
+      buildFeishuCommandContext({
+        commandBody: "/cas_detach",
+        getCurrentConversationBinding: vi.fn(async () => ({ bindingId: "binding-1" })),
+      }),
+    );
+
+    expect(reply).toEqual({
+      text: "Detached this Feishu conversation from Codex. Future messages will fall back to the default codex-agent route.",
+    });
+    expect(
+      (controller as any).store.getBinding({
+        channel: "feishu",
+        accountId: "default",
+        conversationId: "oc_group_chat:topic:om_topic_root",
+        parentConversationId: "oc_group_chat",
+      }),
+    ).toBeNull();
+  });
+
+  it("claims only locally bound Feishu inbound conversations and preserves string thread ids", async () => {
+    const { controller } = await createControllerHarness();
+    const startTurn = vi.fn(async () => undefined);
+    (controller as any).startTurn = startTurn;
+
+    const unbound = await controller.handleInboundClaim({
+      content: "hello",
+      channel: "feishu",
+      accountId: "default",
+      conversationId: "oc_group_chat:topic:om_topic_root",
+      parentConversationId: "oc_group_chat",
+      threadId: "om_topic_root",
+    });
+
+    expect(unbound).toEqual({ handled: false });
+
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "feishu",
+        accountId: "default",
+        conversationId: "oc_group_chat:topic:om_topic_root",
+        parentConversationId: "oc_group_chat",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+
+    const bound = await controller.handleInboundClaim({
+      content: "hello",
+      channel: "feishu",
+      accountId: "default",
+      conversationId: "oc_group_chat:topic:om_topic_root",
+      parentConversationId: "oc_group_chat",
+      threadId: "om_topic_root",
+    });
+
+    expect(bound).toEqual({ handled: true });
+    expect(startTurn).toHaveBeenCalledWith(expect.objectContaining({
+      conversation: expect.objectContaining({
+        channel: "feishu",
+        conversationId: "oc_group_chat:topic:om_topic_root",
+        parentConversationId: "oc_group_chat",
+        threadId: "om_topic_root",
+      }),
+    }));
+  });
+
+  it("falls back to plugin command handling for Feishu /cas_status received via inbound claim", async () => {
+    const { controller, sendMessageFeishu } = await createControllerHarness();
+    const startTurn = vi.fn(async () => undefined);
+    (controller as any).startTurn = startTurn;
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "feishu",
+        accountId: "default",
+        conversationId: "oc_group_chat",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+
+    const result = await controller.handleInboundClaim({
+      content: "/cas_status",
+      channel: "feishu",
+      accountId: "default",
+      conversationId: "oc_group_chat",
+      senderId: "ou_user_1",
+    });
+
+    expect(result).toEqual({ handled: true });
+    expect(startTurn).not.toHaveBeenCalled();
+    expect(sendMessageFeishu).toHaveBeenCalled();
+    expect(sendMessageFeishu).toHaveBeenLastCalledWith(
+      "oc_group_chat",
+      expect.stringContaining("Binding:"),
+      expect.objectContaining({ accountId: "default" }),
+    );
+  });
+
+  it("falls back to plugin command handling for Feishu /cas_detach received via inbound claim", async () => {
+    const { controller, sendMessageFeishu } = await createControllerHarness();
+    const startTurn = vi.fn(async () => undefined);
+    (controller as any).startTurn = startTurn;
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "feishu",
+        accountId: "default",
+        conversationId: "oc_group_chat",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+
+    const result = await controller.handleInboundClaim({
+      content: "/cas_detach",
+      channel: "feishu",
+      accountId: "default",
+      conversationId: "oc_group_chat",
+      senderId: "ou_user_1",
+    });
+
+    expect(result).toEqual({ handled: true });
+    expect(startTurn).not.toHaveBeenCalled();
+    expect((controller as any).store.getBinding({
+      channel: "feishu",
+      accountId: "default",
+      conversationId: "oc_group_chat",
+    })).toBeNull();
+    expect(sendMessageFeishu).toHaveBeenCalledWith(
+      "oc_group_chat",
+      expect.stringContaining("Detached this Feishu conversation from Codex."),
+      expect.objectContaining({ accountId: "default" }),
+    );
+  });
+
+  it("skips Feishu before_dispatch when context only has a user id conversation", async () => {
+    const { controller } = await createControllerHarness();
+    const claimSpy = vi.spyOn(controller, "handleInboundClaim");
+    claimSpy.mockResolvedValue({ handled: true });
+
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "feishu",
+        accountId: "default",
+        conversationId: "oc_b57524acd79413d9b6c87fc6c9f4c684",
+      },
+      sessionKey: "session-dm",
+      threadId: "thread-dm",
+      workspaceDir: "/Users/leonzhao/dailywork",
+      updatedAt: Date.now(),
+    });
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "feishu",
+        accountId: "default",
+        conversationId: "oc_5e87bd10b496378e9fe52b9b8c7cd709",
+      },
+      sessionKey: "session-group",
+      threadId: "thread-group",
+      workspaceDir: "/Users/leonzhao/.openclaw",
+      updatedAt: Date.now(),
+    });
+
+    const result = await controller.handleBeforeDispatch(
+      {
+        channel: "feishu",
+        content: "你在哪个目录？",
+      },
+      {
+        accountId: "default",
+        channelId: "feishu",
+        senderId: "ou_user_1",
+        conversationId: "ou_user_1",
+      },
+    );
+
+    expect(result).toEqual({ handled: false });
+    expect(claimSpy).not.toHaveBeenCalled();
+  });
+
+  it("maps Feishu before_dispatch user conversation to a known DM chat binding", async () => {
+    const { controller } = await createControllerHarness();
+    const claimSpy = vi.spyOn(controller, "handleInboundClaim");
+    claimSpy.mockResolvedValue({ handled: true });
+
+    await (controller as any).store.upsertFeishuDmConversation({
+      accountId: "default",
+      userId: "ou_user_1",
+      conversationId: "oc_b57524acd79413d9b6c87fc6c9f4c684",
+      updatedAt: Date.now(),
+    });
+
+    const result = await controller.handleBeforeDispatch(
+      {
+        channel: "feishu",
+        content: "继续排查",
+        isGroup: false,
+      },
+      {
+        accountId: "default",
+        channelId: "feishu",
+        senderId: "ou_user_1",
+        conversationId: "ou_user_1",
+      },
+    );
+
+    expect(result).toEqual({ handled: true });
+    expect(claimSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "feishu",
+        conversationId: "oc_b57524acd79413d9b6c87fc6c9f4c684",
+        parentConversationId: "oc_b57524acd79413d9b6c87fc6c9f4c684",
+      }),
+    );
+  });
+
+  it("handles Feishu before_dispatch when context contains a chat conversation id", async () => {
+    const { controller } = await createControllerHarness();
+    const claimSpy = vi.spyOn(controller, "handleInboundClaim");
+    claimSpy.mockResolvedValue({ handled: true });
+
+    const result = await controller.handleBeforeDispatch(
+      {
+        channel: "feishu",
+        content: "继续排查",
+      },
+      {
+        accountId: "default",
+        channelId: "feishu",
+        senderId: "ou_user_1",
+        conversationId: "oc_b57524acd79413d9b6c87fc6c9f4c684",
+      },
+    );
+
+    expect(result).toEqual({ handled: true });
+    expect(claimSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "feishu",
+        conversationId: "oc_b57524acd79413d9b6c87fc6c9f4c684",
+        parentConversationId: "oc_b57524acd79413d9b6c87fc6c9f4c684",
+      }),
+    );
+  });
+
+  it("accepts Feishu text fallback replies for pending approvals", async () => {
+    const { controller } = await createControllerHarness();
+    const submitPendingInput = vi.fn(async () => true);
+    (controller as any).activeRuns.set("feishu::default::ou_user_1::", {
+      conversation: {
+        channel: "feishu",
+        accountId: "default",
+        conversationId: "ou_user_1",
+      },
+      workspaceDir: "/repo/openclaw",
+      mode: "default",
+      handle: {
+        result: new Promise(() => {}),
+        queueMessage: vi.fn(async () => false),
+        submitPendingInput,
+        submitPendingInputPayload: vi.fn(async () => false),
+        interrupt: vi.fn(async () => undefined),
+        isAwaitingInput: vi.fn(() => true),
+        getThreadId: vi.fn(() => "thread-1"),
+      },
+    });
+    await (controller as any).store.upsertPendingRequest({
+      requestId: "req-1",
+      conversation: {
+        channel: "feishu",
+        accountId: "default",
+        conversationId: "ou_user_1",
+      },
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      state: {
+        requestId: "req-1",
+        options: ["accept", "decline"],
+        actions: [
+          {
+            kind: "approval",
+            label: "Accept",
+            decision: "accept",
+            responseDecision: "accept",
+          },
+          {
+            kind: "approval",
+            label: "Decline",
+            decision: "decline",
+            responseDecision: "decline",
+          },
+        ],
+        expiresAt: Date.now() + 60_000,
+      },
+      updatedAt: Date.now(),
+    });
+
+    const handled = await controller.handleInboundClaim({
+      content: "1",
+      channel: "feishu",
+      accountId: "default",
+      conversationId: "ou_user_1",
+    });
+
+    expect(handled).toEqual({ handled: true });
+    expect(submitPendingInput).toHaveBeenCalledWith(0);
+  });
+
+  it("dispatches /cas_click for Feishu pending-input callbacks and rejects cross-conversation clicks", async () => {
+    const { controller, sendMessageFeishu } = await createControllerHarness();
+    const submitPendingInput = vi.fn(async () => true);
+    (controller as any).activeRuns.set("feishu::default::oc_group_chat::", {
+      conversation: {
+        channel: "feishu",
+        accountId: "default",
+        conversationId: "oc_group_chat",
+      },
+      workspaceDir: "/repo/openclaw",
+      mode: "default",
+      handle: {
+        result: new Promise(() => {}),
+        queueMessage: vi.fn(async () => false),
+        submitPendingInput,
+        submitPendingInputPayload: vi.fn(async () => false),
+        interrupt: vi.fn(async () => undefined),
+        isAwaitingInput: vi.fn(() => true),
+        getThreadId: vi.fn(() => "thread-1"),
+      },
+    });
+    await (controller as any).store.upsertPendingRequest({
+      requestId: "req-click-1",
+      conversation: {
+        channel: "feishu",
+        accountId: "default",
+        conversationId: "oc_group_chat",
+      },
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      state: {
+        requestId: "req-click-1",
+        options: ["approve", "decline"],
+        actions: [
+          {
+            kind: "approval",
+            label: "Approve",
+            decision: "accept",
+            responseDecision: "accept",
+          },
+          {
+            kind: "approval",
+            label: "Decline",
+            decision: "decline",
+            responseDecision: "decline",
+          },
+        ],
+        expiresAt: Date.now() + 60_000,
+      },
+      updatedAt: Date.now(),
+    });
+    const callback = await (controller as any).store.putCallback({
+      kind: "pending-input",
+      conversation: {
+        channel: "feishu",
+        accountId: "default",
+        conversationId: "oc_group_chat",
+      },
+      requestId: "req-click-1",
+      actionIndex: 0,
+      ttlMs: 60_000,
+    });
+
+    const handled = await controller.handleInboundClaim({
+      content: `/cas_click ${callback.token}`,
+      channel: "feishu",
+      accountId: "default",
+      conversationId: "oc_group_chat",
+      senderId: "ou_user_1",
+      metadata: {
+        originatingTo: "chat:oc_group_chat",
+      },
+    });
+
+    expect(handled).toEqual({ handled: true });
+    expect(submitPendingInput).toHaveBeenCalledWith(0);
+
+    const crossConversationCallback = await (controller as any).store.putCallback({
+      kind: "pending-input",
+      conversation: {
+        channel: "feishu",
+        accountId: "default",
+        conversationId: "oc_group_chat",
+      },
+      requestId: "req-click-1",
+      actionIndex: 1,
+      ttlMs: 60_000,
+    });
+
+    const crossHandled = await controller.handleInboundClaim({
+      content: `/cas_click ${crossConversationCallback.token}`,
+      channel: "feishu",
+      accountId: "default",
+      conversationId: "oc_other_chat",
+      senderId: "ou_user_1",
+      metadata: {
+        originatingTo: "chat:oc_other_chat",
+      },
+    });
+
+    expect(crossHandled).toEqual({ handled: true });
+    expect(submitPendingInput).toHaveBeenCalledTimes(1);
+    expect(sendMessageFeishu).toHaveBeenLastCalledWith(
+      "oc_other_chat",
+      expect.stringContaining("different conversation"),
+      expect.objectContaining({ accountId: "default" }),
+    );
+  });
+
+  it("rejects expired /cas_click tokens for Feishu callbacks", async () => {
+    const { controller, sendMessageFeishu } = await createControllerHarness();
+    const callback = await (controller as any).store.putCallback({
+      kind: "reply-text",
+      conversation: {
+        channel: "feishu",
+        accountId: "default",
+        conversationId: "oc_group_chat",
+      },
+      text: "stale",
+      ttlMs: -1,
+    });
+
+    const handled = await controller.handleInboundClaim({
+      content: `/cas_click ${callback.token}`,
+      channel: "feishu",
+      accountId: "default",
+      conversationId: "oc_group_chat",
+      senderId: "ou_user_1",
+      metadata: {
+        originatingTo: "chat:oc_group_chat",
+      },
+    });
+
+    expect(handled).toEqual({ handled: true });
+    expect(sendMessageFeishu).toHaveBeenCalledWith(
+      "oc_group_chat",
+      expect.stringContaining("expired"),
+      expect.objectContaining({ accountId: "default" }),
+    );
+  });
+
+  it("progresses Feishu questionnaires through /cas_click for prev, next, freeform, and option selection", async () => {
+    const { controller } = await createControllerHarness();
+    const submitPendingInputPayload = vi.fn(async () => true);
+    (controller as any).activeRuns.set("feishu::default::oc_group_chat::", {
+      conversation: {
+        channel: "feishu",
+        accountId: "default",
+        conversationId: "oc_group_chat",
+      },
+      workspaceDir: "/repo/openclaw",
+      mode: "plan",
+      handle: {
+        result: new Promise(() => {}),
+        queueMessage: vi.fn(async () => false),
+        submitPendingInput: vi.fn(async () => false),
+        submitPendingInputPayload,
+        interrupt: vi.fn(async () => undefined),
+        isAwaitingInput: vi.fn(() => true),
+        getThreadId: vi.fn(() => "thread-1"),
+      },
+    });
+    await (controller as any).store.upsertPendingRequest({
+      requestId: "req-questionnaire-click",
+      conversation: {
+        channel: "feishu",
+        accountId: "default",
+        conversationId: "oc_group_chat",
+      },
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      state: {
+        requestId: "req-questionnaire-click",
+        options: [],
+        expiresAt: Date.now() + 60_000,
+        questionnaire: {
+          currentIndex: 1,
+          awaitingFreeform: false,
+          questions: [
+            {
+              index: 0,
+              id: "q1",
+              prompt: "Question 1",
+              options: [{ key: "A", label: "Alpha" }],
+              guidance: [],
+            },
+            {
+              index: 1,
+              id: "q2",
+              prompt: "Question 2",
+              options: [{ key: "A", label: "Beta" }],
+              guidance: [],
+            },
+            {
+              index: 2,
+              id: "q3",
+              prompt: "Question 3",
+              options: [{ key: "A", label: "Gamma" }],
+              guidance: [],
+              allowFreeform: true,
+            },
+          ],
+          answers: [
+            { kind: "option", optionKey: "A", optionLabel: "Alpha" },
+            { kind: "option", optionKey: "A", optionLabel: "Beta" },
+            null,
+          ],
+        },
+      },
+      updatedAt: Date.now(),
+    });
+
+    const questionState = ((controller as any).store.getPendingRequestById("req-questionnaire-click") as any).state;
+    const initialButtons = await (controller as any).buildPendingQuestionnaireButtons(
+      {
+        channel: "feishu",
+        accountId: "default",
+        conversationId: "oc_group_chat",
+      },
+      questionState,
+    );
+    const prevToken = initialButtons.flat().find((button: { text: string }) => button.text === "Prev")?.callback_data.split(":").pop();
+    const nextToken = initialButtons.flat().find((button: { text: string }) => button.text === "Next")?.callback_data.split(":").pop();
+    expect(prevToken).toBeTruthy();
+    expect(nextToken).toBeTruthy();
+
+    await controller.handleInboundClaim({
+      content: `/cas_click ${prevToken}`,
+      channel: "feishu",
+      accountId: "default",
+      conversationId: "oc_group_chat",
+      senderId: "ou_user_1",
+      metadata: {
+        originatingTo: "chat:oc_group_chat",
+      },
+    });
+    expect((controller as any).store.getPendingRequestById("req-questionnaire-click")?.state.questionnaire.currentIndex).toBe(0);
+
+    const pending = (controller as any).store.getPendingRequestById("req-questionnaire-click");
+    pending.state.questionnaire.currentIndex = 1;
+    pending.state.questionnaire.awaitingFreeform = false;
+    await (controller as any).store.upsertPendingRequest(pending);
+
+    await controller.handleInboundClaim({
+      content: `/cas_click ${nextToken}`,
+      channel: "feishu",
+      accountId: "default",
+      conversationId: "oc_group_chat",
+      senderId: "ou_user_1",
+      metadata: {
+        originatingTo: "chat:oc_group_chat",
+      },
+    });
+    expect((controller as any).store.getPendingRequestById("req-questionnaire-click")?.state.questionnaire.currentIndex).toBe(2);
+
+    const finalState = ((controller as any).store.getPendingRequestById("req-questionnaire-click") as any).state;
+    const finalButtons = await (controller as any).buildPendingQuestionnaireButtons(
+      {
+        channel: "feishu",
+        accountId: "default",
+        conversationId: "oc_group_chat",
+      },
+      finalState,
+    );
+    const freeformToken = finalButtons.flat().find((button: { text: string }) => button.text === "Use Free Form")?.callback_data.split(":").pop();
+    const selectToken = finalButtons.flat().find((button: { text: string }) => button.text.startsWith("A."))?.callback_data.split(":").pop();
+    expect(freeformToken).toBeTruthy();
+    expect(selectToken).toBeTruthy();
+
+    await controller.handleInboundClaim({
+      content: `/cas_click ${freeformToken}`,
+      channel: "feishu",
+      accountId: "default",
+      conversationId: "oc_group_chat",
+      senderId: "ou_user_1",
+      metadata: {
+        originatingTo: "chat:oc_group_chat",
+      },
+    });
+    expect((controller as any).store.getPendingRequestById("req-questionnaire-click")?.state.questionnaire.awaitingFreeform).toBe(true);
+
+    await controller.handleInboundClaim({
+      content: `/cas_click ${selectToken}`,
+      channel: "feishu",
+      accountId: "default",
+      conversationId: "oc_group_chat",
+      senderId: "ou_user_1",
+      metadata: {
+        originatingTo: "chat:oc_group_chat",
+      },
+    });
+    expect(submitPendingInputPayload).toHaveBeenCalledWith({
+      answers: {
+        q1: { answers: ["Alpha"] },
+        q2: { answers: ["Beta"] },
+        q3: { answers: ["Gamma"] },
+      },
+    });
   });
 
   it("replays pending cas_resume --sync effects after approval hydrates on the next resume command", async () => {
@@ -4416,6 +5500,67 @@ describe("Discord controller flows", () => {
         sandbox: "danger-full-access",
       }),
     );
+  });
+
+  it("streams Feishu assistant deltas and only sends the unsent tail on completion", async () => {
+    vi.useFakeTimers();
+    try {
+      const { controller, sendMessageFeishu } = await createControllerHarness();
+      const prefix = "A streamed prefix that is long enough to flush.";
+      const fullText = `${prefix} tail`;
+      let resolveResult: ((value: unknown) => void) | undefined;
+      let capturedParams: Record<string, unknown> | undefined;
+      const result = new Promise((resolve) => {
+        resolveResult = resolve;
+      });
+      (controller as any).client.startTurn = vi.fn((params: Record<string, unknown>) => {
+        capturedParams = params;
+        return {
+          result,
+          getThreadId: () => "thread-1",
+          queueMessage: vi.fn(async () => false),
+          interrupt: vi.fn(async () => {}),
+          isAwaitingInput: () => false,
+          submitPendingInput: vi.fn(async () => false),
+          submitPendingInputPayload: vi.fn(async () => false),
+        };
+      });
+
+      await (controller as any).startTurn({
+        conversation: {
+          channel: "feishu",
+          accountId: "default",
+          conversationId: "oc_group_chat",
+        },
+        binding: null,
+        workspaceDir: "/repo/openclaw",
+        prompt: "stream it",
+        reason: "inbound",
+      });
+
+      expect(typeof capturedParams?.onAssistantDelta).toBe("function");
+      await (capturedParams?.onAssistantDelta as (text: string) => Promise<void>)(prefix);
+      await vi.advanceTimersByTimeAsync(1_500);
+      vi.useRealTimers();
+
+      resolveResult?.({
+        threadId: "thread-1",
+        text: fullText,
+      });
+      await flushAsyncWork();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      const sentTexts = ((sendMessageFeishu.mock.calls as unknown) as Array<[string, string, unknown?]>)
+        .map(([, value]) => value);
+      expect(sentTexts).toEqual([
+        prefix,
+        "tail",
+        "Codex completed.",
+      ]);
+      expect(sentTexts).not.toContain(fullText);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("passes saved conversation preferences into review runs", async () => {

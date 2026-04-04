@@ -14,7 +14,6 @@ import {
   type CompactProgress,
   type CompactResult,
   type ContextUsageSnapshot,
-  type CodexTurnInputItem,
   type ExperimentalFeatureSummary,
   type McpServerSummary,
   type ModelSummary,
@@ -26,6 +25,7 @@ import {
   type ReviewResult,
   type ReviewTarget,
   type SkillSummary,
+  type CodexTurnInputItem,
   type ThreadReplay,
   type ThreadState,
   type ThreadSummary,
@@ -847,7 +847,7 @@ async function initializeClient(params: {
 }): Promise<unknown> {
   const initializeResult = await params.client.request("initialize", {
     protocolVersion: DEFAULT_PROTOCOL_VERSION,
-    clientInfo: { name: "openclaw-codex-app-server", version: "0.0.0" },
+    clientInfo: { name: "openclaw-codex-app-server", version: "0.5.0" },
     capabilities: { experimentalApi: true },
   });
   await params.client.notify("initialized", {});
@@ -1052,13 +1052,7 @@ function normalizeSandboxMode(value: string | undefined): string | undefined {
   return trimmed;
 }
 
-function buildTurnInput(
-  prompt: string,
-  input?: readonly CodexTurnInputItem[],
-): Array<Record<string, unknown>> {
-  if (input?.length) {
-    return input.map((item) => ({ ...item }));
-  }
+function buildTurnInput(prompt: string): Array<Record<string, unknown>> {
   return [{ type: "text", text: prompt }];
 }
 
@@ -1117,7 +1111,6 @@ function buildCollaborationModePayloads(
 function buildTurnStartPayloads(params: {
   threadId: string;
   prompt: string;
-  input?: readonly CodexTurnInputItem[];
   model?: string;
   serviceTier?: string;
   collaborationMode?: CollaborationMode;
@@ -1125,7 +1118,7 @@ function buildTurnStartPayloads(params: {
 }): unknown[] {
   const base: Record<string, unknown> = {
     threadId: params.threadId,
-    input: buildTurnInput(params.prompt, params.input),
+    input: buildTurnInput(params.prompt),
   };
   if (params.model?.trim()) {
     base.model = params.model.trim();
@@ -1762,7 +1755,7 @@ function extractThreadState(value: unknown): ThreadState {
   return {
     threadId:
       extractIds(value).threadId ??
-      findFirstNestedString(value, ["threadId", "thread_id", "id", "conversationId"]) ??
+      findFirstNestedString(value, ["threadId", "thread_id", "conversationId", "conversation_id"]) ??
       "",
     threadName: findFirstNestedString(value, ["threadName", "thread_name", "name", "title"]),
     model: findFirstNestedString(value, ["model", "modelId", "model_id"]),
@@ -2407,12 +2400,20 @@ export function isMissingThreadError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   const normalized = message.trim().toLowerCase();
   return (
-    normalized.includes("no rollout found for thread id") ||
-    normalized.includes("not materialized yet") ||
-    normalized.includes("includeturns is unavailable before first user message") ||
+    isPreMaterializationThreadError(error) ||
     normalized.includes("thread not found") ||
     normalized.includes("no thread found") ||
     normalized.includes("unknown thread id")
+  );
+}
+
+export function isPreMaterializationThreadError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  const normalized = message.trim().toLowerCase();
+  return (
+    normalized.includes("no rollout found for thread id") ||
+    normalized.includes("not materialized yet") ||
+    normalized.includes("includeturns is unavailable before first user message")
   );
 }
 
@@ -2616,6 +2617,7 @@ export class CodexAppServerClient {
     sessionKey?: string;
     workspaceDir: string;
     model?: string;
+    strictNew?: boolean;
   }): Promise<ThreadState> {
     return await this.withClient(
       { sessionKey: params.sessionKey },
@@ -2631,14 +2633,87 @@ export class CodexAppServerClient {
           timeoutMs: settings.requestTimeoutMs,
         });
         const state = extractThreadState(result);
-        const threadId = extractIds(result).threadId ?? state.threadId;
-        if (!threadId?.trim()) {
+        let threadId = (extractIds(result).threadId ?? state.threadId).trim();
+        if (!threadId) {
           throw new Error("Codex App Server did not return a thread id.");
         }
+
+        const resolveUsableThread = async (
+          candidateThreadId: string,
+          missingError: unknown,
+        ): Promise<{ threadId: string; state: ThreadState }> => {
+          if (params.strictNew) {
+            throw new Error(
+              `Codex App Server returned unusable new thread id ${candidateThreadId}: ${String(missingError)}`,
+            );
+          }
+          const listResult = await requestWithFallbacks({
+            client,
+            methods: ["thread/list", "thread/loaded/list"],
+            payloads: buildThreadDiscoveryFilter(undefined, params.workspaceDir),
+            timeoutMs: settings.requestTimeoutMs,
+          }).catch(() => undefined);
+          const discovered = listResult ? extractThreadsFromValue(listResult) : [];
+          const candidates = discovered
+            .filter((thread) => thread.threadId && thread.threadId !== candidateThreadId)
+            .sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0))
+            .slice(0, 12);
+          for (const candidate of candidates) {
+            try {
+              const resumed = await requestWithFallbacks({
+                client,
+                methods: ["thread/resume"],
+                payloads: buildThreadResumePayloads({ threadId: candidate.threadId }),
+                timeoutMs: settings.requestTimeoutMs,
+              });
+              return {
+                threadId: candidate.threadId,
+                state: extractThreadState(resumed),
+              };
+            } catch {
+              continue;
+            }
+          }
+          throw new Error(
+            `Codex App Server returned unusable thread id ${candidateThreadId}: ${String(missingError)}`,
+          );
+        };
+
+        let resolvedState = state;
+        try {
+          const resumed = await requestWithFallbacks({
+            client,
+            methods: ["thread/resume"],
+            payloads: buildThreadResumePayloads({ threadId }),
+            timeoutMs: settings.requestTimeoutMs,
+          });
+          resolvedState = extractThreadState(resumed);
+        } catch (error) {
+          if (!isMissingThreadError(error)) {
+            throw error;
+          }
+          if (params.strictNew && isPreMaterializationThreadError(error)) {
+            this.logger.warn(
+              `codex thread/start candidate not yet materialized; accepting new thread candidate=${threadId}: ${String(error)}`,
+            );
+            return {
+              ...resolvedState,
+              threadId,
+              cwd: resolvedState.cwd?.trim() || params.workspaceDir,
+            };
+          }
+          this.logger.warn(
+            `codex thread/start candidate missing; discovering usable thread candidate=${threadId}: ${String(error)}`,
+          );
+          const recovered = await resolveUsableThread(threadId, error);
+          threadId = recovered.threadId;
+          resolvedState = recovered.state;
+        }
+
         return {
-          ...state,
+          ...resolvedState,
           threadId,
-          cwd: state.cwd?.trim() || params.workspaceDir,
+          cwd: resolvedState.cwd?.trim() || params.workspaceDir,
         };
       },
     );
@@ -3261,6 +3336,7 @@ export class CodexAppServerClient {
     sandbox?: string;
     collaborationMode?: CollaborationMode;
     onPendingInput?: (state: PendingInputState | null) => Promise<void> | void;
+    onAssistantDelta?: (text: string) => Promise<void> | void;
     onFileEdits?: (text: string) => Promise<void> | void;
     onInterrupted?: () => Promise<void> | void;
   }): ActiveCodexRun {
@@ -3382,6 +3458,14 @@ export class CodexAppServerClient {
           assistantItemId = assistantNotification.itemId;
         }
         if (assistantNotification.mode === "delta" && assistantNotification.text) {
+          const priorAssistantText = assistantText;
+          const deltaText =
+            priorAssistantText && assistantNotification.text.startsWith(priorAssistantText)
+              ? assistantNotification.text.slice(priorAssistantText.length)
+              : assistantNotification.text;
+          if (deltaText) {
+            await params.onAssistantDelta?.(deltaText);
+          }
           assistantText =
             assistantText && assistantNotification.text.startsWith(assistantText)
               ? assistantNotification.text
@@ -3503,7 +3587,7 @@ export class CodexAppServerClient {
         this.logger.debug(
           `codex turn using shared app-server client run=${params.runId} session=${params.sessionKey ?? "<none>"}`,
         );
-        if (!threadId) {
+        const createFreshThread = async (reason: "initial" | "missing-bound-thread") => {
           const created = await requestWithFallbacks({
             client,
             methods: ["thread/start", "thread/new"],
@@ -3515,33 +3599,49 @@ export class CodexAppServerClient {
             timeoutMs: this.settings.requestTimeoutMs,
           });
           const createdState = extractThreadState(created);
-          threadId = extractIds(created).threadId ?? "";
+          threadId = (extractIds(created).threadId ?? createdState.threadId).trim();
+          turnId = "";
           threadModel = createdState.model?.trim() || threadModel;
           threadReasoningEffort = createdState.reasoningEffort?.trim() || threadReasoningEffort;
           if (!threadId) {
             throw new Error("Codex App Server did not return a thread id.");
           }
           this.logger.debug(
-            `codex turn thread created run=${params.runId} thread=${threadId} model=${threadModel || "<none>"} reasoningEffort=${threadReasoningEffort || "<none>"}`,
+            `codex turn thread created run=${params.runId} reason=${reason} thread=${threadId} model=${threadModel || "<none>"} reasoningEffort=${threadReasoningEffort || "<none>"}`,
           );
-          if (params.serviceTier || params.approvalPolicy || params.sandbox) {
+          const resumePayload = buildThreadResumePayloads({
+            threadId,
+            serviceTier: params.serviceTier,
+            approvalPolicy: params.approvalPolicy,
+            sandbox: params.sandbox,
+          })[0] as Record<string, unknown>;
+
+          try {
             const resumed = await requestWithFallbacks({
               client,
               methods: ["thread/resume"],
-              payloads: buildThreadResumePayloads({
-                threadId,
-                serviceTier: params.serviceTier,
-                approvalPolicy: params.approvalPolicy,
-                sandbox: params.sandbox,
-              }),
+              payloads: [resumePayload],
               timeoutMs: this.settings.requestTimeoutMs,
             });
             const resumedState = extractThreadState(resumed);
             threadModel = resumedState.model?.trim() || threadModel;
             threadReasoningEffort =
               resumedState.reasoningEffort?.trim() || threadReasoningEffort;
+          } catch (error) {
+            if (!isMissingThreadError(error)) {
+              throw error;
+            }
+            this.logger.warn(
+              `codex turn created thread candidate not yet materialized; proceeding with candidate run=${params.runId} candidate=${threadId}: ${String(error)}`,
+            );
           }
+        };
+
+        if (!threadId) {
+          await createFreshThread("initial");
         } else {
+          let missingBoundThread = false;
+          let boundThreadNotMaterialized = false;
           const resumed = await requestWithFallbacks({
             client,
             methods: ["thread/resume"],
@@ -3553,14 +3653,44 @@ export class CodexAppServerClient {
               sandbox: params.sandbox,
             }),
             timeoutMs: this.settings.requestTimeoutMs,
-          }).catch(() => undefined);
-          const resumedState = resumed ? extractThreadState(resumed) : undefined;
-          threadModel = resumedState?.model?.trim() || threadModel;
-          threadReasoningEffort =
-            resumedState?.reasoningEffort?.trim() || threadReasoningEffort;
-          this.logger.debug(
-            `codex turn thread resumed run=${params.runId} thread=${threadId} model=${threadModel || "<none>"} reasoningEffort=${threadReasoningEffort || "<none>"}`,
-          );
+          }).catch((error) => {
+            if (isMissingThreadError(error)) {
+              if (isPreMaterializationThreadError(error)) {
+                boundThreadNotMaterialized = true;
+                this.logger.warn(
+                  `codex turn bound thread not yet materialized during resume run=${params.runId} thread=${threadId}: ${String(error)}`,
+                );
+                return undefined;
+              }
+              missingBoundThread = true;
+              this.logger.warn(
+                `codex turn bound thread missing during resume run=${params.runId} thread=${threadId}: ${String(error)}`,
+              );
+              return undefined;
+            }
+            this.logger.warn(
+              `codex turn resume failed run=${params.runId} thread=${threadId}: ${String(error)}`,
+            );
+            return undefined;
+          });
+          if (missingBoundThread) {
+            threadId = "";
+            await createFreshThread("missing-bound-thread");
+          } else {
+            const resumedState = resumed ? extractThreadState(resumed) : undefined;
+            threadModel = resumedState?.model?.trim() || threadModel;
+            threadReasoningEffort =
+              resumedState?.reasoningEffort?.trim() || threadReasoningEffort;
+            if (boundThreadNotMaterialized) {
+              this.logger.debug(
+                `codex turn thread resume skipped pending materialization run=${params.runId} thread=${threadId}`,
+              );
+            } else {
+              this.logger.debug(
+                `codex turn thread resumed run=${params.runId} thread=${threadId} model=${threadModel || "<none>"} reasoningEffort=${threadReasoningEffort || "<none>"}`,
+              );
+            }
+          }
         }
         const synthesizedDefaultMode = buildDefaultCollaborationMode({
           model: params.model?.trim() || threadModel,
@@ -3570,7 +3700,6 @@ export class CodexAppServerClient {
         const turnStartPayloads = buildTurnStartPayloads({
           threadId,
           prompt: params.prompt,
-          input: params.input,
           model: params.model,
           serviceTier: params.serviceTier,
           collaborationMode,
@@ -3587,12 +3716,50 @@ export class CodexAppServerClient {
             `codex turn start omitted collaboration mode payload run=${params.runId} thread=${threadId} requestedMode=${collaborationMode.mode} requestedModel=${params.model?.trim() || "<none>"} threadModel=${threadModel || "<none>"}`,
           );
         }
-        const started = await requestWithFallbacks({
-          client,
-          methods: ["turn/start"],
-          payloads: turnStartPayloads,
-          timeoutMs: this.settings.requestTimeoutMs,
-        });
+        let started: unknown;
+        try {
+          started = await requestWithFallbacks({
+            client,
+            methods: ["turn/start"],
+            payloads: turnStartPayloads,
+            timeoutMs: this.settings.requestTimeoutMs,
+          });
+        } catch (error) {
+          if (threadId && isMissingThreadError(error)) {
+            if (isPreMaterializationThreadError(error)) {
+              this.logger.warn(
+                `codex turn start received pre-materialization thread error run=${params.runId} thread=${threadId}; retrying same thread`,
+              );
+              started = await requestWithFallbacks({
+                client,
+                methods: ["turn/start"],
+                payloads: turnStartPayloads,
+                timeoutMs: this.settings.requestTimeoutMs,
+              });
+            } else {
+              this.logger.warn(
+                `codex turn start failed due to missing thread run=${params.runId} staleThread=${threadId}: ${String(error)}`,
+              );
+              await createFreshThread("missing-bound-thread");
+              const retryTurnStartPayloads = buildTurnStartPayloads({
+                threadId,
+                prompt: params.prompt,
+                model: params.model,
+                serviceTier: params.serviceTier,
+                collaborationMode,
+                collaborationFallbackModel: params.model?.trim() || threadModel,
+              });
+              started = await requestWithFallbacks({
+                client,
+                methods: ["turn/start"],
+                payloads: retryTurnStartPayloads,
+                timeoutMs: this.settings.requestTimeoutMs,
+              });
+            }
+          } else {
+            throw error;
+          }
+        }
         const startedIds = extractIds(started);
         threadId ||= startedIds.threadId ?? "";
         turnId ||= startedIds.runId ?? "";

@@ -13,6 +13,8 @@ export const COMMANDS = [
   ["cas_fast", "Toggle or inspect fast mode for the current Codex binding."],
   ["cas_model", "List or switch the Codex model for the current binding."],
   ["cas_permissions", "Show Codex permissions and account status."],
+  ["cas_reply", "Submit a pending Codex input choice by number or label."],
+  ["cas_q", "Answer a pending Codex questionnaire in text mode."],
   ["cas_init", "Forward /init to Codex."],
   ["cas_diff", "Forward /diff to Codex."],
   ["cas_rename", "Rename the Codex thread and optionally sync the conversation name."],
