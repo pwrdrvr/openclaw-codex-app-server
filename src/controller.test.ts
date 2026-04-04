@@ -772,7 +772,7 @@ describe("Discord controller flows", () => {
       }),
     );
 
-    expect(reply.text).not.toContain("No Codex thread matched");
+    expect(reply).toEqual({});
     expect(clientMock.listThreads).toHaveBeenNthCalledWith(1, expect.objectContaining({
       workspaceDir: "/repo/openclaw",
       filter: targetThreadId,
@@ -976,6 +976,7 @@ describe("Discord controller flows", () => {
       sessionKey: undefined,
       workspaceDir: "/repo/openclaw",
       model: undefined,
+      strictNew: true,
     });
     expect(requestConversationBinding).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1079,6 +1080,7 @@ describe("Discord controller flows", () => {
       sessionKey: undefined,
       workspaceDir: path.join(os.homedir(), "github/openclaw"),
       model: undefined,
+      strictNew: true,
     });
   });
 
@@ -1980,6 +1982,7 @@ describe("Discord controller flows", () => {
         to: "user:ou_user_1",
         messageThreadId: undefined,
         requestConversationBinding: undefined,
+        getCurrentConversationBinding: undefined,
       }),
     );
 
@@ -3996,6 +3999,7 @@ describe("Discord controller flows", () => {
       sessionKey: undefined,
       workspaceDir: "/repo/openclaw",
       model: undefined,
+      strictNew: true,
     });
     expect(requestConversationBinding).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -4059,6 +4063,7 @@ describe("Discord controller flows", () => {
       sessionKey: undefined,
       workspaceDir: "/repo/openclaw",
       model: "gpt-5.3-codex-spark",
+      strictNew: true,
     });
     const binding = (controller as any).store.getBinding({
       channel: "telegram",

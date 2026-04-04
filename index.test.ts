@@ -38,7 +38,7 @@ describe("plugin registration", () => {
     expect(api.registerInteractiveHandler).toHaveBeenCalledTimes(2);
     expect(api.registerCommand).toHaveBeenCalled();
     expect(api.registerCommand.mock.calls.map(([params]) => params.name)).toEqual(
-      COMMANDS.map(([name]) => name),
+      [...COMMANDS.map(([name]) => name), "cas_click"],
     );
   });
 

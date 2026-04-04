@@ -1106,6 +1106,8 @@ function applyBindingPreferencesToThreadState(
   };
   const nextState: ThreadState = {
     ...baseState,
+    threadName: baseState.threadName?.trim() || binding?.threadTitle?.trim(),
+    cwd: baseState.cwd?.trim() || binding?.workspaceDir?.trim(),
     model: preferredModel || baseState.model,
     serviceTier: preferredServiceTier ?? baseState.serviceTier,
     approvalPolicy: permissions.approvalPolicy || baseState.approvalPolicy,
@@ -2440,7 +2442,12 @@ export class CodexPluginController {
       conversation && currentBinding && !existingBinding
         ? await this.hydrateApprovedBinding(conversation)
         : null;
-    const binding = existingBinding ?? hydratedBinding?.binding ?? null;
+    const binding =
+      conversation && bindingApi.getCurrentConversationBinding
+        ? currentBinding
+          ? existingBinding ?? hydratedBinding?.binding ?? null
+          : null
+        : existingBinding ?? hydratedBinding?.binding ?? null;
     const args = ctx.args?.trim() ?? "";
     const normalizedArgs = normalizeOptionDashes(args).trim();
     if (normalizedArgs === "help" || normalizedArgs === "--help") {
@@ -2739,7 +2746,7 @@ export class CodexPluginController {
       }
       await this.sendBoundConversationNotifications(conversation);
       if (isFeishuChannel(channel)) {
-        return await this.buildFeishuBoundConversationReply(conversation);
+        return {};
       }
       return {};
     }
@@ -2785,7 +2792,7 @@ export class CodexPluginController {
       }
       await this.sendBoundConversationNotifications(conversation);
       if (isFeishuChannel(channel)) {
-        return await this.buildFeishuBoundConversationReply(conversation);
+        return {};
       }
       return {};
     }
@@ -2893,7 +2900,7 @@ export class CodexPluginController {
     }
     await this.sendBoundConversationNotifications(conversation);
     if (isFeishuChannel(channel)) {
-      return await this.buildFeishuBoundConversationReply(conversation);
+      return {};
     }
     return {};
   }
@@ -7486,13 +7493,6 @@ export class CodexPluginController {
     } catch (error) {
       this.api.logger.warn(`codex bound status card send failed: ${String(error)}`);
     }
-  }
-
-  private async buildFeishuBoundConversationReply(
-    conversation: ConversationTarget | ConversationRef,
-  ): Promise<ReplyPayload> {
-    const messages = await this.buildBoundConversationMessages(conversation);
-    return { text: messages.filter(Boolean).join("\n\n") };
   }
 
   private async sendStatusCardCommandReply(
