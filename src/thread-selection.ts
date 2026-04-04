@@ -1,7 +1,6 @@
 import os from "node:os";
 import path from "node:path";
 import { formatCommandUsage } from "./help.js";
-import { getThreadNormalizedTitle } from "./thread-display.js";
 import type { ThreadSummary } from "./types.js";
 
 export type ParsedThreadSelectionArgs = {
@@ -9,6 +8,7 @@ export type ParsedThreadSelectionArgs = {
   listProjects: boolean;
   startNew: boolean;
   syncTopic: boolean;
+  page?: number;
   cwd?: string;
   requestedModel?: string;
   requestedFast?: boolean;
@@ -28,6 +28,43 @@ function normalizeOptionDashes(text: string): string {
     .replace(/[\u2010-\u2015\u2212]/g, "-");
 }
 
+function unwrapPairedDelimiters(value: string): string {
+  let result = value.trim();
+  const pairs: Array<[string, string]> = [
+    ["<", ">"],
+    ["＜", "＞"],
+    ["《", "》"],
+    ["`", "`"],
+  ];
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [left, right] of pairs) {
+      if (result.startsWith(left) && result.endsWith(right) && result.length > left.length + right.length) {
+        result = result.slice(left.length, result.length - right.length).trim();
+        changed = true;
+      }
+    }
+  }
+  return result;
+}
+
+function isLikelyThreadId(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.trim());
+}
+
+function normalizeThreadSelectionQuery(rawQuery: string): string {
+  let query = unwrapPairedDelimiters(rawQuery);
+  const labeledMatch = query.match(/^(?:thread\s*id|id)\s*[:：]\s*(.+)$/i);
+  if (labeledMatch?.[1]) {
+    const candidate = unwrapPairedDelimiters(labeledMatch[1]);
+    if (isLikelyThreadId(candidate)) {
+      return candidate;
+    }
+  }
+  return query;
+}
+
 export function parseThreadSelectionArgs(args: string): ParsedThreadSelectionArgs {
   const tokens = normalizeOptionDashes(args)
     .split(/\s+/)
@@ -37,6 +74,7 @@ export function parseThreadSelectionArgs(args: string): ParsedThreadSelectionArg
   let listProjects = false;
   let startNew = false;
   let syncTopic = false;
+  let page: number | undefined;
   let cwd: string | undefined;
   let requestedModel: string | undefined;
   let requestedFast: boolean | undefined;
@@ -60,6 +98,22 @@ export function parseThreadSelectionArgs(args: string): ParsedThreadSelectionArg
     }
     if (token === "--sync") {
       syncTopic = true;
+      continue;
+    }
+    if (token === "--page" || token.startsWith("--page=")) {
+      const rawPageValue =
+        token === "--page"
+          ? tokens[index + 1]?.trim()
+          : token.slice("--page=".length).trim();
+      const parsedPage = Number(rawPageValue);
+      if (!rawPageValue || !Number.isInteger(parsedPage) || parsedPage < 1) {
+        error = "Usage: /cas_resume [--projects|-p] [--new [project]] [--all|-a] [--cwd <path>] [--page <number>=1+] [--sync] [--model <name>] [--fast|--no-fast] [--yolo|--no-yolo] [filter]";
+        break;
+      }
+      page = parsedPage - 1;
+      if (token === "--page") {
+        index += 1;
+      }
       continue;
     }
     if (token === "--fast") {
@@ -106,12 +160,13 @@ export function parseThreadSelectionArgs(args: string): ParsedThreadSelectionArg
     listProjects,
     startNew,
     syncTopic,
+    page,
     cwd,
     requestedModel,
     requestedFast,
     requestedYolo,
     error,
-    query: queryTokens.join(" ").trim(),
+    query: normalizeThreadSelectionQuery(queryTokens.join(" ").trim()),
   };
 }
 
@@ -141,7 +196,7 @@ export function selectThreadFromMatches(
   const loweredQuery = trimmedQuery.toLowerCase();
   const exactMatch =
     threads.find((thread) => thread.threadId === trimmedQuery) ??
-    threads.find((thread) => getThreadNormalizedTitle(thread).toLowerCase() === loweredQuery);
+    threads.find((thread) => thread.title?.trim().toLowerCase() === loweredQuery);
 
   if (exactMatch) {
     return { kind: "unique", thread: exactMatch };

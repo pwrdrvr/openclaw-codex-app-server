@@ -2,7 +2,8 @@ import { execFile } from "node:child_process";
 import { existsSync, promises as fs } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import type {
   PluginConversationBindingResolvedEvent,
@@ -50,6 +51,7 @@ import {
   REASONING_EFFORT_OPTIONS,
 } from "./model-capabilities.js";
 import { formatCommandUsage, renderCommandHelpText } from "./help.js";
+import { COMMANDS } from "./commands.js";
 import type {
   AccountSummary,
   CollaborationMode,
@@ -57,6 +59,7 @@ import type {
   ConversationPreferences,
   InteractiveMessageRef,
   PermissionsMode,
+  ThreadSummary,
   ThreadState,
   TurnTerminalError,
 } from "./types.js";
@@ -75,6 +78,7 @@ import {
 } from "./state.js";
 import {
   parseThreadSelectionArgs,
+  type ParsedThreadSelectionArgs,
   expandHomeDir,
   selectThreadFromMatches,
 } from "./thread-selection.js";
@@ -82,6 +86,7 @@ import {
   filterThreadsByProjectName,
   getProjectName,
   listProjects,
+  type ProjectSummary,
   paginateItems,
 } from "./thread-picker.js";
 import {
@@ -246,6 +251,8 @@ type DiscordOutboundAdapter = {
   }) => Promise<{ messageId: string; channelId?: string }>;
 };
 const MAX_TEXT_ATTACHMENT_CHARS = 16_000;
+const COMMAND_NAME_SET = new Set<string>(COMMANDS.map(([name]) => name));
+const INTERNAL_FEISHU_INBOUND_COMMAND_SET = new Set<string>(["cas_click"]);
 const PLUGIN_VERSION = (() => {
   try {
     const packageJson = require("../package.json") as { version?: unknown };
@@ -278,6 +285,7 @@ function dedupeSkillsByName(skills: import("./types.js").SkillSummary[]): import
 type PickerRender = {
   text: string;
   buttons: PluginInteractiveButtons | undefined;
+  feishuText?: string;
 };
 
 type StatusCardRender = {
@@ -312,6 +320,9 @@ type PickerResponders = {
 };
 
 const DELAYED_QUESTIONNAIRE_NOTE_THRESHOLD_MS = 15 * 60_000;
+const FEISHU_CARD_CALLBACK_ACTION_ID = "openclaw.codex.callback";
+const FEISHU_ASSISTANT_DELTA_THROTTLE_MS = 1_200;
+const FEISHU_ASSISTANT_DELTA_MIN_CHARS = 24;
 
 function formatElapsedDuration(elapsedMs: number): string {
   const totalMinutes = Math.max(1, Math.round(elapsedMs / 60_000));
@@ -369,6 +380,11 @@ function isDiscordChannel(channel: string): boolean {
   return channel.trim().toLowerCase() === "discord";
 }
 
+function isFeishuChannel(channel: string): boolean {
+  const normalized = channel.trim().toLowerCase();
+  return normalized === "feishu" || normalized === "lark";
+}
+
 const IMAGE_FILE_EXTENSIONS = new Set([
   ".png",
   ".jpg",
@@ -385,6 +401,10 @@ const IMAGE_FILE_EXTENSIONS = new Set([
 
 function buildPlainReply(text: string): ReplyPayload {
   return { text };
+}
+
+function buildSupportedConversationRequiredReply(): ReplyPayload {
+  return { text: "This command needs a Telegram, Discord, or Feishu conversation." };
 }
 
 function normalizeTelegramChatId(raw: string | undefined): string | undefined {
@@ -538,6 +558,109 @@ function resolveDiscordCommandConversation(
   };
 }
 
+function normalizeFeishuTargetId(raw: string | undefined): string | undefined {
+  if (!raw) {
+    return undefined;
+  }
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const withoutProvider = trimmed.replace(/^(feishu|lark):/i, "");
+  return withoutProvider.replace(/^(chat|channel|group|dm|user):/i, "");
+}
+
+function normalizeFeishuConversationId(raw: string | undefined): string | undefined {
+  const normalized = normalizeFeishuTargetId(raw);
+  if (!normalized) {
+    return undefined;
+  }
+  return normalized;
+}
+
+function isLikelyFeishuChatId(raw: string | undefined): boolean {
+  const normalized = normalizeFeishuTargetId(raw);
+  if (!normalized) {
+    return false;
+  }
+  return normalized.startsWith("oc_");
+}
+
+function isLikelyFeishuUserId(raw: string | undefined): boolean {
+  const normalized = normalizeFeishuTargetId(raw);
+  if (!normalized) {
+    return false;
+  }
+  return normalized.startsWith("ou_") || normalized.startsWith("on_");
+}
+
+function pickFeishuConversationIdFromInbound(event: {
+  conversationId?: string;
+  parentConversationId?: string;
+  metadata?: Record<string, unknown>;
+}): string | undefined {
+  const normalizedConversation = normalizeFeishuConversationId(event.conversationId);
+  const normalizedParent = normalizeFeishuTargetId(event.parentConversationId);
+  const metadata = event.metadata;
+  const metadataCandidates = [
+    typeof metadata?.originatingTo === "string" ? metadata.originatingTo : undefined,
+    typeof metadata?.chatId === "string" ? metadata.chatId : undefined,
+    typeof metadata?.conversationId === "string" ? metadata.conversationId : undefined,
+    typeof metadata?.groupId === "string" ? metadata.groupId : undefined,
+    typeof metadata?.to === "string" ? metadata.to : undefined,
+    typeof metadata?.from === "string" ? metadata.from : undefined,
+    typeof metadata?.channelId === "string" ? metadata.channelId : undefined,
+  ]
+    .map((candidate) => normalizeFeishuTargetId(candidate))
+    .filter((candidate): candidate is string => Boolean(candidate));
+
+  const preferredChatId = [normalizedParent, ...metadataCandidates, normalizedConversation].find((candidate) =>
+    isLikelyFeishuChatId(candidate),
+  );
+  if (preferredChatId) {
+    return preferredChatId;
+  }
+
+  if (normalizedConversation && !isLikelyFeishuUserId(normalizedConversation)) {
+    return normalizedConversation;
+  }
+  if (normalizedParent) {
+    return normalizedParent;
+  }
+  return metadataCandidates.find((candidate) => !isLikelyFeishuUserId(candidate)) ?? normalizedConversation;
+}
+
+function getCommandThreadId(ctx: PluginCommandContext): string | number | undefined {
+  if (ctx.messageThreadId != null && `${ctx.messageThreadId}`.trim()) {
+    return ctx.messageThreadId;
+  }
+  const raw = (ctx as Record<string, unknown>).threadId;
+  if (typeof raw === "string" || typeof raw === "number") {
+    const trimmed = `${raw}`.trim();
+    return trimmed ? raw : undefined;
+  }
+  return undefined;
+}
+
+function normalizeConversationThreadId(value: unknown): string | number | undefined {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : undefined;
+  }
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const numeric = Number(trimmed);
+  return Number.isFinite(numeric) && `${numeric}` === trimmed ? numeric : trimmed;
+}
+
+function getTelegramThreadId(threadId: string | number | undefined): number | undefined {
+  return typeof threadId === "number" ? threadId : undefined;
+}
+
 function toConversationTargetFromCommand(ctx: PluginCommandContext): ConversationTarget | null {
   if (isTelegramChannel(ctx.channel)) {
     const chatId = normalizeTelegramChatId(ctx.to ?? ctx.from ?? ctx.senderId);
@@ -556,6 +679,60 @@ function toConversationTargetFromCommand(ctx: PluginCommandContext): Conversatio
   if (isDiscordChannel(ctx.channel)) {
     return resolveDiscordCommandConversation(ctx);
   }
+  if (isFeishuChannel(ctx.channel)) {
+    const originatingTo = (() => {
+      const commandCtx = ctx as PluginCommandContext & {
+        originatingTo?: string;
+        OriginatingTo?: string;
+      };
+      const lowerCamel = typeof commandCtx.originatingTo === "string" ? commandCtx.originatingTo.trim() : "";
+      if (lowerCamel) {
+        return lowerCamel;
+      }
+      const legacy = typeof commandCtx.OriginatingTo === "string" ? commandCtx.OriginatingTo.trim() : "";
+      return legacy || undefined;
+    })();
+    const threadId = getCommandThreadId(ctx);
+    const normalizedChannelId =
+      typeof ctx.channelId === "string" && ctx.channelId.trim()
+        ? normalizeFeishuTargetId(ctx.channelId)
+        : undefined;
+    const channelIdAsConversation =
+      normalizedChannelId && !isFeishuChannel(normalizedChannelId)
+        ? normalizedChannelId
+        : undefined;
+    const parentConversationId = normalizeFeishuConversationId(
+      originatingTo ??
+      ctx.to ??
+      ctx.from ??
+      channelIdAsConversation,
+    );
+    if (threadId != null && parentConversationId) {
+      return {
+        channel: "feishu",
+        accountId: ctx.accountId ?? "default",
+        conversationId: `${parentConversationId}:topic:${String(threadId).trim()}`,
+        parentConversationId,
+        threadId,
+      };
+    }
+    const conversationId = normalizeFeishuConversationId(
+      originatingTo ??
+      ctx.to ??
+      ctx.from ??
+      channelIdAsConversation ??
+      ctx.senderId,
+    );
+    if (!conversationId) {
+      return null;
+    }
+    return {
+      channel: "feishu",
+      accountId: ctx.accountId ?? "default",
+      conversationId,
+      threadId,
+    };
+  }
   return null;
 }
 
@@ -568,10 +745,14 @@ function toConversationTargetFromInbound(event: {
   isGroup?: boolean;
   metadata?: Record<string, unknown>;
 }): ConversationTarget | null {
-  if (!event.accountId || !event.conversationId) {
+  if (!event.conversationId) {
     return null;
   }
   const channel = event.channel.trim().toLowerCase();
+  const accountId = event.accountId?.trim() || (channel === "feishu" ? "default" : undefined);
+  if (!accountId) {
+    return null;
+  }
   const conversationIdRaw = event.conversationId?.trim();
   const conversationId =
     channel === "discord"
@@ -596,9 +777,35 @@ function toConversationTargetFromInbound(event: {
   if (!conversationId) {
     return null;
   }
+  if (channel === "feishu") {
+    const normalizedParent = normalizeFeishuTargetId(event.parentConversationId);
+    const normalizedConversation = pickFeishuConversationIdFromInbound({
+      conversationId: conversationIdRaw,
+      parentConversationId: event.parentConversationId,
+      metadata: event.metadata,
+    });
+    const normalizedThreadId =
+      typeof event.threadId === "string" || typeof event.threadId === "number"
+        ? `${event.threadId}`.trim() || undefined
+        : undefined;
+    const resolvedConversationId =
+      normalizedThreadId && normalizedParent
+        ? `${normalizedParent}:topic:${normalizedThreadId}`
+        : normalizedConversation;
+    if (!resolvedConversationId) {
+      return null;
+    }
+    return {
+      channel: "feishu",
+      accountId,
+      conversationId: resolvedConversationId,
+      parentConversationId: normalizedParent,
+      threadId: normalizedThreadId,
+    };
+  }
   return {
     channel,
-    accountId: event.accountId,
+    accountId,
     conversationId,
     parentConversationId,
     threadId:
@@ -889,6 +1096,32 @@ function extractReplyButtons(reply: ReplyPayload): PluginInteractiveButtons | un
   return rows.length > 0 ? rows : undefined;
 }
 
+function formatPendingInputText(state: PendingInputState): string {
+  const lines = [state.promptText ?? "Codex needs input."];
+  for (let index = 0; index < (state.actions ?? []).length; index += 1) {
+    const action = state.actions?.[index];
+    if (!action) {
+      continue;
+    }
+    lines.push(`${index + 1}. ${action.label}`);
+  }
+  lines.push("Reply with /cas_reply <number> to choose an action.");
+  return lines.join("\n");
+}
+
+function formatPendingQuestionnaireText(state: PendingInputState): string {
+  const questionnaire = state.questionnaire;
+  if (!questionnaire) {
+    return "That Codex questionnaire is no longer available. Please retry.";
+  }
+  return [
+    formatPendingQuestionnairePrompt(questionnaire),
+    "Reply with /cas_q <option-key|number> to select an option.",
+    "Reply with /cas_q prev or /cas_q next to navigate.",
+    "Reply with /cas_q freeform to answer the current question in free text.",
+  ].join("\n\n");
+}
+
 function buildTelegramReplyMarkup(buttons?: PluginInteractiveButtons): { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> } | undefined {
   if (!buttons || buttons.length === 0) {
     return undefined;
@@ -901,6 +1134,59 @@ function buildTelegramReplyMarkup(buttons?: PluginInteractiveButtons): { inline_
       })),
     ),
   };
+}
+
+function parseInboundCodexCommand(content: string): { commandName: string; args: string } | null {
+  const normalized = normalizeOptionDashes(content).trim();
+  if (!normalized.startsWith("/")) {
+    return null;
+  }
+  const match = normalized.match(/^\/([A-Za-z0-9_]+)(?:\s+([\s\S]*))?$/);
+  if (!match) {
+    return null;
+  }
+  const commandName = match[1]?.trim().toLowerCase();
+  if (!commandName || (!COMMAND_NAME_SET.has(commandName) && !INTERNAL_FEISHU_INBOUND_COMMAND_SET.has(commandName))) {
+    return null;
+  }
+  return {
+    commandName,
+    args: match[2]?.trim() ?? "",
+  };
+}
+
+function extractCallbackTokenFromData(callbackData: string): string | undefined {
+  const trimmed = callbackData.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  if (trimmed.startsWith(`${INTERACTIVE_NAMESPACE}:`)) {
+    const token = trimmed.slice(`${INTERACTIVE_NAMESPACE}:`.length).trim();
+    return token || undefined;
+  }
+  return undefined;
+}
+
+function getFeishuChatContextId(conversation: ConversationRef | ConversationTarget): string | undefined {
+  const rawConversationId =
+    conversation.parentConversationId ??
+    conversation.conversationId.split(":topic:", 1)[0] ??
+    conversation.conversationId;
+  return normalizeFeishuConversationId(rawConversationId);
+}
+
+function isSameFeishuChatConversation(
+  left: ConversationRef | ConversationTarget,
+  right: ConversationRef | ConversationTarget,
+): boolean {
+  const leftChatId = getFeishuChatContextId(left);
+  const rightChatId = getFeishuChatContextId(right);
+  return Boolean(
+    left.accountId?.trim() === right.accountId?.trim() &&
+      leftChatId &&
+      rightChatId &&
+      leftChatId === rightChatId,
+  );
 }
 function parseFastAction(
   argsText: string,
@@ -1088,6 +1374,36 @@ function formatFailureText(kind: "plan" | "review" | "compact", error: unknown):
   return `Codex ${kind} failed: ${message}`;
 }
 
+function formatStructuredError(error: unknown): string {
+  if (!error || typeof error !== "object") {
+    return String(error);
+  }
+  const record = error as {
+    message?: unknown;
+    response?: {
+      status?: unknown;
+      data?: unknown;
+    };
+  };
+  const message = typeof record.message === "string" ? record.message : String(error);
+  const response = record.response;
+  if (!response || typeof response !== "object") {
+    return message;
+  }
+  const details: string[] = [];
+  if (typeof response.status === "number" || typeof response.status === "string") {
+    details.push(`status=${String(response.status)}`);
+  }
+  if (response.data !== undefined) {
+    try {
+      details.push(`data=${JSON.stringify(response.data)}`);
+    } catch {
+      details.push(`data=${String(response.data)}`);
+    }
+  }
+  return details.length ? `${message} (${details.join(" ")})` : message;
+}
+
 function formatInterruptedText(kind: "plan" | "review"): string {
   return `Codex ${kind} was interrupted before it finished.`;
 }
@@ -1259,6 +1575,7 @@ function formatThreadSelectionFlags(parsed: ReturnType<typeof parseThreadSelecti
     parsed.includeAll ? "--all" : "",
     parsed.listProjects ? "--projects" : "",
     parsed.startNew ? "--new" : "",
+    typeof parsed.page === "number" && parsed.page > 0 ? `--page ${parsed.page + 1}` : "",
     parsed.syncTopic ? "--sync" : "",
     typeof parsed.requestedFast === "boolean" ? (parsed.requestedFast ? "--fast" : "--no-fast") : "",
     typeof parsed.requestedYolo === "boolean" ? (parsed.requestedYolo ? "--yolo" : "--no-yolo") : "",
@@ -1267,6 +1584,189 @@ function formatThreadSelectionFlags(parsed: ReturnType<typeof parseThreadSelecti
   ]
     .filter(Boolean)
     .join(" ");
+}
+
+function buildCasResumeCommandFromParsed(params: {
+  parsed: ParsedThreadSelectionArgs;
+  mode: "threads" | "projects" | "new-projects";
+  page: number;
+  query?: string;
+}): string {
+  const flags: string[] = [];
+  if (params.mode === "projects") {
+    flags.push("--projects");
+  } else if (params.mode === "new-projects") {
+    flags.push("--new", "--projects");
+  } else if (params.parsed.includeAll) {
+    flags.push("--all");
+  }
+  if (params.parsed.cwd) {
+    flags.push("--cwd", params.parsed.cwd);
+  }
+  if (params.page > 0) {
+    flags.push("--page", String(params.page + 1));
+  }
+  if (params.parsed.syncTopic) {
+    flags.push("--sync");
+  }
+  if (typeof params.parsed.requestedFast === "boolean") {
+    flags.push(params.parsed.requestedFast ? "--fast" : "--no-fast");
+  }
+  if (typeof params.parsed.requestedYolo === "boolean") {
+    flags.push(params.parsed.requestedYolo ? "--yolo" : "--no-yolo");
+  }
+  if (params.parsed.requestedModel) {
+    flags.push("--model", params.parsed.requestedModel);
+  }
+  const query = params.query?.trim();
+  if (query) {
+    flags.push(query);
+  }
+  return `/cas_resume${flags.length > 0 ? ` ${flags.join(" ")}` : ""}`;
+}
+
+function formatFeishuThreadPickerText(params: {
+  introText: string;
+  threads: ThreadSummary[];
+  parsed: ParsedThreadSelectionArgs;
+  page: number;
+  totalPages: number;
+  query?: string;
+}): string {
+  const normalizedIntro = params.introText
+    .replace(
+      /^Tap a thread to resume it\..*$/m,
+      "Use card buttons below when available. If buttons are unavailable, run `/cas_resume <threadId>`.",
+    )
+    .replace(
+      /^Tap a project to show only that project's threads\..*$/m,
+      "Use card buttons below when available. If buttons are unavailable, run `/cas_resume --projects`.",
+    );
+  const lines = [normalizedIntro];
+  if (params.threads.length > 0) {
+    lines.push("", "Threads on this page:");
+    params.threads.forEach((thread, index) => {
+      lines.push(
+        `[${index + 1}] ${getThreadDisplayTitle(thread)} | id: ${thread.threadId} | project: ${thread.projectKey?.trim() || "unknown"}`,
+      );
+    });
+  } else {
+    lines.push("", "No threads on this page.");
+  }
+  if (params.totalPages > 1) {
+    lines.push("");
+    if (params.page > 0) {
+      lines.push(
+        `Prev page: ${buildCasResumeCommandFromParsed({
+          parsed: params.parsed,
+          mode: "threads",
+          page: params.page - 1,
+          query: params.query,
+        })}`,
+      );
+    }
+    if (params.page + 1 < params.totalPages) {
+      lines.push(
+        `Next page: ${buildCasResumeCommandFromParsed({
+          parsed: params.parsed,
+          mode: "threads",
+          page: params.page + 1,
+          query: params.query,
+        })}`,
+      );
+    }
+  }
+  lines.push(
+    "",
+    "Bind exact thread: /cas_resume <threadId>",
+    "Browse projects: /cas_resume --projects",
+    "Start new thread: /cas_resume --new <project-path-or-name>",
+  );
+  return lines.join("\n");
+}
+
+function formatFeishuProjectPickerText(params: {
+  introText: string;
+  projects: ProjectSummary[];
+  parsed: ParsedThreadSelectionArgs;
+  page: number;
+  totalPages: number;
+  action: "resume-thread" | "start-new-thread";
+}): string {
+  const normalizedIntro = params.introText
+    .replace(
+      /^Tap a project to start a fresh Codex thread there\..*$/m,
+      "Use card buttons below when available. If buttons are unavailable, run `/cas_resume --new <project-path-or-name>`.",
+    )
+    .replace(
+      /^Tap a project to show only that project's threads\..*$/m,
+      "Use card buttons below when available. If buttons are unavailable, run `/cas_resume --projects`.",
+    );
+  const lines = [normalizedIntro];
+  if (params.projects.length > 0) {
+    lines.push("", "Projects on this page:");
+    params.projects.forEach((project, index) => {
+      lines.push(`[${index + 1}] ${project.name} (${project.threadCount} threads)`);
+    });
+  } else {
+    lines.push("", "No projects on this page.");
+  }
+  if (params.totalPages > 1) {
+    lines.push("");
+    const mode = params.action === "start-new-thread" ? "new-projects" : "projects";
+    if (params.page > 0) {
+      lines.push(
+        `Prev page: ${buildCasResumeCommandFromParsed({
+          parsed: params.parsed,
+          mode,
+          page: params.page - 1,
+          query: params.parsed.query,
+        })}`,
+      );
+    }
+    if (params.page + 1 < params.totalPages) {
+      lines.push(
+        `Next page: ${buildCasResumeCommandFromParsed({
+          parsed: params.parsed,
+          mode,
+          page: params.page + 1,
+          query: params.parsed.query,
+        })}`,
+      );
+    }
+  }
+  lines.push(
+    "",
+    params.action === "start-new-thread"
+      ? "Start in one project: /cas_resume --new <project-path-or-name>"
+      : "Browse a project: /cas_resume <project-path-or-name>",
+  );
+  return lines.join("\n");
+}
+
+function compactFeishuCardText(text: string): string {
+  const lines = text
+    .split("\n")
+    .map((line) => line.trimEnd());
+  const sectionStartPatterns = [
+    /^Threads on this page:/,
+    /^Projects on this page:/,
+    /^Workspaces on this page:/,
+    /^Bind exact thread:/,
+    /^Bind exact project:/,
+    /^Browse projects:/,
+    /^Start new thread:/,
+  ];
+  const firstSectionIndex = lines.findIndex((line) =>
+    sectionStartPatterns.some((pattern) => pattern.test(line)),
+  );
+  const head = firstSectionIndex >= 0 ? lines.slice(0, firstSectionIndex) : lines;
+  const compact = head.filter((line, index, arr) => !(line.length === 0 && arr[index - 1]?.length === 0));
+  if (compact.length === 0) {
+    return "Use the buttons below to continue.";
+  }
+  compact.push("", "Use the buttons below to continue.");
+  return compact.join("\n").trim();
 }
 
 function buildThreadOnlyName(params: { title?: string; projectKey?: string; threadId: string }): string | undefined {
@@ -1347,6 +1847,27 @@ function listWorkspaceChoices(
     });
 }
 
+function filterThreadsBySelectionQuery<
+  T extends { threadId: string; title?: string; projectKey?: string },
+>(threads: T[], query?: string): T[] {
+  const normalizedQuery = query?.trim().toLowerCase();
+  if (!normalizedQuery) {
+    return [...threads];
+  }
+  return threads.filter((thread) => {
+    const threadId = thread.threadId?.trim().toLowerCase() || "";
+    const title = thread.title?.trim().toLowerCase() || "";
+    const projectPath = thread.projectKey?.trim().toLowerCase() || "";
+    const projectName = getProjectName(thread.projectKey)?.trim().toLowerCase() || "";
+    return (
+      threadId.includes(normalizedQuery) ||
+      title.includes(normalizedQuery) ||
+      projectPath.includes(normalizedQuery) ||
+      projectName.includes(normalizedQuery)
+    );
+  });
+}
+
 function summarizeTextForLog(text: string, maxChars = 120): string {
   const normalized = text.replace(/\s+/g, " ").trim();
   if (!normalized) {
@@ -1364,6 +1885,17 @@ export class CodexPluginController {
   private readonly activeRuns = new Map<string, ActiveRunRecord>();
   private readonly threadChangesCache = new Map<string, Promise<boolean | undefined>>();
   private readonly store;
+  private feishuDirectCardSenderPromise: Promise<
+    | ((params: {
+        cfg: unknown;
+        to: string;
+        card: Record<string, unknown>;
+        accountId?: string;
+        replyInThread?: boolean;
+        replyToMessageId?: string;
+      }) => Promise<unknown>)
+    | null
+  > | null = null;
   private serviceWorkspaceDir?: string;
   private lastRuntimeConfig?: unknown;
   private started = false;
@@ -1417,16 +1949,7 @@ export class CodexPluginController {
       accountId: event.request.conversation.accountId,
       conversationId: event.request.conversation.conversationId,
       parentConversationId: event.request.conversation.parentConversationId,
-      threadId: (() => {
-        if (typeof event.request.conversation.threadId === "number") {
-          return event.request.conversation.threadId;
-        }
-        if (typeof event.request.conversation.threadId !== "string") {
-          return undefined;
-        }
-        const normalized = Number(event.request.conversation.threadId.trim());
-        return Number.isFinite(normalized) ? normalized : undefined;
-      })(),
+      threadId: normalizeConversationThreadId(event.request.conversation.threadId),
     };
     const pending = this.store.getPendingBind(conversation);
     if (!pending) {
@@ -1472,6 +1995,154 @@ export class CodexPluginController {
     ].join(" ");
   }
 
+  private getFeishuContextCandidates(
+    event: Record<string, unknown> | undefined,
+    ctx: Record<string, unknown> | undefined,
+  ): string[] {
+    const metadata =
+      event?.metadata && typeof event.metadata === "object"
+        ? (event.metadata as Record<string, unknown>)
+        : undefined;
+    const candidates = [
+      typeof ctx?.conversationId === "string" ? ctx.conversationId : undefined,
+      typeof ctx?.to === "string" ? ctx.to : undefined,
+      typeof ctx?.from === "string" ? ctx.from : undefined,
+      typeof event?.conversationId === "string" ? event.conversationId : undefined,
+      typeof event?.parentConversationId === "string" ? event.parentConversationId : undefined,
+      typeof event?.to === "string" ? event.to : undefined,
+      typeof event?.from === "string" ? event.from : undefined,
+      typeof event?.originatingTo === "string" ? event.originatingTo : undefined,
+      typeof event?.chatId === "string" ? event.chatId : undefined,
+      typeof metadata?.originatingTo === "string" ? metadata.originatingTo : undefined,
+      typeof metadata?.conversationId === "string" ? metadata.conversationId : undefined,
+      typeof metadata?.parentConversationId === "string" ? metadata.parentConversationId : undefined,
+      typeof metadata?.chatId === "string" ? metadata.chatId : undefined,
+      typeof metadata?.to === "string" ? metadata.to : undefined,
+      typeof metadata?.from === "string" ? metadata.from : undefined,
+    ];
+    return candidates
+      .map((value) => normalizeFeishuTargetId(value))
+      .filter((value): value is string => Boolean(value));
+  }
+
+  private resolveFeishuConversationIdFromContext(
+    event: Record<string, unknown> | undefined,
+    ctx: Record<string, unknown> | undefined,
+    accountId: string,
+  ): string | undefined {
+    const candidates = this.getFeishuContextCandidates(event, ctx);
+    const directChat = candidates.find((candidate) => isLikelyFeishuChatId(candidate));
+    if (directChat) {
+      return directChat;
+    }
+    const directUser = candidates.find((candidate) => isLikelyFeishuUserId(candidate));
+    if (directUser) {
+      const mappedDmConversation = this.store.getFeishuDmConversation({
+        accountId,
+        userId: directUser,
+      });
+      if (mappedDmConversation) {
+        this.api.logger.warn(
+          `codex feishu before_dispatch recovered dm conversation account=${accountId} user=${directUser} conversation=${mappedDmConversation}`,
+        );
+        return mappedDmConversation;
+      }
+      this.api.logger.warn(
+        `codex feishu before_dispatch skipped: non-chat conversationId=${directUser} account=${accountId}`,
+      );
+    }
+    return undefined;
+  }
+
+  private async trackFeishuDmConversation(params: {
+    accountId?: string;
+    conversationId?: string;
+    senderId?: string;
+    to?: string;
+    isGroup?: boolean;
+  }): Promise<void> {
+    const conversationId = normalizeFeishuConversationId(params.conversationId);
+    const senderId = normalizeFeishuTargetId(params.senderId);
+    const to = normalizeFeishuTargetId(params.to);
+    if (!conversationId || !senderId) {
+      return;
+    }
+    if (!isLikelyFeishuChatId(conversationId) || !isLikelyFeishuUserId(senderId)) {
+      return;
+    }
+    if (params.isGroup || (to && !isLikelyFeishuUserId(to))) {
+      return;
+    }
+    await this.store.upsertFeishuDmConversation({
+      accountId: params.accountId?.trim() || "default",
+      userId: senderId,
+      conversationId,
+      updatedAt: Date.now(),
+    });
+  }
+
+  async handleBeforeDispatch(
+    event: Record<string, unknown>,
+    ctx: Record<string, unknown> | undefined,
+  ): Promise<{ handled: boolean }> {
+    if (!this.settings.enabled) {
+      return { handled: false };
+    }
+    const channel =
+      (typeof event.channel === "string" && event.channel.trim()) ||
+      (typeof ctx?.channelId === "string" && ctx.channelId.trim()) ||
+      "";
+    if (!isFeishuChannel(channel)) {
+      return { handled: false };
+    }
+    const contentRaw =
+      (typeof event.content === "string" && event.content) ||
+      (typeof event.body === "string" && event.body) ||
+      "";
+    const content = contentRaw.trim();
+    if (!content || content.startsWith("/")) {
+      return { handled: false };
+    }
+
+    await this.start();
+    const accountId =
+      (typeof ctx?.accountId === "string" && ctx.accountId.trim()) || "default";
+    const conversationId = this.resolveFeishuConversationIdFromContext(event, ctx, accountId);
+    if (!conversationId) {
+      this.api.logger.warn(
+        `codex feishu before_dispatch skipped: missing conversationId account=${accountId} ctxConversation=${typeof ctx?.conversationId === "string" ? ctx.conversationId : "<none>"}`,
+      );
+      return { handled: false };
+    }
+
+    this.api.logger.warn(
+      `codex feishu before_dispatch attempt account=${accountId} conversation=${conversationId} sender=${typeof ctx?.senderId === "string" ? ctx.senderId : "<none>"} prompt="${summarizeTextForLog(content)}"`,
+    );
+    await this.trackFeishuDmConversation({
+      accountId,
+      conversationId,
+      senderId: typeof ctx?.senderId === "string" ? ctx.senderId : undefined,
+      to: typeof ctx?.to === "string" ? ctx.to : undefined,
+      isGroup: Boolean(event.isGroup),
+    });
+    const claimResult = await this.handleInboundClaim({
+      content,
+      channel: "feishu",
+      accountId,
+      conversationId,
+      parentConversationId: conversationId,
+      isGroup: Boolean(event.isGroup),
+      metadata:
+        event.metadata && typeof event.metadata === "object"
+          ? (event.metadata as Record<string, unknown>)
+          : undefined,
+    });
+    this.api.logger.warn(
+      `codex feishu before_dispatch result handled=${claimResult.handled} account=${accountId} conversation=${conversationId}`,
+    );
+    return claimResult;
+  }
+
   async handleInboundClaim(event: {
     content: string;
     channel: string;
@@ -1479,6 +2150,9 @@ export class CodexPluginController {
     conversationId?: string;
     parentConversationId?: string;
     threadId?: string | number;
+    senderId?: string;
+    from?: string;
+    to?: string;
     isGroup?: boolean;
     media?: PluginInboundMedia[];
     metadata?: Record<string, unknown>;
@@ -1491,6 +2165,69 @@ export class CodexPluginController {
       const conversation = toConversationTargetFromInbound(event);
       if (!conversation) {
         return { handled: false };
+      }
+      const fallbackCommand = isFeishuChannel(event.channel)
+        ? parseInboundCodexCommand(event.content)
+        : null;
+      if (fallbackCommand && isFeishuChannel(conversation.channel)) {
+        const metadata = event.metadata && typeof event.metadata === "object"
+          ? event.metadata
+          : undefined;
+        const originatingConversation =
+          conversation.parentConversationId ??
+          conversation.conversationId.split(":topic:", 1)[0] ??
+          conversation.conversationId;
+        const commandContext = {
+          senderId: event.senderId,
+          channel: "feishu",
+          channelId: "feishu",
+          isAuthorizedSender: true,
+          args: fallbackCommand.args,
+          commandBody: `/${fallbackCommand.commandName}${fallbackCommand.args ? ` ${fallbackCommand.args}` : ""}`,
+          config: this.lastRuntimeConfig ?? {},
+          from:
+            event.from ??
+            (typeof metadata?.from === "string" ? metadata.from : undefined) ??
+            (event.senderId ? `feishu:${event.senderId}` : undefined),
+          to:
+            event.to ??
+            (typeof metadata?.to === "string" ? metadata.to : undefined) ??
+            `chat:${originatingConversation}`,
+          originatingTo:
+            typeof metadata?.originatingTo === "string" && metadata.originatingTo.trim()
+              ? metadata.originatingTo.trim()
+              : `chat:${originatingConversation}`,
+          accountId: conversation.accountId,
+          messageThreadId: event.threadId,
+        } as unknown as PluginCommandContext;
+        this.api.logger.warn(
+          `codex feishu inbound command fallback name=${fallbackCommand.commandName} conversation=${conversation.conversationId} sourceConversation=${event.conversationId ?? "<none>"}`,
+        );
+        const reply = await this.handleCommand(fallbackCommand.commandName, commandContext);
+        const replyText = reply.text?.trim() ?? "";
+        const replyButtons = extractReplyButtons(reply);
+        if (replyText || replyButtons?.length) {
+          await this.sendReply(conversation, {
+            text: replyText,
+            buttons: replyButtons,
+          });
+        }
+        return { handled: true };
+      }
+      if (isFeishuChannel(event.channel)) {
+        this.api.logger.warn(
+          `codex feishu inbound resolved account=${conversation.accountId} conversation=${conversation.conversationId} parent=${conversation.parentConversationId ?? "<none>"} sourceConversation=${event.conversationId ?? "<none>"} sourceParent=${event.parentConversationId ?? "<none>"} thread=${event.threadId == null ? "<none>" : String(event.threadId)}`,
+        );
+        await this.trackFeishuDmConversation({
+          accountId: conversation.accountId,
+          conversationId: conversation.parentConversationId ?? conversation.conversationId,
+          senderId: event.senderId,
+          to:
+            event.metadata && typeof event.metadata === "object" && typeof event.metadata.to === "string"
+              ? event.metadata.to
+              : undefined,
+          isGroup: event.isGroup,
+        });
       }
       const input = await buildInboundTurnInput(event);
       const requiresStructuredInput = !isQueueCompatibleTurnInput(event.content, input);
@@ -1505,8 +2242,8 @@ export class CodexPluginController {
           await active.handle.interrupt().catch(() => undefined);
         } else {
           const pending = this.store.getPendingRequestByConversation(conversation);
-          if (pending?.state.questionnaire && !event.content.trim().startsWith("/")) {
-            const handled = await this.handlePendingQuestionnaireFreeformAnswer(
+          if (pending && !event.content.trim().startsWith("/")) {
+            const handled = await this.handlePendingTextReply(
               conversation,
               pending,
               active.handle,
@@ -1870,8 +2607,32 @@ export class CodexPluginController {
   async handleCommand(commandName: string, ctx: PluginCommandContext): Promise<ReplyPayload> {
     await this.start();
     this.lastRuntimeConfig = ctx.config;
+    if (isFeishuChannel(ctx.channel)) {
+      const commandCtx = ctx as PluginCommandContext & {
+        originatingTo?: string;
+        OriginatingTo?: string;
+      };
+      const originatingTo =
+        typeof commandCtx.originatingTo === "string" && commandCtx.originatingTo.trim()
+          ? commandCtx.originatingTo.trim()
+          : typeof commandCtx.OriginatingTo === "string" && commandCtx.OriginatingTo.trim()
+            ? commandCtx.OriginatingTo.trim()
+            : "<none>";
+      this.api.logger.warn(
+        `codex feishu command debug name=${commandName} sender=${ctx.senderId ?? "<none>"} channelId=${typeof ctx.channelId === "string" ? ctx.channelId : "<none>"} from=${ctx.from ?? "<none>"} to=${ctx.to ?? "<none>"} originatingTo=${originatingTo} thread=${ctx.messageThreadId == null ? "<none>" : String(ctx.messageThreadId)}`,
+      );
+    }
     const bindingApi = asScopedBindingApi(ctx);
     const conversation = toConversationTargetFromCommand(ctx);
+    if (conversation && isFeishuChannel(conversation.channel)) {
+      await this.trackFeishuDmConversation({
+        accountId: conversation.accountId,
+        conversationId: conversation.parentConversationId ?? conversation.conversationId,
+        senderId: ctx.senderId,
+        to: ctx.to,
+        isGroup: Boolean((ctx as Record<string, unknown>).isGroup),
+      });
+    }
     const currentBinding =
       conversation && bindingApi.getCurrentConversationBinding
         ? await bindingApi.getCurrentConversationBinding()
@@ -1893,6 +2654,11 @@ export class CodexPluginController {
         `codex discord command /${commandName} from=${ctx.from ?? "<none>"} to=${ctx.to ?? "<none>"} conversation=${conversation?.conversationId ?? "<none>"}`,
       );
     }
+    if (isFeishuChannel(ctx.channel)) {
+      this.api.logger.warn(
+        `codex feishu command resolved name=${commandName} conversation=${conversation?.conversationId ?? "<none>"} parent=${conversation?.parentConversationId ?? "<none>"} localBinding=${existingBinding ? "yes" : "no"} hostBinding=${currentBinding ? "yes" : "no"}`,
+      );
+    }
 
     switch (commandName) {
       case "cas_resume":
@@ -1907,14 +2673,21 @@ export class CodexPluginController {
         );
       case "cas_detach":
         if (!conversation) {
-          return { text: "This command needs a Telegram or Discord conversation." };
+          return buildSupportedConversationRequiredReply();
         }
+        const hadLocalBinding = Boolean(binding);
         const detachResult = await bindingApi.detachConversationBinding?.();
         await this.unbindConversation(conversation);
+        const removed = detachResult?.removed ?? hadLocalBinding;
+        const isFeishuConversation = isFeishuChannel(ctx.channel) || isFeishuChannel(conversation.channel);
         return {
-          text: detachResult?.removed
-            ? "Detached this conversation from Codex."
-            : "This conversation is not currently bound to Codex.",
+          text: removed
+            ? isFeishuConversation
+              ? "Detached this Feishu conversation from Codex. Future messages will fall back to the default codex-agent route."
+              : "Detached this conversation from Codex."
+            : isFeishuConversation
+              ? "This Feishu conversation is not currently bound to Codex."
+              : "This conversation is not currently bound to Codex.",
         };
       case "cas_status":
         return await this.handleStatusCommand(
@@ -1949,6 +2722,12 @@ export class CodexPluginController {
           binding,
           Boolean(currentBinding || binding),
         );
+      case "cas_click":
+        return await this.handleFeishuCardClickCommand(conversation, ctx);
+      case "cas_reply":
+        return await this.handlePendingInputReplyCommand(conversation, args);
+      case "cas_q":
+        return await this.handlePendingQuestionnaireCommand(conversation, args);
       case "cas_init":
         return await this.handlePromptAlias(conversation, binding, args, "/init");
       case "cas_diff":
@@ -1972,10 +2751,16 @@ export class CodexPluginController {
     requestConversationBinding?: PickerResponders["requestConversationBinding"],
   ): Promise<ReplyPayload> {
     if (!conversation) {
-      return { text: "This command needs a Telegram or Discord conversation." };
+      return buildSupportedConversationRequiredReply();
     }
     if (parsed.listProjects || !parsed.query) {
-      const picker = await this.renderProjectPicker(conversation, binding, parsed, 0, "start-new-thread");
+      const picker = await this.renderProjectPicker(
+        conversation,
+        binding,
+        parsed,
+        parsed.page ?? 0,
+        "start-new-thread",
+      );
       if (isDiscordChannel(channel) && picker.buttons) {
         try {
           await this.sendDiscordPicker(conversation, picker);
@@ -1985,12 +2770,28 @@ export class CodexPluginController {
           return { text: picker.text };
         }
       }
+      if (isFeishuChannel(channel)) {
+        await this.sendReply(conversation, {
+          text: `${picker.feishuText ?? picker.text}\n\nReply with /cas_resume --new <project-path-or-name> to start a thread there.`,
+          buttons: picker.buttons,
+        });
+        return {};
+      }
       return buildReplyWithButtons(picker.text, picker.buttons);
     }
 
     const workspaceDir = await this.resolveNewThreadWorkspaceDir(binding, parsed);
+    this.api.logger.warn(
+      `codex cas_resume --new resolved workspaceDir=${workspaceDir ?? "<none>"} query=${parsed.query || "<none>"} syncTopic=${String(parsed.syncTopic)} channel=${channel}`,
+    );
     if (!workspaceDir) {
-      const picker = await this.renderProjectPicker(conversation, binding, parsed, 0, "start-new-thread");
+      const picker = await this.renderProjectPicker(
+        conversation,
+        binding,
+        parsed,
+        parsed.page ?? 0,
+        "start-new-thread",
+      );
       if (isDiscordChannel(channel) && picker.buttons) {
         try {
           await this.sendDiscordPicker(conversation, picker);
@@ -2001,6 +2802,13 @@ export class CodexPluginController {
           this.api.logger.warn(`codex discord picker send failed: ${String(error)}`);
           return { text: picker.text };
         }
+      }
+      if (isFeishuChannel(channel)) {
+        await this.sendReply(conversation, {
+          text: `${picker.feishuText ?? picker.text}\n\nReply with /cas_resume --new <project-path-or-name> to start a thread there.`,
+          buttons: picker.buttons,
+        });
+        return {};
       }
       return buildReplyWithButtons(picker.text, picker.buttons);
     }
@@ -2017,11 +2825,24 @@ export class CodexPluginController {
       },
       requestConversationBinding,
     );
+    this.api.logger.warn(
+      `codex cas_resume --new result status=${result.status}${result.status === "bound" ? ` thread=${result.binding.threadId} cwd=${result.binding.workspaceDir}` : ""}`,
+    );
     if (result.status === "pending") {
       return result.reply;
     }
     if (result.status === "error") {
       return { text: result.message };
+    }
+    if (isFeishuChannel(channel)) {
+      return {
+        text: [
+          "Codex thread bound.",
+          `Project: ${result.binding.workspaceDir}`,
+          `Thread ID: ${result.binding.threadId}`,
+          "Use /cas_status to inspect it, or send normal messages to continue the thread.",
+        ].join("\n"),
+      };
     }
     return {};
   }
@@ -2034,11 +2855,11 @@ export class CodexPluginController {
   ): Promise<ReplyPayload> {
     const parsed = parseThreadSelectionArgs(filter);
     if (!conversation) {
-      return { text: "This command needs a Telegram or Discord conversation." };
+      return buildSupportedConversationRequiredReply();
     }
     const picker = parsed.listProjects
-      ? await this.renderProjectPicker(conversation, binding, parsed, 0)
-      : await this.renderThreadPicker(conversation, binding, parsed, 0);
+      ? await this.renderProjectPicker(conversation, binding, parsed, parsed.page ?? 0)
+      : await this.renderThreadPicker(conversation, binding, parsed, parsed.page ?? 0);
     if (isDiscordChannel(channel) && picker.buttons) {
       try {
         await this.sendDiscordPicker(conversation, picker);
@@ -2047,6 +2868,19 @@ export class CodexPluginController {
         this.api.logger.warn(`codex discord picker send failed: ${String(error)}`);
         return { text: picker.text };
       }
+    }
+    if (isFeishuChannel(channel)) {
+      this.api.logger.warn(
+        `codex feishu picker dispatch marker conversation=${conversation.conversationId} buttons=${picker.buttons?.length ?? 0} hasFeishuText=${picker.feishuText ? "yes" : "no"}`,
+      );
+      await this.sendReply(conversation, {
+        text: picker.feishuText ?? `${picker.text}\n\nReply with /cas_resume <threadId> to bind an exact thread.`,
+        buttons: picker.buttons,
+      });
+      this.api.logger.warn(
+        `codex feishu picker dispatch marker sent conversation=${conversation.conversationId}`,
+      );
+      return {};
     }
     return buildReplyWithButtons(picker.text, picker.buttons);
   }
@@ -2061,8 +2895,9 @@ export class CodexPluginController {
     hydratedPendingBind?: StoredPendingBind,
   ): Promise<ReplyPayload> {
     const bindingApi = asScopedBindingApi(ctx);
+    const commandBindingRequest = bindingApi.requestConversationBinding;
     if (!conversation) {
-      return { text: "This command needs a Telegram or Discord conversation." };
+      return buildSupportedConversationRequiredReply();
     }
     const parsed = parseThreadSelectionArgs(args);
     if (parsed.error) {
@@ -2087,7 +2922,7 @@ export class CodexPluginController {
         binding,
         parsed,
         channel,
-        bindingApi.requestConversationBinding,
+        commandBindingRequest,
       );
     }
     if (
@@ -2106,6 +2941,9 @@ export class CodexPluginController {
         }
       }
       await this.sendBoundConversationNotifications(conversation);
+      if (isFeishuChannel(channel)) {
+        return await this.buildFeishuBoundConversationReply(conversation);
+      }
       return {};
     }
     if (pendingBind && !binding && !parsed.listProjects && !parsed.query) {
@@ -2130,7 +2968,7 @@ export class CodexPluginController {
           preferences,
           notifyBound: true,
         },
-        bindingApi.requestConversationBinding,
+        commandBindingRequest,
       );
       if (bindResult.status === "pending") {
         return bindResult.reply;
@@ -2149,9 +2987,38 @@ export class CodexPluginController {
         }
       }
       await this.sendBoundConversationNotifications(conversation);
+      if (isFeishuChannel(channel)) {
+        return await this.buildFeishuBoundConversationReply(conversation);
+      }
       return {};
     }
     if (parsed.listProjects || !parsed.query) {
+      if (binding && isFeishuChannel(channel)) {
+        if (commandBindingRequest) {
+          const syncBindingResult = await this.requestConversationBinding(
+            conversation,
+            {
+              threadId: binding.threadId,
+              workspaceDir: binding.workspaceDir,
+              threadTitle: binding.threadTitle,
+              permissionsMode: this.getPermissionsMode(binding),
+              preferences: binding.preferences,
+              notifyBound: false,
+            },
+            commandBindingRequest,
+          );
+          if (syncBindingResult.status === "pending") {
+            return syncBindingResult.reply;
+          }
+          if (syncBindingResult.status === "error") {
+            return { text: syncBindingResult.message };
+          }
+        }
+        return {
+          text:
+            `This Feishu conversation is already bound to Codex thread ${binding.threadId}. Use /cas_status to inspect it or /cas_detach to unbind.`,
+        };
+      }
       const passthroughArgs = formatThreadSelectionFlags(parsed);
       return await this.handleListCommand(conversation, binding, passthroughArgs, channel);
     }
@@ -2165,7 +3032,7 @@ export class CodexPluginController {
       return { text: `No Codex thread matched "${parsed.query}".` };
     }
     if (selection.kind === "ambiguous") {
-      const picker = await this.renderThreadPicker(conversation, binding, parsed, 0);
+      const picker = await this.renderThreadPicker(conversation, binding, parsed, parsed.page ?? 0);
       if (isDiscordChannel(channel) && picker.buttons) {
         try {
           await this.sendDiscordPicker(conversation, picker);
@@ -2176,6 +3043,13 @@ export class CodexPluginController {
           this.api.logger.warn(`codex discord picker send failed: ${String(error)}`);
           return { text: picker.text };
         }
+      }
+      if (isFeishuChannel(channel)) {
+        await this.sendReply(conversation, {
+          text: picker.feishuText ?? `${picker.text}\n\nReply with /cas_resume <threadId> to bind an exact thread.`,
+          buttons: picker.buttons,
+        });
+        return {};
       }
       return buildReplyWithButtons(picker.text, picker.buttons);
     }
@@ -2203,7 +3077,7 @@ export class CodexPluginController {
       syncTopic: parsed.syncTopic,
       preferences,
       notifyBound: true,
-    }, bindingApi.requestConversationBinding);
+    }, commandBindingRequest);
     if (bindResult.status === "pending") {
       return bindResult.reply;
     }
@@ -2221,6 +3095,9 @@ export class CodexPluginController {
       }
     }
     await this.sendBoundConversationNotifications(conversation);
+    if (isFeishuChannel(channel)) {
+      return await this.buildFeishuBoundConversationReply(conversation);
+    }
     return {};
   }
 
@@ -2262,7 +3139,7 @@ export class CodexPluginController {
         note = buildPermissionsUnavailableNote();
         const card = await this.buildStatusCard(conversation, binding, bindingActive);
         const text = `${card.text}\n\n${note}`;
-        if (!card.buttons || !conversation) {
+        if (!card.buttons || !conversation || isFeishuChannel(conversation.channel)) {
           return { text };
         }
         return await this.sendStatusCardCommandReply(conversation, text, card.buttons);
@@ -2302,8 +3179,12 @@ export class CodexPluginController {
     }
     const card = await this.buildStatusCard(conversation, binding, bindingActive);
     const text = note ? `${card.text}\n\n${note}` : card.text;
-    if (!card.buttons || !conversation) {
-      return { text };
+    if (!card.buttons || !conversation || isFeishuChannel(conversation.channel)) {
+      return {
+        text: isFeishuChannel(conversation?.channel ?? "")
+          ? `${text}\n\nUse /cas_model, /cas_stop, or /cas_detach for text-only control in Feishu.`
+          : text,
+      };
     }
     return await this.sendStatusCardCommandReply(conversation, text, card.buttons);
   }
@@ -2937,7 +3818,7 @@ export class CodexPluginController {
 
   private async handleStopCommand(conversation: ConversationTarget | null): Promise<ReplyPayload> {
     if (!conversation) {
-      return { text: "This command needs a Telegram or Discord conversation." };
+      return buildSupportedConversationRequiredReply();
     }
     const active = this.activeRuns.get(buildConversationKey(conversation));
     if (!active) {
@@ -2952,7 +3833,7 @@ export class CodexPluginController {
     args: string,
   ): Promise<ReplyPayload> {
     if (!conversation) {
-      return { text: "This command needs a Telegram or Discord conversation." };
+      return buildSupportedConversationRequiredReply();
     }
     const prompt = args.trim();
     if (!prompt) {
@@ -2972,7 +3853,7 @@ export class CodexPluginController {
     args: string,
   ): Promise<ReplyPayload> {
     if (!conversation) {
-      return { text: "This command needs a Telegram or Discord conversation." };
+      return buildSupportedConversationRequiredReply();
     }
     const parsed = parsePlanArgs(args);
     if (parsed.mode === "off") {
@@ -3246,15 +4127,23 @@ export class CodexPluginController {
     const profile = this.getPermissionsMode(binding);
     if (!binding) {
       const models = await this.client.listModels({ profile });
-      return { text: formatModels(models) };
+      return {
+        text: isFeishuChannel(conversation?.channel ?? "")
+          ? `Bind this Feishu conversation to a Codex thread before changing its model. Available models:\n\n${formatModels(models)}`
+          : formatModels(models),
+      };
     }
     if (!trimmedArgs) {
-      if (!conversation) {
+      if (!conversation || isFeishuChannel(conversation.channel)) {
         const [models, { effectiveState }] = await Promise.all([
           this.client.listModels({ profile, sessionKey: binding.sessionKey }),
           this.readEffectiveThreadState(binding),
         ]);
-        return { text: formatModels(models, effectiveState) };
+        return {
+          text: isFeishuChannel(conversation?.channel ?? "")
+            ? `${formatModels(models, effectiveState)}\n\nReply with /cas_model <model> to switch this bound thread.`
+            : formatModels(models, effectiveState),
+        };
       }
       const picker = await this.buildModelPicker(conversation, binding);
       if (isDiscordChannel(conversation.channel) && picker.buttons) {
@@ -3316,6 +4205,168 @@ export class CodexPluginController {
     return await this.handleStatusCommand(conversation, binding, "", bindingActive);
   }
 
+  private async handleFeishuCardClickCommand(
+    conversation: ConversationTarget | null,
+    ctx: PluginCommandContext,
+  ): Promise<ReplyPayload> {
+    if (!conversation || !isFeishuChannel(conversation.channel)) {
+      return buildSupportedConversationRequiredReply();
+    }
+    const token = (ctx.args?.trim() ?? "").split(/\s+/, 1)[0]?.trim();
+    if (!token) {
+      return { text: "Usage: /cas_click <token>" };
+    }
+    const callback = this.store.getCallback(token);
+    if (!callback) {
+      return { text: "That Codex card action expired. Please retry the command." };
+    }
+    if (callback.expiresAt <= Date.now()) {
+      await this.store.removeCallback(callback.token);
+      return { text: "That Codex card action expired. Please retry the command." };
+    }
+    if (!isFeishuChannel(callback.conversation.channel)) {
+      return { text: "That Codex card action is invalid for this conversation." };
+    }
+    if (!isSameFeishuChatConversation(callback.conversation, conversation)) {
+      return { text: "That Codex card action belongs to a different conversation." };
+    }
+    const bindingApi = asScopedBindingApi(ctx);
+    // Feishu card callbacks are bridged through synthetic `/cas_click` messages.
+    // In this path, host binding hooks can reject with "cannot bind this conversation";
+    // fall back to plugin-local binding to make card buttons deterministic.
+    const requestConversationBinding = undefined;
+    await this.dispatchCallbackAction(callback, {
+      conversation,
+      acknowledge: async () => {},
+      clear: async () => {},
+      reply: async (text) => {
+        await this.sendText(conversation, text);
+      },
+      editPicker: async (picker) => {
+        await this.sendReply(conversation, {
+          text: picker.text,
+          buttons: picker.buttons,
+        });
+      },
+      requestConversationBinding,
+      detachConversationBinding: bindingApi.detachConversationBinding,
+    });
+    return {};
+  }
+
+  private async handlePendingInputReplyCommand(
+    conversation: ConversationTarget | null,
+    args: string,
+  ): Promise<ReplyPayload> {
+    if (!conversation) {
+      return buildSupportedConversationRequiredReply();
+    }
+    const pending = this.store.getPendingRequestByConversation(conversation);
+    if (!pending || pending.state.questionnaire) {
+      return { text: "That Codex input option is invalid or expired. Reply with /cas_status and retry." };
+    }
+    const active = this.activeRuns.get(buildConversationKey(conversation));
+    if (!active) {
+      return { text: "No active Codex run is waiting for input." };
+    }
+    const trimmed = args.trim();
+    if (!trimmed) {
+      return { text: "Reply with /cas_reply <number> to choose an action." };
+    }
+    const numeric = Number.parseInt(trimmed, 10);
+    let actionIndex = Number.isInteger(numeric) && numeric > 0 ? numeric - 1 : -1;
+    if (actionIndex < 0) {
+      actionIndex = (pending.state.actions ?? []).findIndex((action) => {
+        return action.label.trim().toLowerCase() === trimmed.toLowerCase();
+      });
+    }
+    if (actionIndex < 0) {
+      return { text: "That Codex input option is invalid or expired. Reply with /cas_status and retry." };
+    }
+    const submitted = await active.handle.submitPendingInput(actionIndex);
+    if (!submitted) {
+      return { text: "That Codex action is no longer available." };
+    }
+    return { text: "Sent to Codex." };
+  }
+
+  private async handlePendingQuestionnaireCommand(
+    conversation: ConversationTarget | null,
+    args: string,
+  ): Promise<ReplyPayload> {
+    if (!conversation) {
+      return buildSupportedConversationRequiredReply();
+    }
+    const pending = this.store.getPendingRequestByConversation(conversation);
+    const questionnaire = pending?.state.questionnaire;
+    if (!pending || !questionnaire) {
+      return { text: "That Codex questionnaire is no longer available. Please retry." };
+    }
+    const active = this.activeRuns.get(buildConversationKey(conversation));
+    if (!active) {
+      return { text: "No active Codex run is waiting for input." };
+    }
+    const raw = args.trim();
+    if (!raw) {
+      return { text: formatPendingQuestionnaireText(pending.state) };
+    }
+    const normalized = raw.toLowerCase();
+    if (normalized === "freeform") {
+      questionnaire.awaitingFreeform = true;
+      pending.updatedAt = Date.now();
+      await this.store.upsertPendingRequest(pending);
+      return { text: "Send your free-form answer in the next message and I’ll record it for the current question." };
+    }
+    if (normalized === "prev") {
+      questionnaire.currentIndex = Math.max(0, questionnaire.currentIndex - 1);
+      questionnaire.awaitingFreeform = false;
+      pending.updatedAt = Date.now();
+      await this.store.upsertPendingRequest(pending);
+      return { text: formatPendingQuestionnaireText(pending.state) };
+    }
+    if (normalized === "next") {
+      if (!questionnaireCurrentQuestionHasAnswer(questionnaire)) {
+        return { text: "Answer this question first, or choose Free Form." };
+      }
+      questionnaire.currentIndex = Math.min(questionnaire.questions.length - 1, questionnaire.currentIndex + 1);
+      questionnaire.awaitingFreeform = false;
+      pending.updatedAt = Date.now();
+      await this.store.upsertPendingRequest(pending);
+      return { text: formatPendingQuestionnaireText(pending.state) };
+    }
+    const question = questionnaire.questions[questionnaire.currentIndex];
+    if (!question) {
+      return { text: "That Codex questionnaire is no longer available. Please retry." };
+    }
+    const numeric = Number.parseInt(raw, 10);
+    const option = Number.isInteger(numeric) && numeric > 0
+      ? question.options[numeric - 1]
+      : question.options.find((entry) => entry.key.toLowerCase() === normalized);
+    if (!option) {
+      return { text: "That Codex questionnaire is no longer available. Please retry." };
+    }
+    questionnaire.answers[questionnaire.currentIndex] = {
+      kind: "option",
+      optionKey: option.key,
+      optionLabel: option.label,
+    };
+    questionnaire.awaitingFreeform = false;
+    questionnaire.currentIndex = Math.min(questionnaire.questions.length - 1, questionnaire.currentIndex + 1);
+    pending.updatedAt = Date.now();
+    await this.store.upsertPendingRequest(pending);
+    if (questionnaireIsComplete(questionnaire)) {
+      const submitted = await active.handle.submitPendingInputPayload(
+        this.buildQuestionnaireSubmissionPayload(pending),
+      );
+      if (!submitted) {
+        return { text: "That Codex questionnaire is no longer accepting answers." };
+      }
+      await this.store.removePendingRequest(pending.requestId);
+      return { text: "Recorded your answers and sent them to Codex." };
+    }
+    return { text: formatPendingQuestionnaireText(pending.state) };
+  }
+
   private async handlePromptAlias(
     conversation: ConversationTarget | null,
     binding: StoredBinding | null,
@@ -3323,7 +4374,7 @@ export class CodexPluginController {
     alias: string,
   ): Promise<ReplyPayload> {
     if (!conversation) {
-      return { text: "This command needs a Telegram or Discord conversation." };
+      return buildSupportedConversationRequiredReply();
     }
     const workspaceDir = resolveWorkspaceDir({
       bindingWorkspaceDir: binding?.workspaceDir,
@@ -3490,6 +4541,71 @@ export class CodexPluginController {
   }): Promise<void> {
     const key = buildConversationKey(params.conversation);
     const profile = this.getPermissionsMode(params.binding);
+    const enableFeishuAssistantStreaming = isFeishuChannel(params.conversation.channel);
+    let streamedAssistantText = "";
+    let pendingAssistantText = "";
+    let deltaFlushTimer: ReturnType<typeof setTimeout> | null = null;
+    let deltaFlushQueue = Promise.resolve();
+    const flushAssistantDelta = async (force = false) => {
+      if (!enableFeishuAssistantStreaming) {
+        return;
+      }
+      const unsentLength = pendingAssistantText.length - streamedAssistantText.length;
+      if (unsentLength <= 0) {
+        return;
+      }
+      if (!force && unsentLength < FEISHU_ASSISTANT_DELTA_MIN_CHARS) {
+        return;
+      }
+      const nextChunk = pendingAssistantText.startsWith(streamedAssistantText)
+        ? pendingAssistantText.slice(streamedAssistantText.length)
+        : pendingAssistantText;
+      if (!nextChunk) {
+        return;
+      }
+      streamedAssistantText = pendingAssistantText;
+      await this.sendText(params.conversation, nextChunk);
+    };
+    const scheduleAssistantDeltaFlush = () => {
+      if (!enableFeishuAssistantStreaming) {
+        return;
+      }
+      if (pendingAssistantText.length - streamedAssistantText.length < FEISHU_ASSISTANT_DELTA_MIN_CHARS) {
+        return;
+      }
+      if (deltaFlushTimer) {
+        return;
+      }
+      deltaFlushTimer = setTimeout(() => {
+        deltaFlushTimer = null;
+        deltaFlushQueue = deltaFlushQueue.then(() => flushAssistantDelta(true));
+      }, FEISHU_ASSISTANT_DELTA_THROTTLE_MS);
+    };
+    const flushRemainingAssistantDelta = async (finalText?: string) => {
+      if (!enableFeishuAssistantStreaming) {
+        return false;
+      }
+      if (deltaFlushTimer) {
+        clearTimeout(deltaFlushTimer);
+        deltaFlushTimer = null;
+      }
+      await deltaFlushQueue;
+      const completedText = typeof finalText === "string" && finalText ? finalText : pendingAssistantText;
+      if (!completedText) {
+        return streamedAssistantText.length > 0;
+      }
+      pendingAssistantText = completedText;
+      const tail = pendingAssistantText.startsWith(streamedAssistantText)
+        ? pendingAssistantText.slice(streamedAssistantText.length)
+        : pendingAssistantText === streamedAssistantText
+          ? ""
+          : pendingAssistantText;
+      if (tail) {
+        streamedAssistantText = pendingAssistantText;
+        await this.sendText(params.conversation, tail);
+      }
+      return streamedAssistantText.length > 0;
+    };
     const existing = this.activeRuns.get(key);
     this.api.logger.debug?.(
       `codex turn request reason=${params.reason} ${this.formatConversationForLog(params.conversation)} workspace=${params.workspaceDir} existing=${existing ? existing.mode : "none"} profile=${profile} prompt="${summarizeTextForLog(params.prompt)}"`,
@@ -3557,6 +4673,10 @@ export class CodexPluginController {
         );
         await this.handlePendingInputState(params.conversation, params.workspaceDir, state, run);
       },
+      onAssistantDelta: async (text) => {
+        pendingAssistantText = `${pendingAssistantText}${text}`;
+        scheduleAssistantDeltaFlush();
+      },
       onFileEdits: async (text) => {
         await this.sendText(params.conversation, text);
       },
@@ -3612,6 +4732,18 @@ export class CodexPluginController {
         this.api.logger.debug?.(
           `codex turn completed ${this.formatConversationForLog(params.conversation)} thread=${threadId ?? "<none>"} aborted=${result.aborted ? "yes" : "no"} stoppedReason=${result.stoppedReason ?? "none"} terminalStatus=${result.terminalStatus ?? "none"} text=${result.text ? "yes" : "no"} plan=${result.planArtifact ? "yes" : "no"}`,
         );
+        const streamedAssistantOutput = await flushRemainingAssistantDelta(result.text);
+        if (
+          enableFeishuAssistantStreaming &&
+          streamedAssistantOutput &&
+          !result.planArtifact &&
+          result.terminalStatus !== "failed" &&
+          !result.aborted &&
+          result.stoppedReason !== "approval"
+        ) {
+          await this.sendText(params.conversation, "Codex completed.");
+          return;
+        }
         const completionText =
           result.terminalStatus === "failed"
             ? await this.describeTurnFailure({
@@ -3629,6 +4761,10 @@ export class CodexPluginController {
         await this.sendText(params.conversation, completionText);
       })
       .catch(async (error) => {
+        if (deltaFlushTimer) {
+          clearTimeout(deltaFlushTimer);
+          deltaFlushTimer = null;
+        }
         const message = error instanceof Error ? error.message : String(error);
         this.api.logger.warn(
           `codex turn failed ${this.formatConversationForLog(params.conversation)}: ${message}`,
@@ -3643,6 +4779,10 @@ export class CodexPluginController {
         );
       })
       .finally(async () => {
+        if (deltaFlushTimer) {
+          clearTimeout(deltaFlushTimer);
+          deltaFlushTimer = null;
+        }
         typing?.stop();
         this.activeRuns.delete(key);
         const pending = this.store.getPendingRequestByConversation(params.conversation);
@@ -4138,6 +5278,10 @@ export class CodexPluginController {
       createdAt: existing?.createdAt ?? Date.now(),
       updatedAt: Date.now(),
     });
+    if (isFeishuChannel(conversation.channel)) {
+      await this.sendText(conversation, formatPendingInputText(state), { buttons });
+      return;
+    }
     await this.sendText(conversation, state.promptText ?? "Codex needs input.", { buttons });
   }
 
@@ -4170,9 +5314,15 @@ export class CodexPluginController {
       return;
     }
     const buttons = await this.buildPendingQuestionnaireButtons(conversation, state);
-    const text = formatPendingQuestionnairePrompt(questionnaire);
+    const text = isFeishuChannel(conversation.channel)
+      ? formatPendingQuestionnaireText(state)
+      : formatPendingQuestionnairePrompt(questionnaire);
     if (opts?.editMessage) {
       await opts.editMessage(text, buttons);
+      return;
+    }
+    if (isFeishuChannel(conversation.channel)) {
+      await this.sendText(conversation, text, { buttons });
       return;
     }
     await this.sendText(conversation, text, { buttons });
@@ -4323,6 +5473,111 @@ export class CodexPluginController {
     return true;
   }
 
+  private async handlePendingTextReply(
+    conversation: ConversationTarget,
+    pending: StoredPendingRequest,
+    run: ActiveCodexRun,
+    text: string,
+  ): Promise<boolean> {
+    const trimmed = text.trim();
+    if (!trimmed) {
+      return false;
+    }
+    if (pending.state.questionnaire) {
+      const questionnaire = pending.state.questionnaire;
+      if (questionnaire.awaitingFreeform) {
+        return await this.handlePendingQuestionnaireFreeformAnswer(conversation, pending, run, text);
+      }
+      const question = questionnaire.questions[questionnaire.currentIndex];
+      if (!question) {
+        return false;
+      }
+      const normalized = trimmed.toLowerCase();
+      if (normalized === "prev") {
+        questionnaire.currentIndex = Math.max(0, questionnaire.currentIndex - 1);
+        questionnaire.awaitingFreeform = false;
+        pending.updatedAt = Date.now();
+        await this.store.upsertPendingRequest(pending);
+        await this.sendPendingQuestionnaire(conversation, pending.state);
+        return true;
+      }
+      if (normalized === "next") {
+        if (!questionnaireCurrentQuestionHasAnswer(questionnaire)) {
+          await this.sendText(conversation, "Answer this question first, or choose Free Form.");
+          return true;
+        }
+        questionnaire.currentIndex = Math.min(questionnaire.questions.length - 1, questionnaire.currentIndex + 1);
+        questionnaire.awaitingFreeform = false;
+        pending.updatedAt = Date.now();
+        await this.store.upsertPendingRequest(pending);
+        await this.sendPendingQuestionnaire(conversation, pending.state);
+        return true;
+      }
+      if (normalized === "freeform") {
+        questionnaire.awaitingFreeform = true;
+        pending.updatedAt = Date.now();
+        await this.store.upsertPendingRequest(pending);
+        await this.sendText(
+          conversation,
+          "Send your free-form answer in the next message and I’ll record it for the current question.",
+        );
+        return true;
+      }
+      const numeric = Number.parseInt(trimmed, 10);
+      const option =
+        Number.isInteger(numeric) && numeric > 0
+          ? question.options[numeric - 1]
+          : question.options.find((entry) => {
+              const label = entry.label.trim().toLowerCase();
+              return entry.key.toLowerCase() === normalized || label === normalized;
+            });
+      if (!option) {
+        return false;
+      }
+      questionnaire.answers[questionnaire.currentIndex] = {
+        kind: "option",
+        optionKey: option.key,
+        optionLabel: option.label,
+      };
+      questionnaire.awaitingFreeform = false;
+      questionnaire.currentIndex = Math.min(questionnaire.questions.length - 1, questionnaire.currentIndex + 1);
+      pending.updatedAt = Date.now();
+      await this.store.upsertPendingRequest(pending);
+      if (questionnaireIsComplete(questionnaire)) {
+        const submitted = await run.submitPendingInputPayload(
+          this.buildQuestionnaireSubmissionPayload(pending),
+        );
+        if (!submitted) {
+          await this.sendText(conversation, "That Codex questionnaire is no longer accepting answers.");
+          return true;
+        }
+        await this.store.removePendingRequest(pending.requestId);
+        await this.sendText(conversation, "Recorded your answers and sent them to Codex.");
+        return true;
+      }
+      await this.sendPendingQuestionnaire(conversation, pending.state);
+      return true;
+    }
+
+    const numeric = Number.parseInt(trimmed, 10);
+    let actionIndex = Number.isInteger(numeric) && numeric > 0 ? numeric - 1 : -1;
+    if (actionIndex < 0) {
+      actionIndex = (pending.state.actions ?? []).findIndex((action) => {
+        return action.label.trim().toLowerCase() === trimmed.toLowerCase();
+      });
+    }
+    if (actionIndex < 0) {
+      return false;
+    }
+    const submitted = await run.submitPendingInput(actionIndex);
+    if (!submitted) {
+      await this.sendText(conversation, "That Codex action is no longer available.");
+      return true;
+    }
+    await this.sendText(conversation, "Sent to Codex.");
+    return true;
+  }
+
   private resolveThreadWorkspaceDir(
     parsed: ReturnType<typeof parseThreadSelectionArgs>,
     binding: StoredBinding | null,
@@ -4406,9 +5661,12 @@ export class CodexPluginController {
       workspaceDir,
       filter: params.filterProjectsOnly ? undefined : params.parsed.query || undefined,
     });
+    const queryFilteredThreads = params.filterProjectsOnly
+      ? threads
+      : filterThreadsBySelectionQuery(threads, params.parsed.query);
     return {
       workspaceDir,
-      threads: filterThreadsByProjectName(threads, params.projectName),
+      threads: filterThreadsByProjectName(queryFilteredThreads, params.projectName),
     };
   }
 
@@ -4643,8 +5901,8 @@ export class CodexPluginController {
         filter: parsed.query || undefined,
       });
       if (globalResult.length > 0) {
-        threads = globalResult;
-        fallbackToGlobal = true;
+        threads = filterThreadsBySelectionQuery(globalResult, parsed.query);
+        fallbackToGlobal = threads.length > 0;
       }
     }
     const pageResult = paginateItems(threads, page);
@@ -4658,16 +5916,26 @@ export class CodexPluginController {
       threads: pageResult.items,
       showProjectName: !projectName && (fallbackToGlobal || distinctProjects.size > 1),
       })) ?? [];
+    const pickerIntro = formatThreadPickerIntro({
+      page: pageResult.page,
+      totalPages: pageResult.totalPages,
+      totalItems: pageResult.totalItems,
+      includeAll: workspaceDir == null || fallbackToGlobal,
+      query: parsed.query || undefined,
+      syncTopic: parsed.syncTopic,
+      workspaceDir: fallbackToGlobal ? undefined : workspaceDir,
+      projectName,
+      fallbackToGlobal,
+    });
     return {
-      text: formatThreadPickerIntro({
+      text: pickerIntro,
+      feishuText: formatFeishuThreadPickerText({
+        introText: pickerIntro,
+        threads: pageResult.items,
+        parsed,
         page: pageResult.page,
         totalPages: pageResult.totalPages,
-        totalItems: pageResult.totalItems,
-        includeAll: workspaceDir == null || fallbackToGlobal,
-        syncTopic: parsed.syncTopic,
-        workspaceDir: fallbackToGlobal ? undefined : workspaceDir,
-        projectName,
-        fallbackToGlobal,
+        query: parsed.query || undefined,
       }),
       buttons: await this.appendThreadPickerControls({
             conversation,
@@ -4836,6 +6104,20 @@ export class CodexPluginController {
         totalPages: projectOptions.totalPages,
         totalItems: projectOptions.totalItems,
         workspaceDir,
+        action,
+      }),
+      feishuText: formatFeishuProjectPickerText({
+        introText: formatProjectPickerIntro({
+          page: projectOptions.page,
+          totalPages: projectOptions.totalPages,
+          totalItems: projectOptions.totalItems,
+          workspaceDir,
+          action,
+        }),
+        projects: projectOptions.items,
+        parsed,
+        page: projectOptions.page,
+        totalPages: projectOptions.totalPages,
         action,
       }),
       buttons,
@@ -6095,10 +7377,13 @@ export class CodexPluginController {
     overrides: CommandPreferenceOverrides,
     requestConversationBinding?: PickerResponders["requestConversationBinding"],
   ): Promise<
-    | { status: "bound" }
+    | { status: "bound"; binding: StoredBinding }
     | { status: "pending"; reply: ReplyPayload }
     | { status: "error"; message: string }
   > {
+    this.api.logger.warn(
+      `codex startNewThreadAndBindConversation begin workspaceDir=${workspaceDir} syncTopic=${String(syncTopic)} requestedModel=${overrides.requestedModel ?? "<none>"} requestedFast=${String(overrides.requestedFast ?? false)} requestedYolo=${String(overrides.requestedYolo ?? false)} requestConversationBinding=${String(Boolean(requestConversationBinding))}`,
+    );
     const profile = this.resolveRequestedPermissionsMode(
       this.getPermissionsMode(binding),
       overrides.requestedYolo,
@@ -6108,7 +7393,11 @@ export class CodexPluginController {
       sessionKey: binding?.sessionKey,
       workspaceDir,
       model: overrides.requestedModel?.trim() || undefined,
+      strictNew: true,
     });
+    this.api.logger.warn(
+      `codex startNewThreadAndBindConversation created thread=${created.threadId} cwd=${created.cwd ?? "<none>"} name=${created.threadName ?? "<none>"}`,
+    );
     const preferences = this.buildBindingPreferencesWithOverrides(
       binding?.preferences,
       overrides,
@@ -6127,6 +7416,9 @@ export class CodexPluginController {
       },
       requestConversationBinding,
     );
+    this.api.logger.warn(
+      `codex startNewThreadAndBindConversation bindResult status=${bindResult.status}${bindResult.status === "error" ? ` message=${bindResult.message}` : ""}`,
+    );
     if (bindResult.status === "pending") {
       return bindResult;
     }
@@ -6144,7 +7436,22 @@ export class CodexPluginController {
       }
     }
     await this.sendBoundConversationNotifications(conversation);
-    return { status: "bound" };
+    this.api.logger.warn(
+      `codex startNewThreadAndBindConversation completed thread=${created.threadId} conversation=${this.formatConversationForLog(conversation)}`,
+    );
+    return {
+      status: "bound",
+      binding: await this.store.getBinding(conversation) ?? {
+        conversation,
+        sessionKey: binding?.sessionKey ?? buildPluginSessionKey(created.threadId),
+        threadId: created.threadId,
+        workspaceDir: created.cwd?.trim() || workspaceDir,
+        permissionsMode: profile,
+        pendingPermissionsMode: undefined,
+        preferences,
+        updatedAt: Date.now(),
+      },
+    };
   }
 
   private async resolveSingleThread(
@@ -6157,12 +7464,24 @@ export class CodexPluginController {
     | { kind: "ambiguous"; threads: Array<{ threadId: string; title?: string; projectKey?: string }> }
   > {
     const trimmed = filter.trim();
-    const threads = await this.client.listThreads({
+    let threads = await this.client.listThreads({
       profile: "default",
       sessionKey,
       workspaceDir,
       filter: trimmed,
     });
+    threads = filterThreadsBySelectionQuery(threads, trimmed);
+    if (threads.length === 0 && workspaceDir != null) {
+      const globalResult = await this.client.listThreads({
+        profile: "default",
+        sessionKey,
+        workspaceDir: undefined,
+        filter: trimmed,
+      });
+      if (globalResult.length > 0) {
+        threads = filterThreadsBySelectionQuery(globalResult, trimmed);
+      }
+    }
     return selectThreadFromMatches(threads, trimmed);
   }
 
@@ -6320,6 +7639,10 @@ export class CodexPluginController {
     | { status: "error"; message: string }
   > {
     if (!requestBinding) {
+      if (isFeishuChannel(conversation.channel)) {
+        const binding = await this.bindConversation(conversation, params);
+        return { status: "bound", binding };
+      }
       return {
         status: "error",
         message: "This action can only bind from a live command or interactive context.",
@@ -6526,6 +7849,12 @@ export class CodexPluginController {
       parentConversationId: conversation.parentConversationId,
       threadId: "threadId" in conversation ? conversation.threadId : undefined,
     };
+    if (isFeishuChannel(target.channel)) {
+      const messages = await this.buildBoundConversationMessages(conversation);
+      const summary = messages[0]?.trim() || "Codex thread bound.";
+      await this.sendText(target, summary);
+      return;
+    }
     const messages = await this.buildBoundConversationMessages(conversation);
     for (const message of messages.slice(1)) {
       await this.sendText(target, message);
@@ -6547,6 +7876,13 @@ export class CodexPluginController {
     } catch (error) {
       this.api.logger.warn(`codex bound status card send failed: ${String(error)}`);
     }
+  }
+
+  private async buildFeishuBoundConversationReply(
+    conversation: ConversationTarget | ConversationRef,
+  ): Promise<ReplyPayload> {
+    const messages = await this.buildBoundConversationMessages(conversation);
+    return { text: messages.filter(Boolean).join("\n\n") };
   }
 
   private async sendStatusCardCommandReply(
@@ -6623,7 +7959,6 @@ export class CodexPluginController {
     return formatCodexStatusText({
       pluginVersion: PLUGIN_VERSION,
       threadState: displayThreadState,
-      bindingThreadTitle: binding?.threadTitle,
       account,
       rateLimits: limits,
       bindingActive,
@@ -6714,29 +8049,17 @@ export class CodexPluginController {
         : [];
       let delivered: DeliveredMessageRef | null = null;
       if (hasMedia) {
-        const result =
-          chunks.length <= 1 && payload.buttons && outbound?.sendPayload
-            ? await outbound.sendPayload({
-                cfg: this.getOpenClawConfig(),
-                to: conversation.parentConversationId ?? conversation.conversationId,
-                accountId: conversation.accountId,
-                threadId: conversation.threadId,
-                mediaLocalRoots,
-                payload: {
-                  text: chunks[0] ?? text,
-                  mediaUrl: payload.mediaUrl,
-                  channelData: {
-                    telegram: {
-                      buttons: payload.buttons,
-                    },
-                  },
-                },
-              })
-            : await this.sendTelegramMediaChunk(outbound, conversation, chunks[0] ?? text, {
-                mediaUrl: payload.mediaUrl,
-                mediaLocalRoots,
-                buttons: chunks.length <= 1 ? payload.buttons : undefined,
-              });
+        const result = await this.api.runtime.channel.telegram.sendMessageTelegram(
+          conversation.parentConversationId ?? conversation.conversationId,
+          chunks[0] ?? text,
+          {
+            accountId: conversation.accountId,
+            messageThreadId: getTelegramThreadId(conversation.threadId),
+            mediaUrl: payload.mediaUrl,
+            mediaLocalRoots,
+            buttons: chunks.length <= 1 ? payload.buttons : undefined,
+          },
+        );
         delivered = {
           provider: "telegram",
           messageId: result.messageId,
@@ -6750,25 +8073,15 @@ export class CodexPluginController {
           if (!chunk) {
             continue;
           }
-          const result =
-            index === chunks.length - 1 && payload.buttons && outbound?.sendPayload
-              ? await outbound.sendPayload({
-                  cfg: this.getOpenClawConfig(),
-                  to: conversation.parentConversationId ?? conversation.conversationId,
-                  accountId: conversation.accountId,
-                  threadId: conversation.threadId,
-                  payload: {
-                    text: chunk,
-                    channelData: {
-                      telegram: {
-                        buttons: payload.buttons,
-                      },
-                    },
-                  },
-                })
-              : await this.sendTelegramTextChunk(outbound, conversation, chunk, {
-                  buttons: index === chunks.length - 1 ? payload.buttons : undefined,
-                });
+          const result = await this.api.runtime.channel.telegram.sendMessageTelegram(
+            conversation.parentConversationId ?? conversation.conversationId,
+            chunk,
+            {
+              accountId: conversation.accountId,
+              messageThreadId: getTelegramThreadId(conversation.threadId),
+              buttons: index === chunks.length - 1 ? payload.buttons : undefined,
+            },
+          );
           if (index === chunks.length - 1 || !delivered) {
             delivered = {
               provider: "telegram",
@@ -6791,25 +8104,15 @@ export class CodexPluginController {
         if (!chunk) {
           continue;
         }
-        const result =
-          index === textChunks.length - 1 && payload.buttons && outbound?.sendPayload
-            ? await outbound.sendPayload({
-                cfg: this.getOpenClawConfig(),
-                to: conversation.parentConversationId ?? conversation.conversationId,
-                accountId: conversation.accountId,
-                threadId: conversation.threadId,
-                payload: {
-                  text: chunk,
-                  channelData: {
-                    telegram: {
-                      buttons: payload.buttons,
-                    },
-                  },
-                },
-              })
-            : await this.sendTelegramTextChunk(outbound, conversation, chunk, {
-                buttons: index === textChunks.length - 1 ? payload.buttons : undefined,
-              });
+        const result = await this.api.runtime.channel.telegram.sendMessageTelegram(
+          conversation.parentConversationId ?? conversation.conversationId,
+          chunk,
+          {
+            accountId: conversation.accountId,
+            messageThreadId: getTelegramThreadId(conversation.threadId),
+            buttons: index === textChunks.length - 1 ? payload.buttons : undefined,
+          },
+        );
         if (!delivered || index === textChunks.length - 1) {
           delivered = {
             provider: "telegram",
@@ -6948,6 +8251,46 @@ export class CodexPluginController {
         `codex outbound send complete ${this.formatConversationForLog(conversation)} channel=discord chunks=${textChunks.length + (hasMedia ? 1 : 0)} media=${hasMedia ? "yes" : "no"}`,
       );
       return delivered;
+    }
+    if (isFeishuChannel(conversation.channel)) {
+      if (payload.buttons?.length) {
+        const cardSent = await this.sendFeishuCard(conversation, text, payload.buttons).catch((error) => {
+          this.api.logger.warn(`codex feishu card send failed: ${formatStructuredError(error)}`);
+          return false;
+        });
+        if (cardSent) {
+          this.api.logger.debug?.(
+            `codex outbound send complete ${this.formatConversationForLog(conversation)} channel=feishu chunks=1 media=no buttons=${payload.buttons.length}`,
+          );
+          return null;
+        }
+      }
+      const limit = this.api.runtime.channel.text.resolveTextChunkLimit(
+        undefined,
+        "feishu",
+        conversation.accountId,
+        { fallbackLimit: 2000 },
+      );
+      const textWithFallback =
+        payload.buttons?.length && text
+          ? `${text}\n\n[Feishu cards unavailable in this runtime; using text fallback.]`
+          : payload.buttons?.length
+            ? "Feishu cards unavailable in this runtime; using text fallback."
+            : text;
+      const chunks = textWithFallback
+        ? this.api.runtime.channel.text.chunkText(textWithFallback, limit).filter(Boolean)
+        : [];
+      const textChunks = chunks.length > 0 ? chunks : [textWithFallback];
+      for (const chunk of textChunks) {
+        if (!chunk) {
+          continue;
+        }
+        await this.sendFeishuText(conversation, chunk);
+      }
+      this.api.logger.debug?.(
+        `codex outbound send complete ${this.formatConversationForLog(conversation)} channel=feishu chunks=${textChunks.length} media=no`,
+      );
+      return null;
     }
     return null;
   }
@@ -7205,15 +8548,11 @@ export class CodexPluginController {
     refresh?: () => Promise<void>;
   } | null> {
     if (isTelegramChannel(conversation.channel)) {
-      const legacyTyping = this.api.runtime.channel.telegram?.typing?.start;
-      if (typeof legacyTyping === "function") {
-        return await legacyTyping({
-          to: conversation.parentConversationId ?? conversation.conversationId,
-          accountId: conversation.accountId,
-          messageThreadId: conversation.threadId,
-        });
-      }
-      return await this.startTelegramTypingLease(conversation);
+      return await this.api.runtime.channel.telegram.typing.start({
+        to: conversation.parentConversationId ?? conversation.conversationId,
+        accountId: conversation.accountId,
+        messageThreadId: getTelegramThreadId(conversation.threadId),
+      });
     }
     if (isDiscordChannel(conversation.channel)) {
       if (conversation.conversationId.startsWith("user:")) {
@@ -7260,6 +8599,9 @@ export class CodexPluginController {
         accountId: conversation.accountId,
       });
     }
+    if (isFeishuChannel(conversation.channel)) {
+      return null;
+    }
     return null;
   }
 
@@ -7294,7 +8636,14 @@ export class CodexPluginController {
       const textChunks = chunks.length > 0 ? chunks : [trimmed];
       let firstDelivered: DeliveredMessageRef | null = null;
       for (const chunk of textChunks) {
-        const result = await this.sendTelegramTextChunk(outbound, conversation, chunk);
+        const result = await this.api.runtime.channel.telegram.sendMessageTelegram(
+          conversation.parentConversationId ?? conversation.conversationId,
+          chunk,
+          {
+            accountId: conversation.accountId,
+            messageThreadId: getTelegramThreadId(conversation.threadId),
+          },
+        );
         if (!firstDelivered) {
           firstDelivered = {
             provider: "telegram",
@@ -7334,8 +8683,270 @@ export class CodexPluginController {
       }
       return firstDelivered;
     }
+    if (isFeishuChannel(conversation.channel)) {
+      const limit = this.api.runtime.channel.text.resolveTextChunkLimit(
+        undefined,
+        "feishu",
+        conversation.accountId,
+        { fallbackLimit: 2000 },
+      );
+      const chunks = this.api.runtime.channel.text.chunkText(trimmed, limit).filter(Boolean);
+      const textChunks = chunks.length > 0 ? chunks : [trimmed];
+      for (const chunk of textChunks) {
+        await this.sendFeishuText(conversation, chunk);
+      }
+      return null;
+    }
     await this.sendText(conversation, trimmed);
     return null;
+  }
+
+  private async sendFeishuText(
+    conversation: ConversationTarget,
+    text: string,
+  ): Promise<void> {
+    const to = conversation.parentConversationId ?? conversation.conversationId;
+    const channelRuntime = (this.api as unknown as {
+      config?: unknown;
+      runtime?: { channel?: Record<string, unknown> };
+    }).runtime?.channel as
+      | (Record<string, unknown> & {
+          feishu?: {
+            sendMessageFeishu?: (
+              to: string,
+              text: string,
+              opts?: {
+                accountId?: string;
+                replyInThread?: boolean;
+              },
+            ) => Promise<unknown>;
+          };
+          outbound?: {
+            loadAdapter?: (
+              channelId: string,
+            ) => Promise<
+              | {
+                  sendText?: (ctx: Record<string, unknown>) => Promise<unknown>;
+                }
+              | undefined
+            >;
+          };
+        })
+      | undefined;
+
+    if (typeof channelRuntime?.feishu?.sendMessageFeishu === "function") {
+      await channelRuntime.feishu.sendMessageFeishu(to, text, {
+        accountId: conversation.accountId,
+        replyInThread: Boolean(conversation.threadId),
+      });
+      return;
+    }
+
+    if (typeof channelRuntime?.outbound?.loadAdapter === "function") {
+      const outboundChannelId = conversation.channel === "lark" ? "feishu" : conversation.channel;
+      const adapter = await channelRuntime.outbound.loadAdapter(outboundChannelId);
+      if (typeof adapter?.sendText === "function") {
+        await adapter.sendText({
+          to,
+          text,
+          accountId: conversation.accountId,
+          threadId: conversation.threadId ?? null,
+          cfg: (this.api as unknown as { config?: unknown }).config,
+        });
+        return;
+      }
+    }
+
+    throw new Error("Feishu outbound send unavailable in current plugin runtime context.");
+  }
+
+  private buildFeishuCard(
+    conversation: ConversationTarget,
+    text: string,
+    buttons: PluginInteractiveButtons,
+  ): Record<string, unknown> {
+    const chatId = getFeishuChatContextId(conversation);
+    const elements: Array<Record<string, unknown>> = [];
+    let droppedInvalidToken = 0;
+    let droppedMissingCallback = 0;
+    let createdActions = 0;
+    const cardText = compactFeishuCardText(text);
+    if (cardText.trim()) {
+      elements.push({
+        tag: "markdown",
+        content: cardText,
+      });
+    }
+    for (const row of buttons) {
+      const actions = row
+        .map((button) => {
+          const token = extractCallbackTokenFromData(button.callback_data);
+          if (!token) {
+            droppedInvalidToken += 1;
+            return null;
+          }
+          const callback = this.store.getCallback(token);
+          if (!callback) {
+            droppedMissingCallback += 1;
+            return null;
+          }
+          const value: Record<string, unknown> = {
+            oc: "ocf1",
+            k: "quick",
+            a: FEISHU_CARD_CALLBACK_ACTION_ID,
+            q: `/cas_click ${token}`,
+            c: {
+              ...(chatId ? { h: chatId } : {}),
+              e: callback.expiresAt,
+            },
+          };
+          return {
+            tag: "button",
+            text: {
+              tag: "plain_text",
+              content: button.text,
+            },
+            ...(button.style === "primary" || button.style === "danger"
+              ? { type: button.style }
+              : {}),
+            value,
+          };
+        })
+        .filter(Boolean) as Array<Record<string, unknown>>;
+      if (actions.length > 0) {
+        createdActions += actions.length;
+        elements.push({
+          tag: "action",
+          actions,
+        });
+      }
+    }
+    this.api.logger.warn(
+      `codex feishu card build conversation=${conversation.conversationId} schema=1.0 layout=action rows=${buttons.length} createdActions=${createdActions} droppedInvalidToken=${droppedInvalidToken} droppedMissingCallback=${droppedMissingCallback}`,
+    );
+    return {
+      schema: "1.0",
+      config: {
+        wide_screen_mode: true,
+      },
+      elements,
+    };
+  }
+
+  private async sendFeishuCard(
+    conversation: ConversationTarget,
+    text: string,
+    buttons: PluginInteractiveButtons,
+  ): Promise<boolean> {
+    const to = conversation.parentConversationId ?? conversation.conversationId;
+    const card = this.buildFeishuCard(conversation, text, buttons);
+    const channelRuntime = (this.api as unknown as {
+      runtime?: { channel?: Record<string, unknown> };
+    }).runtime?.channel as
+      | (Record<string, unknown> & {
+          feishu?: {
+            sendCardFeishu?: (params: {
+              to: string;
+              card: Record<string, unknown>;
+              accountId?: string;
+              replyInThread?: boolean;
+            }) => Promise<unknown>;
+          };
+        })
+      | undefined;
+    const sendCard = channelRuntime?.feishu?.sendCardFeishu;
+    const hasSendCard = typeof sendCard === "function";
+    this.api.logger.warn(
+      `codex feishu sendCard capability conversation=${conversation.conversationId} available=${hasSendCard ? "yes" : "no"} rows=${buttons.length}`,
+    );
+    if (hasSendCard) {
+      await sendCard({
+        to,
+        card,
+        accountId: conversation.accountId,
+        replyInThread: Boolean(conversation.threadId),
+      });
+      return true;
+    }
+
+    const cfg = (this.api as unknown as { config?: unknown }).config ?? this.lastRuntimeConfig;
+    const directCardSender = await this.resolveFeishuDirectCardSender();
+    if (directCardSender && cfg) {
+      await directCardSender({
+        cfg,
+        to,
+        card,
+        accountId: conversation.accountId,
+        replyInThread: Boolean(conversation.threadId),
+      });
+      this.api.logger.warn(
+        `codex feishu sendCard fallback used direct SDK path conversation=${conversation.conversationId}`,
+      );
+      return true;
+    }
+    return false;
+  }
+
+  private async resolveFeishuDirectCardSender(): Promise<
+    | ((params: {
+        cfg: unknown;
+        to: string;
+        card: Record<string, unknown>;
+        accountId?: string;
+        replyInThread?: boolean;
+        replyToMessageId?: string;
+      }) => Promise<unknown>)
+    | null
+  > {
+    if (this.feishuDirectCardSenderPromise) {
+      return await this.feishuDirectCardSenderPromise;
+    }
+    this.feishuDirectCardSenderPromise = (async () => {
+      const moduleCandidates: string[] = [];
+      try {
+        const openclawEntryPath = require.resolve("openclaw");
+        const openclawRootDir = path.resolve(path.dirname(openclawEntryPath), "..");
+        moduleCandidates.push(path.join(openclawRootDir, "dist/extensions/feishu/index.js"));
+      } catch {
+        // ignore local openclaw resolution failures and try global install paths below.
+      }
+      moduleCandidates.push(
+        "/opt/homebrew/lib/node_modules/openclaw/dist/extensions/feishu/index.js",
+        "/usr/local/lib/node_modules/openclaw/dist/extensions/feishu/index.js",
+        "/usr/lib/node_modules/openclaw/dist/extensions/feishu/index.js",
+      );
+      for (const modulePath of moduleCandidates) {
+        if (!existsSync(modulePath)) {
+          continue;
+        }
+        try {
+          const loaded = await import(pathToFileURL(modulePath).href);
+          const sendCardFeishu = (loaded as { sendCardFeishu?: unknown }).sendCardFeishu;
+          if (typeof sendCardFeishu === "function") {
+            this.api.logger.warn(
+              `codex feishu direct card sender loaded from ${modulePath}`,
+            );
+            return sendCardFeishu as (params: {
+              cfg: unknown;
+              to: string;
+              card: Record<string, unknown>;
+              accountId?: string;
+              replyInThread?: boolean;
+              replyToMessageId?: string;
+            }) => Promise<unknown>;
+          }
+        } catch (error) {
+          this.api.logger.warn(
+            `codex feishu direct card sender load failed from ${modulePath}: ${String(error)}`,
+          );
+        }
+      }
+      this.api.logger.warn(
+        `codex feishu direct card sender unavailable: no loadable module candidate`,
+      );
+      return null;
+    })();
+    return await this.feishuDirectCardSenderPromise;
   }
 
   private async pinBindingMessage(
@@ -7601,28 +9212,11 @@ export class CodexPluginController {
     conversation: ConversationTarget,
     name: string,
   ): Promise<void> {
-    if (isTelegramChannel(conversation.channel) && conversation.threadId != null) {
-      const legacyRename = this.api.runtime.channel.telegram?.conversationActions?.renameTopic;
-      if (typeof legacyRename === "function") {
-        await legacyRename(
-          conversation.parentConversationId ?? conversation.conversationId,
-          conversation.threadId,
-          name,
-          {
-            accountId: conversation.accountId,
-          },
-        ).catch((error) => {
-          this.api.logger.warn(`codex telegram topic rename failed: ${String(error)}`);
-        });
-        return;
-      }
-      const token = await this.resolveTelegramBotToken(conversation.accountId);
-      if (!token) {
-        return;
-      }
-      await this.callTelegramTopicEditApi(token, {
-        chat_id: conversation.parentConversationId ?? conversation.conversationId,
-        message_thread_id: conversation.threadId,
+    const telegramThreadId = getTelegramThreadId(conversation.threadId);
+    if (isTelegramChannel(conversation.channel) && telegramThreadId != null) {
+      await this.api.runtime.channel.telegram.conversationActions.renameTopic(
+        conversation.parentConversationId ?? conversation.conversationId,
+        telegramThreadId,
         name,
       }).catch((error) => {
         this.api.logger.warn(`codex telegram topic rename failed: ${String(error)}`);

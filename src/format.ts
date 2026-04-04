@@ -1,5 +1,6 @@
 import os from "node:os";
 import { formatModelCapabilitySuffix } from "./model-capabilities.js";
+import { getThreadNormalizedTitle } from "./thread-display.js";
 import type {
   AccountSummary,
   ContextUsageSnapshot,
@@ -15,7 +16,6 @@ import type {
   ThreadSummary,
   TurnResult,
 } from "./types.js";
-import { getThreadDisplayTitle } from "./thread-display.js";
 import { getProjectName } from "./thread-picker.js";
 
 function formatDateAge(value?: number): string | undefined {
@@ -83,7 +83,7 @@ function formatMaskedEmail(email: string): string {
 }
 
 function formatThreadButtonTitle(thread: ThreadSummary): string {
-  return getThreadDisplayTitle(thread);
+  return getThreadNormalizedTitle(thread);
 }
 
 function formatCompactAge(value?: number): string | undefined {
@@ -135,7 +135,7 @@ export function formatThreadPicker(threads: ThreadSummary[]): string {
     ...threads.slice(0, 10).map((thread, index) => {
       const age = formatDateAge(thread.updatedAt ?? thread.createdAt);
       const parts = [
-        `${index + 1}. ${getThreadDisplayTitle(thread)}`,
+        `${index + 1}. ${formatThreadButtonTitle(thread)}`,
         age ? `updated ${age}` : "",
         thread.projectKey ? `cwd ${thread.projectKey}` : "",
       ].filter(Boolean);
@@ -181,14 +181,18 @@ export function formatThreadPickerIntro(params: {
   totalPages: number;
   totalItems: number;
   includeAll: boolean;
+  query?: string;
   syncTopic?: boolean;
   projectName?: string;
   workspaceDir?: string;
   fallbackToGlobal?: boolean;
 }): string {
   const pageLabel = `Page ${params.page + 1}/${params.totalPages}`;
+  const normalizedQuery = params.query?.trim();
   const scopeLabel = params.fallbackToGlobal
-    ? "No threads in this workspace. Showing recent threads from all projects."
+    ? normalizedQuery
+      ? `No threads in this workspace. Showing threads matching "${normalizedQuery}" from all projects.`
+      : "No threads in this workspace. Showing recent threads from all projects."
     : params.projectName
       ? `Showing recent Codex threads for ${params.projectName}.`
       : params.includeAll
@@ -478,7 +482,7 @@ export function selectVisibleCodexRateLimits(params: {
       }
       return normalizeCodexModelKey(prefix) === currentModelKey;
     })
-    .toSorted((left, right) => {
+    .sort((left: RateLimitSummary, right: RateLimitSummary) => {
       const leftName = splitCodexRateLimitName(left.name);
       const rightName = splitCodexRateLimitName(right.name);
       const leftPrefixBlank = leftName.prefix ? 1 : 0;
@@ -526,7 +530,6 @@ export function formatCodexContextUsageSnapshot(
 export function formatCodexStatusText(params: {
   pluginVersion?: string;
   threadState?: ThreadState;
-  bindingThreadTitle?: string;
   account?: AccountSummary | null;
   rateLimits: RateLimitSummary[];
   projectFolder?: string;
@@ -538,9 +541,7 @@ export function formatCodexStatusText(params: {
   threadNote?: string;
 }): string {
   const lines = [];
-  const bindingThreadName =
-    params.threadState?.threadName?.trim() ||
-    params.bindingThreadTitle?.trim();
+  const bindingThreadName = params.threadState?.threadName?.trim();
   const bindingProjectName = getProjectName(params.projectFolder ?? params.worktreeFolder);
   lines.push(
     params.bindingActive

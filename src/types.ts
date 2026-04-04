@@ -318,6 +318,13 @@ export type StoredPendingRequest = {
   updatedAt: number;
 };
 
+export type FeishuDmConversation = {
+  accountId: string;
+  userId: string;
+  conversationId: string;
+  updatedAt: number;
+};
+
 export type CallbackAction =
   | {
       token: string;
@@ -566,10 +573,11 @@ export type StoreSnapshot = {
   pendingBinds: StoredPendingBind[];
   pendingRequests: StoredPendingRequest[];
   callbacks: CallbackAction[];
+  feishuDmConversations: FeishuDmConversation[];
 };
 
 export type ConversationTarget = ConversationRef & {
-  threadId?: number;
+  threadId?: string | number;
 };
 
 export type CommandButtons = PluginInteractiveButtons;

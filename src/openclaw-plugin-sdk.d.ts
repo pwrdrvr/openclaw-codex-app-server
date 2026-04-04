@@ -289,6 +289,22 @@ declare module "openclaw/plugin-sdk" {
             ) => Promise<unknown>;
           };
         };
+        feishu: {
+          sendMessageFeishu: (
+            to: string,
+            text: string,
+            opts?: {
+              accountId?: string;
+              replyInThread?: boolean;
+            },
+          ) => Promise<{ messageId?: string; chatId?: string }>;
+          sendCardFeishu?: (params: {
+            to: string;
+            card: Record<string, unknown>;
+            accountId?: string;
+            replyInThread?: boolean;
+          }) => Promise<{ messageId?: string; chatId?: string }>;
+        };
       };
     };
     registerService: (service: OpenClawPluginService) => void;

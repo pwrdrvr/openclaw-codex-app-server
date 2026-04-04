@@ -16,12 +16,13 @@ type CommandHelpEntry = {
 export const COMMAND_HELP: Record<CommandName, CommandHelpEntry> = {
   cas_resume: {
     summary: COMMAND_SUMMARY.cas_resume,
-    usage: "/cas_resume [--projects|-p] [--new [project]] [--all|-a] [--cwd <path>] [--sync] [--model <name>] [--fast|--no-fast] [--yolo|--no-yolo] [filter]",
+    usage: "/cas_resume [--projects|-p] [--new [project]] [--all|-a] [--cwd <path>] [--page <number>=1+] [--sync] [--model <name>] [--fast|--no-fast] [--yolo|--no-yolo] [filter]",
     flags: [
       { flag: "--projects, --project, -p", description: "Browse projects first, then pick a thread." },
       { flag: "--new [project]", description: "Start a new thread; optionally pass a project filter or workspace path." },
       { flag: "--all, -a", description: "Search recent threads across projects." },
       { flag: "--cwd <path>", description: "Restrict search to one workspace path." },
+      { flag: "--page <number>=1+", description: "Show a specific picker page (1-based), useful on text-only channels." },
       { flag: "--sync", description: "Sync the chat/topic name to the selected thread title." },
       { flag: "--model <name>", description: "Save a preferred model on the binding and apply it when possible." },
       { flag: "--fast, --no-fast", description: "Enable or disable fast mode while binding or creating a thread." },
@@ -152,6 +153,30 @@ export const COMMAND_HELP: Record<CommandName, CommandHelpEntry> = {
     usage: "/cas_permissions",
     examples: ["/cas_permissions"],
     notes: "This shows account and permission status. To change permissions, use /cas_status --yolo or the status card toggle.",
+  },
+  cas_reply: {
+    summary: COMMAND_SUMMARY.cas_reply,
+    usage: "/cas_reply <number|label>",
+    flags: [{ flag: "<number|label>", description: "Pick one pending Codex input action by 1-based index or exact label." }],
+    examples: [
+      "/cas_reply 1",
+      "/cas_reply Allow once",
+    ],
+  },
+  cas_q: {
+    summary: COMMAND_SUMMARY.cas_q,
+    usage: "/cas_q <option-key|number|prev|next|freeform>",
+    flags: [
+      { flag: "<option-key|number>", description: "Choose the current questionnaire option by key or 1-based index." },
+      { flag: "prev | next", description: "Navigate between questionnaire steps." },
+      { flag: "freeform", description: "Answer the current question with the next non-command message." },
+    ],
+    examples: [
+      "/cas_q 1",
+      "/cas_q A",
+      "/cas_q next",
+      "/cas_q freeform",
+    ],
   },
   cas_init: {
     summary: COMMAND_SUMMARY.cas_init,

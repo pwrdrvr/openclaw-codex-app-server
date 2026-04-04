@@ -8,6 +8,12 @@ const plugin = {
   description: "Independent OpenClaw plugin for the Codex App Server protocol.",
   register(api: OpenClawPluginApi) {
     const controller = new CodexPluginController(api);
+    const hookApi = api as OpenClawPluginApi & {
+      on?: (
+        hookName: string,
+        handler: (event: Record<string, unknown>, ctx?: Record<string, unknown>) => Promise<unknown> | unknown,
+      ) => void;
+    };
 
     api.registerService(controller.createService());
 
@@ -25,6 +31,13 @@ const plugin = {
     api.on("inbound_claim", async (event) => {
       return await controller.handleInboundClaim(event);
     });
+
+    hookApi.on?.("before_dispatch", async (event, ctx) => {
+      return await controller.handleBeforeDispatch(event, ctx);
+    });
+    (api as OpenClawPluginApi & { logger?: { warn?: (text: string) => void } }).logger?.warn?.(
+      "codex plugin registered before_dispatch hook",
+    );
 
     api.registerInteractiveHandler({
       channel: "telegram",
@@ -54,6 +67,18 @@ const plugin = {
         },
       });
     }
+
+    // Internal Feishu card callback command.
+    // This must be registered so `/cas_click <token>` is routed to command handling
+    // instead of falling through to a normal LLM turn.
+    api.registerCommand({
+      name: "cas_click",
+      description: "Internal command for Feishu card callbacks.",
+      acceptsArgs: true,
+      handler: async (ctx) => {
+        return await controller.handleCommand("cas_click", ctx);
+      },
+    });
   },
 };
 
