@@ -159,6 +159,33 @@ type TelegramOutboundAdapter = {
     mediaLocalRoots?: readonly string[];
   }) => Promise<{ messageId: string; chatId?: string }>;
 };
+
+type DiscordOutboundAdapter = {
+  sendText?: (ctx: {
+    cfg: unknown;
+    to: string;
+    text: string;
+    accountId?: string;
+    threadId?: string | number;
+  }) => Promise<{ messageId: string; channelId?: string }>;
+  sendMedia?: (ctx: {
+    cfg: unknown;
+    to: string;
+    text: string;
+    mediaUrl: string;
+    accountId?: string;
+    threadId?: string | number;
+    mediaLocalRoots?: readonly string[];
+  }) => Promise<{ messageId: string; channelId?: string }>;
+  sendPayload?: (ctx: {
+    cfg: unknown;
+    to: string;
+    payload: ReplyPayload;
+    accountId?: string;
+    threadId?: string | number;
+    mediaLocalRoots?: readonly string[];
+  }) => Promise<{ messageId: string; channelId?: string }>;
+};
 const MAX_TEXT_ATTACHMENT_CHARS = 16_000;
 const PLUGIN_VERSION = (() => {
   try {
@@ -4818,7 +4845,63 @@ export class CodexPluginController {
     this.api.logger.debug(
       `codex discord picker send conversation=${conversation.conversationId} rows=${picker.buttons?.length ?? 0}`,
     );
-    await this.api.runtime.channel.discord.sendComponentMessage(
+    const outbound = await this.loadDiscordOutboundAdapter();
+    if (outbound?.sendPayload) {
+      await outbound.sendPayload({
+        cfg: this.getOpenClawConfig(),
+        to: conversation.conversationId,
+        accountId: conversation.accountId,
+        threadId: conversation.threadId,
+        payload: {
+          text: picker.text,
+          channelData: {
+            discord: {
+              components: this.buildDiscordPickerSpec(picker),
+            },
+          },
+        },
+      });
+      return;
+    }
+    const legacySend = (this.api.runtime.channel as {
+      discord?: {
+        sendComponentMessage?: (
+          to: string,
+          spec: DiscordComponentMessageSpec,
+          opts?: { accountId?: string },
+        ) => Promise<unknown>;
+      };
+    }).discord?.sendComponentMessage;
+    if (typeof legacySend === "function") {
+      await legacySend(
+        conversation.conversationId,
+        this.buildDiscordPickerSpec(picker),
+        {
+          accountId: conversation.accountId,
+        },
+      );
+      return;
+    }
+    throw new Error("Discord component messaging is unavailable.");
+  }
+
+  private async sendDiscordPickerMessageLegacy(
+    conversation: ConversationTarget,
+    picker: PickerRender,
+  ): Promise<unknown> {
+    const legacySend = (this.api.runtime.channel as {
+      discord?: {
+        sendComponentMessage?: (
+          to: string,
+          spec: DiscordComponentMessageSpec,
+          opts?: { accountId?: string },
+        ) => Promise<unknown>;
+      };
+    }).discord?.sendComponentMessage;
+    if (typeof legacySend !== "function") {
+      throw new Error("Discord component messaging is unavailable.");
+    }
+    return await legacySend(
       conversation.conversationId,
       this.buildDiscordPickerSpec(picker),
       {
@@ -6507,6 +6590,7 @@ export class CodexPluginController {
       return delivered;
     }
     if (isDiscordChannel(conversation.channel)) {
+      const outbound = await this.loadDiscordOutboundAdapter();
       const mediaLocalRoots = this.resolveReplyMediaLocalRoots(payload.mediaUrl);
       const limit = this.api.runtime.channel.text.resolveTextChunkLimit(
         undefined,
@@ -6524,51 +6608,56 @@ export class CodexPluginController {
         );
         const attachmentChunk = hasMedia ? (chunks.shift() ?? text) : undefined;
         if (hasMedia) {
-          const result = await this.api.runtime.channel.discord.sendMessageDiscord(
-            conversation.conversationId,
-            attachmentChunk ?? "",
-            {
-              accountId: conversation.accountId,
-              mediaUrl: payload.mediaUrl,
-              mediaLocalRoots,
-            },
-          );
+          const result = await this.sendDiscordTextChunk(outbound, conversation, attachmentChunk ?? "", {
+            mediaUrl: payload.mediaUrl,
+            mediaLocalRoots,
+          });
           delivered = {
             provider: "discord",
             messageId: result.messageId,
-            channelId: result.channelId,
+            channelId:
+              typeof result.channelId === "string"
+                ? result.channelId
+                : conversation.conversationId,
           };
         }
         const finalChunk = chunks.pop() ?? (hasMedia ? "" : text);
         for (const chunk of chunks) {
-          const result = await this.api.runtime.channel.discord.sendMessageDiscord(conversation.conversationId, chunk, {
-            accountId: conversation.accountId,
-          });
+          const result = await this.sendDiscordTextChunk(outbound, conversation, chunk);
           if (!delivered) {
             delivered = {
               provider: "discord",
               messageId: result.messageId,
-              channelId: result.channelId,
+              channelId:
+                typeof result.channelId === "string"
+                  ? result.channelId
+                  : conversation.conversationId,
             };
           }
         }
-        const result = await this.api.runtime.channel.discord.sendComponentMessage(
-          conversation.conversationId,
-          {
-            text: finalChunk,
-            blocks: payload.buttons.map((row) => ({
-              type: "actions" as const,
-              buttons: row.map((button) => ({
-                label: truncateDiscordLabel(button.text),
-                style: "primary" as const,
-                callbackData: button.callback_data,
-              })),
-            })),
-          },
-          {
-            accountId: conversation.accountId,
-          },
-        );
+        const result = outbound?.sendPayload
+          ? await outbound.sendPayload({
+              cfg: this.getOpenClawConfig(),
+              to: conversation.conversationId,
+              accountId: conversation.accountId,
+              threadId: conversation.threadId,
+              mediaLocalRoots,
+              payload: {
+                text: finalChunk,
+                channelData: {
+                  discord: {
+                    components: this.buildDiscordPickerSpec({
+                      text: finalChunk,
+                      buttons: payload.buttons,
+                    }),
+                  },
+                },
+              },
+            })
+          : await this.sendDiscordPickerMessageLegacy(conversation, {
+              text: finalChunk,
+              buttons: payload.buttons,
+            });
         if (
           result &&
           typeof result === "object" &&
@@ -6578,7 +6667,10 @@ export class CodexPluginController {
           delivered = {
             provider: "discord",
             messageId: (result as { messageId: string }).messageId,
-            channelId: (result as { channelId: string }).channelId,
+            channelId:
+              typeof (result as { channelId?: unknown }).channelId === "string"
+                ? (result as { channelId: string }).channelId
+                : conversation.conversationId,
           };
         }
         this.api.logger.debug?.(
@@ -6589,33 +6681,30 @@ export class CodexPluginController {
       const textChunks = chunks.length > 0 ? chunks : [text];
       if (hasMedia) {
         const firstChunk = textChunks.shift() ?? "";
-        const result = await this.api.runtime.channel.discord.sendMessageDiscord(
-          conversation.conversationId,
-          firstChunk,
-          {
-            accountId: conversation.accountId,
-            mediaUrl: payload.mediaUrl,
-            mediaLocalRoots,
-          },
-        );
+        const result = await this.sendDiscordTextChunk(outbound, conversation, firstChunk, {
+          mediaUrl: payload.mediaUrl,
+          mediaLocalRoots,
+        });
         delivered = {
           provider: "discord",
           messageId: result.messageId,
-          channelId: result.channelId,
+          channelId:
+            typeof result.channelId === "string" ? result.channelId : conversation.conversationId,
         };
       }
       for (const chunk of textChunks) {
         if (!chunk) {
           continue;
         }
-        const result = await this.api.runtime.channel.discord.sendMessageDiscord(conversation.conversationId, chunk, {
-          accountId: conversation.accountId,
-        });
+        const result = await this.sendDiscordTextChunk(outbound, conversation, chunk);
         if (!delivered) {
           delivered = {
             provider: "discord",
             messageId: result.messageId,
-            channelId: result.channelId,
+            channelId:
+              typeof result.channelId === "string"
+                ? result.channelId
+                : conversation.conversationId,
           };
         }
       }
@@ -6637,6 +6726,14 @@ export class CodexPluginController {
       return undefined;
     }
     return (await loadAdapter("telegram")) as TelegramOutboundAdapter | undefined;
+  }
+
+  private async loadDiscordOutboundAdapter(): Promise<DiscordOutboundAdapter | undefined> {
+    const loadAdapter = this.api.runtime.channel.outbound?.loadAdapter;
+    if (typeof loadAdapter !== "function") {
+      return undefined;
+    }
+    return (await loadAdapter("discord")) as DiscordOutboundAdapter | undefined;
   }
 
   private async sendTelegramTextChunk(
@@ -6755,6 +6852,57 @@ export class CodexPluginController {
     });
   }
 
+  private async sendDiscordTextChunk(
+    outbound: DiscordOutboundAdapter | undefined,
+    conversation: ConversationTarget,
+    text: string,
+    opts?: { mediaUrl?: string; mediaLocalRoots?: readonly string[] },
+  ): Promise<{ messageId: string; channelId?: string }> {
+    const mediaUrl = opts?.mediaUrl;
+    const mediaLocalRoots = opts?.mediaLocalRoots;
+    if (mediaUrl && outbound?.sendMedia) {
+      return await outbound.sendMedia({
+        cfg: this.getOpenClawConfig(),
+        to: conversation.conversationId,
+        text,
+        mediaUrl,
+        accountId: conversation.accountId,
+        threadId: conversation.threadId,
+        mediaLocalRoots,
+      });
+    }
+    if (!mediaUrl && outbound?.sendText) {
+      return await outbound.sendText({
+        cfg: this.getOpenClawConfig(),
+        to: conversation.conversationId,
+        text,
+        accountId: conversation.accountId,
+        threadId: conversation.threadId,
+      });
+    }
+    const legacySend = (this.api.runtime.channel as {
+      discord?: {
+        sendMessageDiscord?: (
+          to: string,
+          text: string,
+          opts?: {
+            accountId?: string;
+            mediaUrl?: string;
+            mediaLocalRoots?: readonly string[];
+          },
+        ) => Promise<{ messageId: string; channelId: string }>;
+      };
+    }).discord?.sendMessageDiscord;
+    if (typeof legacySend === "function") {
+      return await legacySend(conversation.conversationId, text, {
+        accountId: conversation.accountId,
+        mediaUrl,
+        mediaLocalRoots,
+      });
+    }
+    throw new Error("Discord outbound messaging is unavailable.");
+  }
+
   private resolveReplyMediaLocalRoots(mediaUrl?: string): readonly string[] | undefined {
     const rawValue = mediaUrl?.trim();
     if (!rawValue) {
@@ -6829,7 +6977,20 @@ export class CodexPluginController {
       }
       const channelId =
         denormalizeDiscordConversationId(conversation.conversationId) ?? conversation.conversationId;
-      return await this.api.runtime.channel.discord.typing.start({
+      const legacyTyping = (this.api.runtime.channel as {
+        discord?: {
+          typing?: {
+            start?: (params: {
+              channelId: string;
+              accountId?: string;
+            }) => Promise<{ refresh: () => Promise<void>; stop: () => void }>;
+          };
+        };
+      }).discord?.typing?.start;
+      if (typeof legacyTyping !== "function") {
+        return null;
+      }
+      return await legacyTyping({
         channelId,
         accountId: conversation.accountId,
       });
@@ -6883,6 +7044,7 @@ export class CodexPluginController {
       return firstDelivered;
     }
     if (isDiscordChannel(conversation.channel)) {
+      const outbound = await this.loadDiscordOutboundAdapter();
       const limit = this.api.runtime.channel.text.resolveTextChunkLimit(
         undefined,
         "discord",
@@ -6893,18 +7055,15 @@ export class CodexPluginController {
       const textChunks = chunks.length > 0 ? chunks : [trimmed];
       let firstDelivered: DeliveredMessageRef | null = null;
       for (const chunk of textChunks) {
-        const result = await this.api.runtime.channel.discord.sendMessageDiscord(
-          conversation.conversationId,
-          chunk,
-          {
-            accountId: conversation.accountId,
-          },
-        );
+        const result = await this.sendDiscordTextChunk(outbound, conversation, chunk);
         if (!firstDelivered) {
           firstDelivered = {
             provider: "discord",
             messageId: result.messageId,
-            channelId: result.channelId,
+            channelId:
+              typeof result.channelId === "string"
+                ? result.channelId
+                : conversation.conversationId,
           };
         }
       }
@@ -7193,7 +7352,21 @@ export class CodexPluginController {
       return;
     }
     if (isDiscordChannel(conversation.channel)) {
-      await this.api.runtime.channel.discord.conversationActions.editChannel(
+      const legacyEditChannel = (this.api.runtime.channel as {
+        discord?: {
+          conversationActions?: {
+            editChannel?: (
+              channelId: string,
+              params: { name?: string },
+              opts?: { accountId?: string },
+            ) => Promise<unknown>;
+          };
+        };
+      }).discord?.conversationActions?.editChannel;
+      if (typeof legacyEditChannel !== "function") {
+        return;
+      }
+      await legacyEditChannel(
         conversation.conversationId,
         {
           name,
