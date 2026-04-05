@@ -467,6 +467,10 @@ async function createControllerHarnessWithoutDiscordSendSurfaces() {
         updatedAt: Date.now() - 30_000,
       },
     ]),
+    listSkills: vi.fn(async () => [
+      { name: "skill-a", description: "Skill A", cwd: "/repo/openclaw" },
+      { name: "skill-b", description: "Skill B", cwd: "/repo/openclaw" },
+    ]),
     readThreadState: vi.fn(async () => ({
       threadId: "thread-1",
       threadName: "Discord Thread",
@@ -1227,6 +1231,33 @@ describe("Discord controller flows", () => {
             ]),
           }),
         ]),
+      }),
+      expect.objectContaining({ accountId: "default" }),
+    );
+  });
+
+  it("sends Discord skills through the runtime api when adapter and legacy runtime are absent", async () => {
+    const { controller } = await createControllerHarnessWithoutDiscordSendSurfaces();
+    const sendDiscordComponentMessage = vi.fn(async () => ({
+      messageId: "discord-component-1",
+      channelId: "channel:chan-1",
+    }));
+    vi.spyOn(controller as any, "loadDiscordRuntimeApi").mockResolvedValue({
+      sendDiscordComponentMessage,
+    });
+
+    const reply = await controller.handleCommand("cas_skills", buildDiscordCommandContext({
+      commandBody: "/cas_skills",
+    }));
+
+    expect(reply).toEqual({
+      text: "Sent Codex skills to this Discord conversation.",
+    });
+    expect(sendDiscordComponentMessage).toHaveBeenCalledWith(
+      "channel:chan-1",
+      expect.objectContaining({
+        text: expect.stringContaining("Type `$skill-name` in this chat to run one directly."),
+        blocks: expect.any(Array),
       }),
       expect.objectContaining({ accountId: "default" }),
     );
@@ -2686,6 +2717,28 @@ describe("Discord controller flows", () => {
         }),
       }),
     );
+  });
+
+  it("resolves the Discord bot token through the host api when the sdk facade is unavailable", async () => {
+    const { controller } = await createControllerHarness();
+    (controller as any).lastRuntimeConfig = { plugins: { discord: {} } };
+    vi.spyOn(controller as any, "loadDiscordSdk").mockRejectedValue(
+      new Error(
+        "Cannot find module '/Users/huntharo/github/openclaw/dist/plugin-sdk/root-alias.cjs/discord'",
+      ),
+    );
+    const resolveDiscordAccount = vi.fn(() => ({ token: "discord-token" }));
+    vi.spyOn(controller as any, "loadDiscordExtensionApi").mockResolvedValue({
+      resolveDiscordAccount,
+    });
+
+    const token = await (controller as any).resolveDiscordBotToken("default");
+
+    expect(token).toBe("discord-token");
+    expect(resolveDiscordAccount).toHaveBeenCalledWith({
+      cfg: { plugins: { discord: {} } },
+      accountId: "default",
+    });
   });
 
   it("replays pending cas_resume --sync effects after approval hydrates on the next resume command", async () => {
@@ -5112,6 +5165,7 @@ describe("Discord controller flows", () => {
       reason: "inbound",
     });
 
+    await flushAsyncWork();
     await flushAsyncWork();
     expect(sendMessageTelegram).toHaveBeenCalledWith(
       TEST_TELEGRAM_PEER_ID,

@@ -104,6 +104,11 @@ type DiscordSdkModule = typeof import("openclaw/plugin-sdk/discord");
 type TelegramAccountSdkModule = typeof import("openclaw/plugin-sdk/telegram-account");
 type DiscordComponentMessageSpec = import("openclaw/plugin-sdk/discord").DiscordComponentMessageSpec;
 type DiscordComponentBuildResult = ReturnType<DiscordSdkModule["buildDiscordComponentMessage"]>;
+type DiscordExtensionApiModule = {
+  resolveDiscordAccount?: (params: { cfg: unknown; accountId?: string }) => {
+    token?: string;
+  };
+};
 type DiscordRuntimeApiModule = {
   editDiscordComponentMessage?: (
     to: string,
@@ -4968,16 +4973,27 @@ export class CodexPluginController {
         ) => Promise<unknown>;
       };
     }).discord?.sendComponentMessage;
-    if (typeof legacySend !== "function") {
-      throw new Error("Discord component messaging is unavailable.");
+    if (typeof legacySend === "function") {
+      return await legacySend(
+        conversation.conversationId,
+        this.buildDiscordPickerSpec(picker),
+        {
+          accountId: conversation.accountId,
+        },
+      );
     }
-    return await legacySend(
-      conversation.conversationId,
-      this.buildDiscordPickerSpec(picker),
-      {
-        accountId: conversation.accountId,
-      },
-    );
+    const runtimeApi = await this.loadDiscordRuntimeApi();
+    if (typeof runtimeApi?.sendDiscordComponentMessage === "function") {
+      return await runtimeApi.sendDiscordComponentMessage(
+        conversation.conversationId,
+        this.buildDiscordPickerSpec(picker),
+        {
+          cfg: this.getOpenClawConfig(),
+          accountId: conversation.accountId,
+        },
+      );
+    }
+    throw new Error("Discord component messaging is unavailable.");
   }
 
   private buildDiscordPickerSpec(picker: PickerRender): DiscordComponentMessageSpec {
@@ -5045,6 +5061,23 @@ export class CodexPluginController {
       return (await import(pathToFileURL(runtimeApiPath).href)) as DiscordRuntimeApiModule;
     } catch (error) {
       this.api.logger.debug?.(`codex discord runtime api unavailable: ${String(error)}`);
+      return undefined;
+    }
+  }
+
+  private async loadDiscordExtensionApi(): Promise<DiscordExtensionApiModule | undefined> {
+    try {
+      const openClawEntrypointPath = resolveOpenClawEntrypointPath();
+      const apiPath = resolveCompatFallbackPath(
+        openClawEntrypointPath,
+        "dist/extensions/discord/api.js",
+      );
+      if (!existsSync(apiPath)) {
+        return undefined;
+      }
+      return (await import(pathToFileURL(apiPath).href)) as DiscordExtensionApiModule;
+    } catch (error) {
+      this.api.logger.debug?.(`codex discord extension api unavailable: ${String(error)}`);
       return undefined;
     }
   }
@@ -7336,12 +7369,25 @@ export class CodexPluginController {
     if (!cfg) {
       return undefined;
     }
-    const discordSdk = await this.loadDiscordSdk();
-    const account = discordSdk.resolveDiscordAccount({
-      cfg: cfg as Parameters<DiscordSdkModule["resolveDiscordAccount"]>[0]["cfg"],
+    try {
+      const discordSdk = await this.loadDiscordSdk();
+      const account = discordSdk.resolveDiscordAccount({
+        cfg: cfg as Parameters<DiscordSdkModule["resolveDiscordAccount"]>[0]["cfg"],
+        accountId,
+      });
+      const token = account.token?.trim();
+      if (token) {
+        return token;
+      }
+    } catch (error) {
+      this.api.logger.debug?.(`codex discord account facade unavailable: ${String(error)}`);
+    }
+    const discordApi = await this.loadDiscordExtensionApi();
+    const account = discordApi?.resolveDiscordAccount?.({
+      cfg,
       accountId,
     });
-    const token = account.token?.trim();
+    const token = account?.token?.trim();
     return token || undefined;
   }
 
