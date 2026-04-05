@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { existsSync, promises as fs } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import type {
   PluginConversationBindingResolvedEvent,
@@ -94,12 +94,51 @@ import {
   type StoredPendingBind,
   type StoredPendingRequest,
 } from "./types.js";
-import { loadOpenClawCompatModule } from "./openclaw-sdk-compat.js";
+import {
+  loadOpenClawCompatModule,
+  resolveCompatFallbackPath,
+} from "./openclaw-sdk-compat.js";
 
 type DiscordSdkModule = typeof import("openclaw/plugin-sdk/discord");
 type TelegramAccountSdkModule = typeof import("openclaw/plugin-sdk/telegram-account");
 type DiscordComponentMessageSpec = import("openclaw/plugin-sdk/discord").DiscordComponentMessageSpec;
 type DiscordComponentBuildResult = ReturnType<DiscordSdkModule["buildDiscordComponentMessage"]>;
+type DiscordRuntimeApiModule = {
+  sendDiscordComponentMessage?: (
+    to: string,
+    spec: DiscordComponentMessageSpec,
+    opts?: {
+      cfg?: unknown;
+      accountId?: string;
+      mediaUrl?: string;
+      mediaLocalRoots?: readonly string[];
+    },
+  ) => Promise<{ messageId: string; channelId: string }>;
+  sendMessageDiscord?: (
+    to: string,
+    text: string,
+    opts?: {
+      cfg?: unknown;
+      accountId?: string;
+      mediaUrl?: string;
+      mediaLocalRoots?: readonly string[];
+    },
+  ) => Promise<{ messageId: string; channelId: string }>;
+  sendTypingDiscord?: (
+    channelId: string,
+    opts?: {
+      cfg?: unknown;
+      accountId?: string;
+    },
+  ) => Promise<unknown>;
+  editChannelDiscord?: (
+    payload: { channelId: string; name?: string },
+    opts?: {
+      cfg?: unknown;
+      accountId?: string;
+    },
+  ) => Promise<unknown>;
+};
 
 type ActiveRunRecord = {
   conversation: ConversationTarget;
@@ -4882,6 +4921,18 @@ export class CodexPluginController {
       );
       return;
     }
+    const runtimeApi = await this.loadDiscordRuntimeApi();
+    if (typeof runtimeApi?.sendDiscordComponentMessage === "function") {
+      await runtimeApi.sendDiscordComponentMessage(
+        conversation.conversationId,
+        this.buildDiscordPickerSpec(picker),
+        {
+          cfg: this.getOpenClawConfig(),
+          accountId: conversation.accountId,
+        },
+      );
+      return;
+    }
     throw new Error("Discord component messaging is unavailable.");
   }
 
@@ -4949,6 +5000,23 @@ export class CodexPluginController {
       label: "telegram account",
       logger: this.api.logger,
     });
+  }
+
+  private async loadDiscordRuntimeApi(): Promise<DiscordRuntimeApiModule | undefined> {
+    try {
+      const openClawEntrypointPath = require.resolve("openclaw");
+      const runtimeApiPath = resolveCompatFallbackPath(
+        openClawEntrypointPath,
+        "dist/extensions/discord/runtime-api.js",
+      );
+      if (!existsSync(runtimeApiPath)) {
+        return undefined;
+      }
+      return (await import(pathToFileURL(runtimeApiPath).href)) as DiscordRuntimeApiModule;
+    } catch (error) {
+      this.api.logger.debug?.(`codex discord runtime api unavailable: ${String(error)}`);
+      return undefined;
+    }
   }
 
   private async editDiscordComponentMessage(
@@ -6900,6 +6968,15 @@ export class CodexPluginController {
         mediaLocalRoots,
       });
     }
+    const runtimeApi = await this.loadDiscordRuntimeApi();
+    if (typeof runtimeApi?.sendMessageDiscord === "function") {
+      return await runtimeApi.sendMessageDiscord(conversation.conversationId, text, {
+        cfg: this.getOpenClawConfig(),
+        accountId: conversation.accountId,
+        mediaUrl,
+        mediaLocalRoots,
+      });
+    }
     throw new Error("Discord outbound messaging is unavailable.");
   }
 
@@ -6959,6 +7036,7 @@ export class CodexPluginController {
 
   private async startTypingLease(conversation: ConversationTarget): Promise<{
     stop: () => void;
+    refresh?: () => Promise<void>;
   } | null> {
     if (isTelegramChannel(conversation.channel)) {
       const legacyTyping = this.api.runtime.channel.telegram?.typing?.start;
@@ -6988,7 +7066,28 @@ export class CodexPluginController {
         };
       }).discord?.typing?.start;
       if (typeof legacyTyping !== "function") {
-        return null;
+        const runtimeApi = await this.loadDiscordRuntimeApi();
+        if (typeof runtimeApi?.sendTypingDiscord !== "function") {
+          return null;
+        }
+        const sendTyping = async () => {
+          await runtimeApi.sendTypingDiscord?.(channelId, {
+            cfg: this.getOpenClawConfig(),
+            accountId: conversation.accountId,
+          });
+        };
+        await sendTyping().catch((error) => {
+          this.api.logger.debug?.(`codex discord typing skipped: ${String(error)}`);
+        });
+        const timer = setInterval(() => {
+          void sendTyping().catch((error) => {
+            this.api.logger.debug?.(`codex discord typing refresh failed: ${String(error)}`);
+          });
+        }, 4_000);
+        return {
+          refresh: sendTyping,
+          stop: () => clearInterval(timer),
+        };
       }
       return await legacyTyping({
         channelId,
@@ -7364,6 +7463,24 @@ export class CodexPluginController {
         };
       }).discord?.conversationActions?.editChannel;
       if (typeof legacyEditChannel !== "function") {
+        const runtimeApi = await this.loadDiscordRuntimeApi();
+        if (typeof runtimeApi?.editChannelDiscord !== "function") {
+          return;
+        }
+        await runtimeApi.editChannelDiscord(
+          {
+            channelId:
+              denormalizeDiscordConversationId(conversation.conversationId) ??
+              conversation.conversationId,
+            name,
+          },
+          {
+            cfg: this.getOpenClawConfig(),
+            accountId: conversation.accountId,
+          },
+        ).catch((error) => {
+          this.api.logger.warn(`codex discord channel rename failed: ${String(error)}`);
+        });
         return;
       }
       await legacyEditChannel(

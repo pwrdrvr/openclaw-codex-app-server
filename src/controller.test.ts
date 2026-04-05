@@ -449,6 +449,49 @@ async function createControllerHarnessWithoutLegacyDiscordRuntime() {
   };
 }
 
+async function createControllerHarnessWithoutDiscordSendSurfaces() {
+  const harness = createApiMock();
+  delete (harness.api as any).runtime.channel.discord;
+  (harness.api as any).runtime.channel.outbound.loadAdapter = vi.fn(async (channel: string) =>
+    channel === "telegram" ? harness.telegramOutbound : undefined,
+  );
+  const controller = new CodexPluginController(harness.api);
+  await controller.start();
+  const clientMock = {
+    listThreads: vi.fn(async () => [
+      {
+        threadId: "thread-1",
+        title: "Discord Thread",
+        projectKey: "/repo/openclaw",
+        createdAt: Date.now() - 60_000,
+        updatedAt: Date.now() - 30_000,
+      },
+    ]),
+    readThreadState: vi.fn(async () => ({
+      threadId: "thread-1",
+      threadName: "Discord Thread",
+      model: "openai/gpt-5.4",
+      cwd: "/repo/openclaw",
+      serviceTier: "default",
+      approvalPolicy: "on-request",
+      sandbox: "workspace-write",
+    })),
+    readThreadContext: vi.fn(async () => ({
+      lastUserMessage: undefined,
+      lastAssistantMessage: undefined,
+    })),
+    readAccount: vi.fn(async () => ({
+      email: "test@example.com",
+      planType: "pro",
+      type: "chatgpt",
+    })),
+    readRateLimits: vi.fn(async () => []),
+  };
+  (controller as any).client = clientMock;
+  (controller as any).readThreadHasChanges = vi.fn(async () => false);
+  return { controller };
+}
+
 const require = createRequire(import.meta.url);
 const packageJson = require("../package.json") as { version?: string };
 const TEST_PLUGIN_VERSION = packageJson.version ?? "unknown";
@@ -602,6 +645,33 @@ describe("Discord controller flows", () => {
             }),
           }),
         }),
+      }),
+    );
+  });
+
+  it("sends resume pickers through the Discord runtime api when adapter and legacy runtime are absent", async () => {
+    const { controller } = await createControllerHarnessWithoutDiscordSendSurfaces();
+    const sendDiscordComponentMessage = vi.fn(async () => ({
+      messageId: "discord-component-1",
+      channelId: "channel:chan-1",
+    }));
+    vi.spyOn(controller as any, "loadDiscordRuntimeApi").mockResolvedValue({
+      sendDiscordComponentMessage,
+    });
+
+    const reply = await controller.handleCommand("cas_resume", buildDiscordCommandContext());
+
+    expect(reply).toEqual({
+      text: "Sent a Codex thread picker to this Discord conversation.",
+    });
+    expect(sendDiscordComponentMessage).toHaveBeenCalledWith(
+      "channel:chan-1",
+      expect.objectContaining({
+        text: expect.stringContaining("Showing recent Codex threads"),
+        blocks: expect.any(Array),
+      }),
+      expect.objectContaining({
+        accountId: "default",
       }),
     );
   });
