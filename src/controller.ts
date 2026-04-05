@@ -96,6 +96,7 @@ import {
 } from "./types.js";
 import {
   loadOpenClawCompatModule,
+  resolveOpenClawEntrypointPath,
   resolveCompatFallbackPath,
 } from "./openclaw-sdk-compat.js";
 
@@ -5004,7 +5005,7 @@ export class CodexPluginController {
 
   private async loadDiscordRuntimeApi(): Promise<DiscordRuntimeApiModule | undefined> {
     try {
-      const openClawEntrypointPath = require.resolve("openclaw");
+      const openClawEntrypointPath = resolveOpenClawEntrypointPath();
       const runtimeApiPath = resolveCompatFallbackPath(
         openClawEntrypointPath,
         "dist/extensions/discord/runtime-api.js",

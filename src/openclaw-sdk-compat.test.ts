@@ -3,6 +3,7 @@ import {
   isMissingPluginSdkSubpathError,
   loadOpenClawCompatModule,
   resolveCompatFallbackPath,
+  resolveOpenClawEntrypointPath,
 } from "./openclaw-sdk-compat.js";
 
 describe("openclaw sdk compat", () => {
@@ -54,6 +55,40 @@ describe("openclaw sdk compat", () => {
       specifier: "file:///tmp/node_modules/openclaw/dist/plugin-sdk/discord.js",
     });
     expect(importer).toHaveBeenCalledTimes(2);
+  });
+
+  it("prefers the host OpenClaw checkout from argv/cwd over the local dependency", () => {
+    const files = new Map<string, string>([
+      [
+        "/host/openclaw/package.json",
+        JSON.stringify({
+          name: "openclaw",
+          exports: {
+            "./plugin-sdk": { default: "./dist/plugin-sdk/index.js" },
+            "./cli-entry": { default: "./dist/cli-entry.js" },
+          },
+        }),
+      ],
+    ]);
+
+    const result = resolveOpenClawEntrypointPath({
+      argv1: "/host/openclaw/openclaw.mjs",
+      cwd: "/host/openclaw",
+      pathExists: (targetPath) =>
+        targetPath === "/host/openclaw/openclaw.mjs" ||
+        targetPath === "/host/openclaw/dist/index.js" ||
+        files.has(targetPath),
+      readFile: (targetPath) => {
+        const content = files.get(targetPath);
+        if (!content) {
+          throw new Error(`missing ${targetPath}`);
+        }
+        return content;
+      },
+      resolver: () => "/repo/openclaw-app-server/node_modules/openclaw/dist/index.js",
+    });
+
+    expect(result).toBe("/host/openclaw/dist/index.js");
   });
 
   it("rethrows non-resolution failures from the public import", async () => {
