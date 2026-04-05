@@ -35,7 +35,8 @@ Compatibility:
 
 | Plugin release | OpenClaw compatibility |
 | --- | --- |
-| `0.6.0+` | `2026.3.22` and newer, with automatic fallback between the legacy Telegram runtime shim and the `2026.3.31+` outbound adapter facade |
+| `0.6.1+` | `2026.3.22` and newer, including post-`v2026.4.2` local checkouts such as `2026.4.5`, with fallback across the legacy Telegram runtime shim, the `2026.3.31+` outbound adapter, and the generated Discord / Telegram facades used after the channel-specific SDK exports were removed |
+| `0.6.0` | `2026.3.22` through `v2026.4.2`; falls back between the legacy Telegram runtime shim and the `2026.3.31+` outbound adapter, but newer local OpenClaw checkouts break Discord interactive loading because `openclaw/plugin-sdk/discord` is no longer exported |
 | `0.5.x` | `2026.3.22` through `2026.3.30`; Telegram breaks on `2026.3.31+` |
 
 Install:
@@ -50,7 +51,7 @@ Uninstall:
 openclaw plugins uninstall openclaw-codex-app-server
 ```
 
-OpenClaw `2026.3.22` and newer include the binding and plugin interface changes this package originally targeted. Plugin `0.6.0+` prefers the newer OpenClaw `2026.3.31+` outbound adapter and Telegram account facade when they are present, but it also falls back to the older `runtime.channel.telegram` interface used by OpenClaw `2026.3.22` through `2026.3.30`. Older plugin `0.5.x` releases only match that legacy path and are not compatible with Telegram on OpenClaw `2026.3.31+`.
+OpenClaw `2026.3.22` and newer include the binding and plugin interface changes this package originally targeted. Plugin `0.6.1+` first tries the public `openclaw/plugin-sdk/discord` and `openclaw/plugin-sdk/telegram-account` paths that existed through released OpenClaw `v2026.4.2`, then falls back to the generated `dist/plugin-sdk/*.js` facades used by newer local checkouts such as `2026.4.5`, while still preserving the older `runtime.channel.telegram` path used by OpenClaw `2026.3.22` through `2026.3.30`. Plugin `0.6.0` covers the Telegram runtime and outbound-adapter split, but not the later Discord facade export removal. Older plugin `0.5.x` releases only match the legacy Telegram path and are not compatible with Telegram on OpenClaw `2026.3.31+`.
 
 > ⚠️ OpenClaw flags this plugin as unsafe because it must launch `codex app-server`. That process spawn is the whole bridge, not an optional extra.
 

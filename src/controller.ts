@@ -16,13 +16,6 @@ import type {
   ReplyPayload,
   ConversationRef,
 } from "openclaw/plugin-sdk";
-import {
-  buildDiscordComponentMessage,
-  editDiscordComponentMessage,
-  registerBuiltDiscordComponentMessage,
-  type DiscordComponentMessageSpec,
-  resolveDiscordAccount,
-} from "openclaw/plugin-sdk/discord";
 import { resolvePluginSettings, resolveWorkspaceDir } from "./config.js";
 import { CodexAppServerModeClient, type ActiveCodexRun, isMissingThreadError } from "./client.js";
 import { getThreadDisplayTitle } from "./thread-display.js";
@@ -101,6 +94,12 @@ import {
   type StoredPendingBind,
   type StoredPendingRequest,
 } from "./types.js";
+import { loadOpenClawCompatModule } from "./openclaw-sdk-compat.js";
+
+type DiscordSdkModule = typeof import("openclaw/plugin-sdk/discord");
+type TelegramAccountSdkModule = typeof import("openclaw/plugin-sdk/telegram-account");
+type DiscordComponentMessageSpec = import("openclaw/plugin-sdk/discord").DiscordComponentMessageSpec;
+type DiscordComponentBuildResult = ReturnType<DiscordSdkModule["buildDiscordComponentMessage"]>;
 
 type ActiveRunRecord = {
   conversation: ConversationTarget;
@@ -1571,7 +1570,7 @@ export class CodexPluginController {
               callback.kind === "pending-questionnaire"
                 ? "Recorded your answers and sent them to Codex."
                 : "Sent to Codex.";
-            await editDiscordComponentMessage(
+            await this.editDiscordComponentMessage(
               conversation.conversationId,
               messageId,
               {
@@ -1612,14 +1611,14 @@ export class CodexPluginController {
             `codex discord picker refresh conversation=${conversationId} rows=${picker.buttons?.length ?? 0}`,
           );
           const messageId = ctx.interaction.messageId?.trim();
-          const builtPicker = this.buildDiscordPickerMessage(picker);
+          const builtPicker = await this.buildDiscordPickerMessage(picker);
           try {
             await ctx.respond.editMessage({
               components: builtPicker.components,
             });
             interactionSettled = true;
             if (messageId) {
-              registerBuiltDiscordComponentMessage({
+              await this.registerBuiltDiscordComponentMessage({
                 buildResult: builtPicker,
                 messageId,
               });
@@ -1639,7 +1638,7 @@ export class CodexPluginController {
                   })
                   .catch(() => undefined);
               }
-              await editDiscordComponentMessage(
+              await this.editDiscordComponentMessage(
                 conversation.conversationId,
                 messageId,
                 this.buildDiscordPickerSpec(picker),
@@ -1666,7 +1665,7 @@ export class CodexPluginController {
             });
             const originalMessageId = ctx.interaction.messageId?.trim();
             if (callback.kind === "resume-thread" && originalMessageId) {
-              await editDiscordComponentMessage(
+              await this.editDiscordComponentMessage(
                 conversation.conversationId,
                 originalMessageId,
                 {
@@ -2464,11 +2463,11 @@ export class CodexPluginController {
         });
         return true;
       }
-      const builtPicker = this.buildDiscordPickerMessage({
+      const builtPicker = await this.buildDiscordPickerMessage({
         text: statusCard.text,
         buttons: statusCard.buttons,
       });
-      await editDiscordComponentMessage(
+      await this.editDiscordComponentMessage(
         message.channelId,
         message.messageId,
         this.buildDiscordPickerSpec({
@@ -2479,7 +2478,7 @@ export class CodexPluginController {
           accountId: conversation.accountId,
         },
       );
-      registerBuiltDiscordComponentMessage({
+      await this.registerBuiltDiscordComponentMessage({
         buildResult: builtPicker,
         messageId: message.messageId,
       });
@@ -4842,10 +4841,49 @@ export class CodexPluginController {
     };
   }
 
-  private buildDiscordPickerMessage(picker: PickerRender) {
-    return buildDiscordComponentMessage({
+  private async buildDiscordPickerMessage(
+    picker: PickerRender,
+  ): Promise<DiscordComponentBuildResult> {
+    const discordSdk = await this.loadDiscordSdk();
+    return discordSdk.buildDiscordComponentMessage({
       spec: this.buildDiscordPickerSpec(picker),
     });
+  }
+
+  private async loadDiscordSdk(): Promise<DiscordSdkModule> {
+    return await loadOpenClawCompatModule<DiscordSdkModule>({
+      specifier: "openclaw/plugin-sdk/discord",
+      fallbackRelativePath: "dist/plugin-sdk/discord.js",
+      label: "discord",
+      logger: this.api.logger,
+    });
+  }
+
+  private async loadTelegramAccountSdk(): Promise<TelegramAccountSdkModule> {
+    return await loadOpenClawCompatModule<TelegramAccountSdkModule>({
+      specifier: "openclaw/plugin-sdk/telegram-account",
+      fallbackRelativePath: "dist/plugin-sdk/telegram-account.js",
+      label: "telegram account",
+      logger: this.api.logger,
+    });
+  }
+
+  private async editDiscordComponentMessage(
+    to: string,
+    messageId: string,
+    spec: DiscordComponentMessageSpec,
+    opts?: { accountId?: string },
+  ): Promise<{ messageId: string; channelId: string }> {
+    const discordSdk = await this.loadDiscordSdk();
+    return await discordSdk.editDiscordComponentMessage(to, messageId, spec, opts);
+  }
+
+  private async registerBuiltDiscordComponentMessage(params: {
+    buildResult: DiscordComponentBuildResult;
+    messageId: string;
+  }): Promise<void> {
+    const discordSdk = await this.loadDiscordSdk();
+    discordSdk.registerBuiltDiscordComponentMessage(params);
   }
 
   private async dispatchCallbackAction(
@@ -6971,7 +7009,7 @@ export class CodexPluginController {
       return undefined;
     }
     try {
-      const telegramAccount = await import("openclaw/plugin-sdk/telegram-account");
+      const telegramAccount = await this.loadTelegramAccountSdk();
       const account = telegramAccount.resolveTelegramAccount({
         cfg,
         accountId,
@@ -6989,8 +7027,9 @@ export class CodexPluginController {
     if (!cfg) {
       return undefined;
     }
-    const account = resolveDiscordAccount({
-      cfg: cfg as Parameters<typeof resolveDiscordAccount>[0]["cfg"],
+    const discordSdk = await this.loadDiscordSdk();
+    const account = discordSdk.resolveDiscordAccount({
+      cfg: cfg as Parameters<DiscordSdkModule["resolveDiscordAccount"]>[0]["cfg"],
       accountId,
     });
     const token = account.token?.trim();
