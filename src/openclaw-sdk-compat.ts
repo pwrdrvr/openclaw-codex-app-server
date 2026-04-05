@@ -17,11 +17,16 @@ type CompatReadFile = (targetPath: string) => string;
 const compatModuleCache = new Map<string, Promise<unknown>>();
 
 export function isMissingPluginSdkSubpathError(error: unknown, specifier: string): boolean {
-  if (!(error instanceof Error)) {
-    return false;
-  }
-  const code = (error as NodeJS.ErrnoException).code;
-  const message = error.message ?? "";
+  const code =
+    typeof error === "object" && error !== null && "code" in error
+      ? String((error as { code?: unknown }).code ?? "")
+      : "";
+  const message =
+    typeof error === "object" && error !== null && "message" in error
+      ? String((error as { message?: unknown }).message ?? "")
+      : error instanceof Error
+        ? error.message ?? ""
+        : "";
   if (code === "ERR_PACKAGE_PATH_NOT_EXPORTED") {
     return true;
   }

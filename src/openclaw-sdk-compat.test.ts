@@ -18,6 +18,18 @@ describe("openclaw sdk compat", () => {
     expect(isMissingPluginSdkSubpathError(error, "openclaw/plugin-sdk/discord")).toBe(true);
   });
 
+  it("detects missing plugin sdk subpaths from object-like jiti errors", () => {
+    expect(
+      isMissingPluginSdkSubpathError(
+        {
+          message:
+            "Cannot find module '/Users/huntharo/github/openclaw/dist/plugin-sdk/root-alias.cjs/discord'",
+        },
+        "openclaw/plugin-sdk/discord",
+      ),
+    ).toBe(true);
+  });
+
   it("resolves fallback paths from the OpenClaw entrypoint", () => {
     expect(
       resolveCompatFallbackPath(

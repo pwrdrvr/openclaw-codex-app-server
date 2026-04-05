@@ -105,6 +105,19 @@ type TelegramAccountSdkModule = typeof import("openclaw/plugin-sdk/telegram-acco
 type DiscordComponentMessageSpec = import("openclaw/plugin-sdk/discord").DiscordComponentMessageSpec;
 type DiscordComponentBuildResult = ReturnType<DiscordSdkModule["buildDiscordComponentMessage"]>;
 type DiscordRuntimeApiModule = {
+  editDiscordComponentMessage?: (
+    to: string,
+    messageId: string,
+    spec: DiscordComponentMessageSpec,
+    opts?: {
+      cfg?: unknown;
+      accountId?: string;
+    },
+  ) => Promise<{ messageId: string; channelId: string }>;
+  registerBuiltDiscordComponentMessage?: (params: {
+    buildResult: DiscordComponentBuildResult;
+    messageId: string;
+  }) => void;
   sendDiscordComponentMessage?: (
     to: string,
     spec: DiscordComponentMessageSpec,
@@ -1678,8 +1691,11 @@ export class CodexPluginController {
             `codex discord picker refresh conversation=${conversationId} rows=${picker.buttons?.length ?? 0}`,
           );
           const messageId = ctx.interaction.messageId?.trim();
-          const builtPicker = await this.buildDiscordPickerMessage(picker);
+          const builtPicker = await this.tryBuildDiscordPickerMessage(picker);
           try {
+            if (!builtPicker) {
+              throw new Error("Discord picker rebuild unavailable.");
+            }
             await ctx.respond.editMessage({
               components: builtPicker.components,
             });
@@ -2533,7 +2549,7 @@ export class CodexPluginController {
       const builtPicker = await this.buildDiscordPickerMessage({
         text: statusCard.text,
         buttons: statusCard.buttons,
-      });
+      }).catch(() => undefined);
       await this.editDiscordComponentMessage(
         message.channelId,
         message.messageId,
@@ -2545,10 +2561,12 @@ export class CodexPluginController {
           accountId: conversation.accountId,
         },
       );
-      await this.registerBuiltDiscordComponentMessage({
-        buildResult: builtPicker,
-        messageId: message.messageId,
-      });
+      if (builtPicker) {
+        await this.registerBuiltDiscordComponentMessage({
+          buildResult: builtPicker,
+          messageId: message.messageId,
+        });
+      }
       return true;
     } catch (error) {
       this.api.logger.warn(
@@ -4985,6 +5003,17 @@ export class CodexPluginController {
     });
   }
 
+  private async tryBuildDiscordPickerMessage(
+    picker: PickerRender,
+  ): Promise<DiscordComponentBuildResult | undefined> {
+    try {
+      return await this.buildDiscordPickerMessage(picker);
+    } catch (error) {
+      this.api.logger.debug?.(`codex discord picker build fallback: ${String(error)}`);
+      return undefined;
+    }
+  }
+
   private async loadDiscordSdk(): Promise<DiscordSdkModule> {
     return await loadOpenClawCompatModule<DiscordSdkModule>({
       specifier: "openclaw/plugin-sdk/discord",
@@ -5026,16 +5055,37 @@ export class CodexPluginController {
     spec: DiscordComponentMessageSpec,
     opts?: { accountId?: string },
   ): Promise<{ messageId: string; channelId: string }> {
-    const discordSdk = await this.loadDiscordSdk();
-    return await discordSdk.editDiscordComponentMessage(to, messageId, spec, opts);
+    try {
+      const discordSdk = await this.loadDiscordSdk();
+      return await discordSdk.editDiscordComponentMessage(to, messageId, spec, opts);
+    } catch (error) {
+      const runtimeApi = await this.loadDiscordRuntimeApi();
+      if (typeof runtimeApi?.editDiscordComponentMessage === "function") {
+        return await runtimeApi.editDiscordComponentMessage(to, messageId, spec, {
+          cfg: this.getOpenClawConfig(),
+          accountId: opts?.accountId,
+        });
+      }
+      throw error;
+    }
   }
 
   private async registerBuiltDiscordComponentMessage(params: {
     buildResult: DiscordComponentBuildResult;
     messageId: string;
   }): Promise<void> {
-    const discordSdk = await this.loadDiscordSdk();
-    discordSdk.registerBuiltDiscordComponentMessage(params);
+    try {
+      const discordSdk = await this.loadDiscordSdk();
+      discordSdk.registerBuiltDiscordComponentMessage(params);
+      return;
+    } catch (error) {
+      const runtimeApi = await this.loadDiscordRuntimeApi();
+      if (typeof runtimeApi?.registerBuiltDiscordComponentMessage === "function") {
+        runtimeApi.registerBuiltDiscordComponentMessage(params);
+        return;
+      }
+      throw error;
+    }
   }
 
   private async dispatchCallbackAction(

@@ -1432,6 +1432,75 @@ describe("Discord controller flows", () => {
     expect(sendComponentMessage).not.toHaveBeenCalled();
   });
 
+  it("falls back to direct Discord message edit when Discord picker rebuild is unavailable", async () => {
+    const { controller, sendComponentMessage } = await createControllerHarness();
+    const callback = await (controller as any).store.putCallback({
+      kind: "picker-view",
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:chan-1",
+      },
+      view: {
+        mode: "projects",
+        includeAll: true,
+        page: 0,
+      },
+    });
+    const acknowledge = vi.fn(async () => {});
+    const editMessage = vi.fn(async () => {});
+    const runtimeEdit = vi.fn(async () => ({
+      messageId: "message-1",
+      channelId: "channel:chan-1",
+    }));
+    vi.spyOn(controller as any, "tryBuildDiscordPickerMessage").mockResolvedValue(undefined);
+    vi.spyOn(controller as any, "loadDiscordSdk").mockRejectedValue(
+      new Error(
+        "Cannot find module '/Users/huntharo/github/openclaw/dist/plugin-sdk/root-alias.cjs/discord'",
+      ),
+    );
+    vi.spyOn(controller as any, "loadDiscordRuntimeApi").mockResolvedValue({
+      editDiscordComponentMessage: runtimeEdit,
+    });
+
+    await controller.handleDiscordInteractive({
+      channel: "discord",
+      accountId: "default",
+      interactionId: "interaction-1",
+      conversationId: "channel:chan-1",
+      auth: { isAuthorizedSender: true },
+      interaction: {
+        kind: "button",
+        data: `codexapp:${callback.token}`,
+        namespace: "codexapp",
+        payload: callback.token,
+        messageId: "message-1",
+      },
+      senderId: "user-1",
+      senderUsername: "Ada",
+      respond: {
+        acknowledge,
+        reply: vi.fn(async () => {}),
+        followUp: vi.fn(async () => {}),
+        editMessage,
+        clearComponents: vi.fn(async () => {}),
+      },
+    } as any);
+
+    expect(editMessage).not.toHaveBeenCalled();
+    expect(acknowledge).toHaveBeenCalled();
+    expect(runtimeEdit).toHaveBeenCalledWith(
+      "channel:chan-1",
+      "message-1",
+      expect.objectContaining({
+        text: expect.stringContaining("Choose a project to filter recent Codex threads"),
+      }),
+      expect.objectContaining({ accountId: "default" }),
+    );
+    expect(discordSdkState.registerBuiltDiscordComponentMessage).not.toHaveBeenCalled();
+    expect(sendComponentMessage).not.toHaveBeenCalled();
+  });
+
   it("acknowledges and clears Discord pending-input buttons by message id", async () => {
     const { controller } = await createControllerHarness();
     await (controller as any).store.upsertPendingRequest({
