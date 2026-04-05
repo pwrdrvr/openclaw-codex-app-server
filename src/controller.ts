@@ -2281,6 +2281,16 @@ export class CodexPluginController {
       const existingBinding = this.store.getBinding(conversation);
       const hydratedBinding = existingBinding ? null : await this.hydrateApprovedBinding(conversation);
       const resolvedBinding = existingBinding ?? hydratedBinding?.binding ?? null;
+      const stalePending = this.store.getPendingRequestByConversation(conversation);
+      if (
+        stalePending &&
+        !event.content.trim().startsWith("/") &&
+        this.matchesPendingTextReply(stalePending, event.content)
+      ) {
+        await this.store.removePendingRequest(stalePending.requestId);
+        await this.sendText(conversation, "No active Codex run is waiting for input.");
+        return { handled: true };
+      }
       this.api.logger.debug?.(
         `codex inbound claim channel=${conversation.channel} account=${conversation.accountId} conversation=${conversation.conversationId} parent=${conversation.parentConversationId ?? "<none>"} local=${resolvedBinding ? "yes" : "no"}`,
       );
@@ -2645,12 +2655,26 @@ export class CodexPluginController {
       conversation && currentBinding && !existingBinding
         ? await this.hydrateApprovedBinding(conversation)
         : null;
+    const localBinding = existingBinding ?? hydratedBinding?.binding ?? null;
+    const feishuLocalBindingFallback =
+      conversation !== null &&
+      isFeishuChannel(conversation.channel) &&
+      Boolean(bindingApi.getCurrentConversationBinding) &&
+      !currentBinding &&
+      Boolean(localBinding);
+    if (feishuLocalBindingFallback && conversation && localBinding) {
+      this.api.logger.debug?.(
+        `codex feishu binding fallback conversation=${conversation.conversationId} thread=${localBinding.threadId} hostBinding=no localBinding=yes`,
+      );
+    }
     const binding =
       conversation && bindingApi.getCurrentConversationBinding
         ? currentBinding
-          ? existingBinding ?? hydratedBinding?.binding ?? null
-          : null
-        : existingBinding ?? hydratedBinding?.binding ?? null;
+          ? localBinding
+          : isFeishuChannel(conversation.channel)
+            ? localBinding
+            : null
+        : localBinding;
     const args = ctx.args?.trim() ?? "";
     const normalizedArgs = normalizeOptionDashes(args).trim();
     if (normalizedArgs === "help" || normalizedArgs === "--help") {
@@ -5585,6 +5609,48 @@ export class CodexPluginController {
     return true;
   }
 
+  private matchesPendingTextReply(
+    pending: StoredPendingRequest,
+    text: string,
+  ): boolean {
+    const trimmed = text.trim();
+    if (!trimmed) {
+      return false;
+    }
+    const numeric = Number.parseInt(trimmed, 10);
+    const normalized = trimmed.toLowerCase();
+    const normalizedWithoutPrefix = trimmed.replace(/^\d+[\s.)-]*/, "").trim().toLowerCase();
+    if (pending.state.questionnaire) {
+      const questionnaire = pending.state.questionnaire;
+      if (normalized === "prev" || normalized === "next" || normalized === "freeform") {
+        return true;
+      }
+      const question = questionnaire.questions[questionnaire.currentIndex];
+      if (!question) {
+        return false;
+      }
+      if (Number.isInteger(numeric) && numeric > 0 && Boolean(question.options[numeric - 1])) {
+        return true;
+      }
+      return question.options.some((entry) => {
+        const label = entry.label.trim().toLowerCase();
+        return (
+          entry.key.toLowerCase() === normalized ||
+          label === normalized ||
+          (normalizedWithoutPrefix.length > 0 && label === normalizedWithoutPrefix)
+        );
+      });
+    }
+    const actions = pending.state.actions ?? [];
+    if (Number.isInteger(numeric) && numeric > 0 && numeric <= actions.length) {
+      return true;
+    }
+    return actions.some((action) => {
+      const label = action.label.trim().toLowerCase();
+      return label === normalized || (normalizedWithoutPrefix.length > 0 && label === normalizedWithoutPrefix);
+    });
+  }
+
   private resolveThreadWorkspaceDir(
     parsed: ReturnType<typeof parseThreadSelectionArgs>,
     binding: StoredBinding | null,
@@ -6597,6 +6663,7 @@ export class CodexPluginController {
       }
       const active = this.activeRuns.get(buildConversationKey(callback.conversation));
       if (!active) {
+        await this.store.removePendingRequest(pending.requestId);
         await responders.reply("No active Codex run is waiting for input.");
         return;
       }
@@ -6620,6 +6687,7 @@ export class CodexPluginController {
       }
       const active = this.activeRuns.get(buildConversationKey(callback.conversation));
       if (!active) {
+        await this.store.removePendingRequest(pending.requestId);
         await responders.reply("No active Codex run is waiting for input.");
         return;
       }

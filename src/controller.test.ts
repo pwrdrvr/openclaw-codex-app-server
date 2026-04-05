@@ -2483,6 +2483,35 @@ describe("Discord controller flows", () => {
     expect(sendMessageTelegram).not.toHaveBeenCalled();
   });
 
+  it("uses local Feishu binding for cas_status when host binding is unavailable", async () => {
+    const { controller } = await createControllerHarness();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "feishu",
+        accountId: "default",
+        conversationId: "oc_group_chat:topic:om_topic_root",
+        parentConversationId: "oc_group_chat",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-local-1",
+      workspaceDir: "/repo/openclaw",
+      threadTitle: "Feishu Local Thread",
+      updatedAt: Date.now(),
+    });
+
+    const reply = await controller.handleCommand(
+      "cas_status",
+      buildFeishuCommandContext({
+        commandBody: "/cas_status",
+        getCurrentConversationBinding: vi.fn(async () => null),
+      }),
+    );
+
+    expect(reply.text).toContain("Binding: Discord Thread (openclaw)");
+    expect(reply.text).toContain("Thread:");
+    expect(reply.text).not.toContain("Binding: none");
+  });
+
   it("binds a Feishu conversation locally when core binding helpers are unavailable", async () => {
     const { controller } = await createControllerHarness();
 
@@ -3729,6 +3758,137 @@ describe("Discord controller flows", () => {
       expect.stringContaining("different conversation"),
       expect.objectContaining({ accountId: "default" }),
     );
+  });
+
+  it("treats Feishu quoted approval text as stale input when no active run is waiting", async () => {
+    const { controller, clientMock, sendMessageFeishu } = await createControllerHarness();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "feishu",
+        accountId: "default",
+        conversationId: "oc_group_chat",
+      },
+      sessionKey: "plugin-session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+    await (controller as any).store.upsertPendingRequest({
+      requestId: "req-stale-text",
+      conversation: {
+        channel: "feishu",
+        accountId: "default",
+        conversationId: "oc_group_chat",
+      },
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      state: {
+        requestId: "req-stale-text",
+        options: ["approve once", "deny"],
+        actions: [
+          {
+            kind: "approval",
+            label: "Approve once",
+            decision: "accept",
+            responseDecision: "accept",
+          },
+          {
+            kind: "approval",
+            label: "Deny",
+            decision: "decline",
+            responseDecision: "decline",
+          },
+        ],
+        expiresAt: Date.now() + 60_000,
+      },
+      updatedAt: Date.now(),
+    });
+
+    const handled = await controller.handleInboundClaim({
+      content: "1 approve once",
+      channel: "feishu",
+      accountId: "default",
+      conversationId: "oc_group_chat",
+      senderId: "ou_user_1",
+      metadata: {
+        originatingTo: "chat:oc_group_chat",
+      },
+    });
+
+    expect(handled).toEqual({ handled: true });
+    expect(clientMock.startThread).not.toHaveBeenCalled();
+    expect(sendMessageFeishu).toHaveBeenLastCalledWith(
+      "oc_group_chat",
+      "No active Codex run is waiting for input.",
+      expect.objectContaining({ accountId: "default" }),
+    );
+    expect((controller as any).store.getPendingRequestById("req-stale-text")).toBeNull();
+  });
+
+  it("clears stale Feishu pending-input callbacks when /cas_click arrives after the active run is gone", async () => {
+    const { controller, clientMock, sendMessageFeishu } = await createControllerHarness();
+    await (controller as any).store.upsertPendingRequest({
+      requestId: "req-stale-click",
+      conversation: {
+        channel: "feishu",
+        accountId: "default",
+        conversationId: "oc_group_chat",
+      },
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      state: {
+        requestId: "req-stale-click",
+        options: ["approve once", "deny"],
+        actions: [
+          {
+            kind: "approval",
+            label: "Approve once",
+            decision: "accept",
+            responseDecision: "accept",
+          },
+          {
+            kind: "approval",
+            label: "Deny",
+            decision: "decline",
+            responseDecision: "decline",
+          },
+        ],
+        expiresAt: Date.now() + 60_000,
+      },
+      updatedAt: Date.now(),
+    });
+    const callback = await (controller as any).store.putCallback({
+      kind: "pending-input",
+      conversation: {
+        channel: "feishu",
+        accountId: "default",
+        conversationId: "oc_group_chat",
+      },
+      requestId: "req-stale-click",
+      actionIndex: 0,
+      ttlMs: 60_000,
+    });
+
+    const handled = await controller.handleInboundClaim({
+      content: `/cas_click ${callback.token}`,
+      channel: "feishu",
+      accountId: "default",
+      conversationId: "oc_group_chat",
+      senderId: "ou_user_1",
+      metadata: {
+        originatingTo: "chat:oc_group_chat",
+      },
+    });
+
+    expect(handled).toEqual({ handled: true });
+    expect(clientMock.startThread).not.toHaveBeenCalled();
+    expect(sendMessageFeishu).toHaveBeenLastCalledWith(
+      "oc_group_chat",
+      "No active Codex run is waiting for input.",
+      expect.objectContaining({ accountId: "default" }),
+    );
+    expect((controller as any).store.getPendingRequestById("req-stale-click")).toBeNull();
+    expect((controller as any).store.getCallback(callback.token)).toBeNull();
   });
 
   it("rejects expired /cas_click tokens for Feishu callbacks", async () => {
