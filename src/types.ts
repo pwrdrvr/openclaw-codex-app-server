@@ -314,6 +314,7 @@ export type StoredPendingRequest = {
   threadId: string;
   workspaceDir: string;
   state: PendingInputState;
+  pendingMessage?: InteractiveMessageRef;
   createdAt?: number;
   updatedAt: number;
 };
