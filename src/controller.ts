@@ -95,6 +95,7 @@ import {
   type StoredPendingRequest,
 } from "./types.js";
 import {
+  isMissingPluginSdkSubpathError,
   loadOpenClawCompatModule,
   resolveOpenClawEntrypointPath,
   resolveCompatFallbackPath,
@@ -466,6 +467,77 @@ function normalizeDiscordInteractiveConversationId(params: {
   return params.guildId ? `channel:${normalized}` : `user:${normalized}`;
 }
 
+function readCommandContextId(ctx: PluginCommandContext, key: string): string | undefined {
+  const value = asRecord(ctx)?.[key];
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed || undefined;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(Math.trunc(value));
+  }
+  return undefined;
+}
+
+function normalizeDiscordChannelConversationId(raw?: string): string | undefined {
+  const normalized = normalizeDiscordConversationId(raw);
+  if (!normalized) {
+    return undefined;
+  }
+  return normalized.includes(":") ? normalized : `channel:${normalized}`;
+}
+
+function resolveDiscordCommandConversation(
+  ctx: PluginCommandContext,
+): ConversationTarget | null {
+  const threadConversationId = normalizeDiscordChannelConversationId(
+    readCommandContextId(ctx, "messageThreadId"),
+  );
+  if (threadConversationId) {
+    return {
+      channel: "discord",
+      accountId: ctx.accountId ?? "default",
+      conversationId: threadConversationId,
+      parentConversationId: normalizeDiscordChannelConversationId(
+        readCommandContextId(ctx, "threadParentId"),
+      ),
+    };
+  }
+  const candidates = [ctx.from, ctx.to]
+    .map((raw) => {
+      const normalized = normalizeDiscordConversationId(raw);
+      if (!normalized) {
+        return undefined;
+      }
+      const kind = normalized.startsWith("channel:")
+        ? 2
+        : normalized.startsWith("user:")
+          ? 1
+          : 0;
+      return {
+        raw: raw?.trim() ?? "",
+        normalized,
+        kind,
+      };
+    })
+    .filter((candidate): candidate is { raw: string; normalized: string; kind: number } =>
+      Boolean(candidate),
+    );
+  if (candidates.length === 0) {
+    return null;
+  }
+  candidates.sort((left, right) => right.kind - left.kind);
+  const conversationId = candidates[0]?.normalized;
+  if (!conversationId) {
+    return null;
+  }
+  return {
+    channel: "discord",
+    accountId: ctx.accountId ?? "default",
+    conversationId,
+  };
+}
+
 function toConversationTargetFromCommand(ctx: PluginCommandContext): ConversationTarget | null {
   if (isTelegramChannel(ctx.channel)) {
     const chatId = normalizeTelegramChatId(ctx.to ?? ctx.from ?? ctx.senderId);
@@ -478,24 +550,11 @@ function toConversationTargetFromCommand(ctx: PluginCommandContext): Conversatio
       conversationId:
         typeof ctx.messageThreadId === "number" ? `${chatId}:topic:${ctx.messageThreadId}` : chatId,
       parentConversationId: typeof ctx.messageThreadId === "number" ? chatId : undefined,
-      threadId: ctx.messageThreadId,
+      threadId: typeof ctx.messageThreadId === "number" ? ctx.messageThreadId : undefined,
     };
   }
   if (isDiscordChannel(ctx.channel)) {
-    // In brand-new Discord threads, the slash interaction may place the slash
-    // user identity in ctx.from (e.g. "slash:user-id") while ctx.to holds the
-    // real channel target. Prefer ctx.to when ctx.from is a slash identity so
-    // /cas_resume resolves to the correct channel from the first attempt.
-    const sourceId = ctx.from?.startsWith("slash:") ? ctx.to : (ctx.from ?? ctx.to);
-    const conversationId = normalizeDiscordConversationId(sourceId);
-    if (!conversationId) {
-      return null;
-    }
-    return {
-      channel: "discord",
-      accountId: ctx.accountId ?? "default",
-      conversationId,
-    };
+    return resolveDiscordCommandConversation(ctx);
   }
   return null;
 }
@@ -543,13 +602,15 @@ function toConversationTargetFromInbound(event: {
     conversationId,
     parentConversationId,
     threadId:
-      typeof event.threadId === "number"
-        ? event.threadId
-        : typeof event.threadId === "string"
-          ? Number.isFinite(Number(event.threadId))
-            ? Number(event.threadId)
-            : undefined
-          : undefined,
+      channel === "discord"
+        ? undefined
+        : typeof event.threadId === "number"
+          ? event.threadId
+          : typeof event.threadId === "string"
+            ? Number.isFinite(Number(event.threadId))
+              ? Number(event.threadId)
+              : undefined
+            : undefined,
   };
 }
 
@@ -1697,28 +1758,41 @@ export class CodexPluginController {
           );
           const messageId = ctx.interaction.messageId?.trim();
           const builtPicker = await this.tryBuildDiscordPickerMessage(picker);
-          try {
-            if (!builtPicker) {
-              throw new Error("Discord picker rebuild unavailable.");
-            }
-            await ctx.respond.editMessage({
-              components: builtPicker.components,
-            });
-            interactionSettled = true;
-            if (messageId) {
-              await this.registerBuiltDiscordComponentMessage({
-                buildResult: builtPicker,
-                messageId,
+          let alreadyAcknowledged = false;
+          if (builtPicker) {
+            try {
+              await ctx.respond.editMessage({
+                components: builtPicker.components,
               });
+              interactionSettled = true;
+              if (messageId) {
+                await this.registerBuiltDiscordComponentMessage({
+                  buildResult: builtPicker,
+                  messageId,
+                });
+              }
+              return;
+            } catch (error) {
+              const detail = String(error);
+              if (!messageId) {
+                this.api.logger.warn(
+                  `codex discord picker edit failed conversation=${conversationId}: ${detail}`,
+                );
+              } else if (!detail.includes("already been acknowledged")) {
+                await ctx.respond
+                  .acknowledge()
+                  .then(() => {
+                    interactionSettled = true;
+                  })
+                  .catch(() => undefined);
+              } else {
+                alreadyAcknowledged = true;
+              }
             }
-            return;
-          } catch (error) {
-            const detail = String(error);
-            this.api.logger.warn(
-              `codex discord picker edit failed conversation=${conversationId}: ${detail}`,
-            );
-            if (messageId) {
-              if (!detail.includes("already been acknowledged")) {
+          }
+          if (messageId) {
+            try {
+              if (!interactionSettled && !alreadyAcknowledged) {
                 await ctx.respond
                   .acknowledge()
                   .then(() => {
@@ -1735,9 +1809,20 @@ export class CodexPluginController {
                 },
               );
               return;
+            } catch (error) {
+              this.api.logger.warn(
+                `codex discord picker edit failed conversation=${conversationId}: ${String(error)}`,
+              );
             }
           }
-          await this.sendDiscordPicker(conversation, picker);
+          try {
+            await this.sendDiscordPicker(conversation, picker);
+          } catch (error) {
+            this.api.logger.warn(
+              `codex discord picker send failed conversation=${conversationId}: ${String(error)}`,
+            );
+            throw error;
+          }
         },
         requestConversationBinding: async (params) => {
           const requestConversationBinding = bindingApi.requestConversationBinding;
@@ -1792,8 +1877,7 @@ export class CodexPluginController {
         ? await bindingApi.getCurrentConversationBinding()
         : null;
     const pendingBind = conversation ? this.store.getPendingBind(conversation) : null;
-    const existingBinding =
-      conversation && currentBinding ? this.store.getBinding(conversation) : null;
+    const existingBinding = conversation ? this.store.getBinding(conversation) : null;
     const hydratedBinding =
       conversation && currentBinding && !existingBinding
         ? await this.hydrateApprovedBinding(conversation)
@@ -4914,7 +4998,6 @@ export class CodexPluginController {
         cfg: this.getOpenClawConfig(),
         to: conversation.conversationId,
         accountId: conversation.accountId,
-        threadId: conversation.threadId,
         payload: {
           text: picker.text,
           channelData: {
@@ -5025,7 +5108,9 @@ export class CodexPluginController {
     try {
       return await this.buildDiscordPickerMessage(picker);
     } catch (error) {
-      this.api.logger.debug?.(`codex discord picker build fallback: ${String(error)}`);
+      if (!isMissingPluginSdkSubpathError(error, "openclaw/plugin-sdk/discord")) {
+        this.api.logger.debug?.(`codex discord picker build fallback: ${String(error)}`);
+      }
       return undefined;
     }
   }
@@ -6792,7 +6877,6 @@ export class CodexPluginController {
               cfg: this.getOpenClawConfig(),
               to: conversation.conversationId,
               accountId: conversation.accountId,
-              threadId: conversation.threadId,
               mediaLocalRoots,
               payload: {
                 text: finalChunk,
@@ -7019,7 +7103,6 @@ export class CodexPluginController {
         text,
         mediaUrl,
         accountId: conversation.accountId,
-        threadId: conversation.threadId,
         mediaLocalRoots,
       });
     }
@@ -7029,7 +7112,6 @@ export class CodexPluginController {
         to: conversation.conversationId,
         text,
         accountId: conversation.accountId,
-        threadId: conversation.threadId,
       });
     }
     const legacySend = (this.api.runtime.channel as {

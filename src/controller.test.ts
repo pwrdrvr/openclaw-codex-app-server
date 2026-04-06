@@ -1203,6 +1203,91 @@ describe("Discord controller flows", () => {
     );
   });
 
+  it("prefers the Discord channel target over a user target for cas_status binding lookups", async () => {
+    const { controller, sendComponentMessage } = await createControllerHarness();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:chan-1",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+
+    const reply = await controller.handleCommand(
+      "cas_status",
+      buildDiscordCommandContext({
+        from: "discord:user-1",
+        to: "discord:channel:chan-1",
+        commandBody: "/cas_status",
+        getCurrentConversationBinding: vi.fn(async () => ({ bindingId: "b1" })),
+      }),
+    );
+
+    expect(reply).toEqual({
+      text: "Sent Codex status controls to this Discord conversation.",
+    });
+    expect(sendComponentMessage).toHaveBeenCalledWith(
+      "channel:chan-1",
+      expect.objectContaining({
+        text: expect.stringContaining("Binding: Discord Thread (openclaw)"),
+      }),
+      expect.objectContaining({ accountId: "default" }),
+    );
+  });
+
+  it("uses the Discord thread target for cas_status binding lookups when slash commands run in a thread", async () => {
+    const { controller, sendComponentMessage } = await createControllerHarness();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:thread-1",
+        parentConversationId: "channel:parent-1",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+
+    const reply = await controller.handleCommand(
+      "cas_status",
+      buildDiscordCommandContext({
+        from: "discord:channel:parent-1",
+        to: "slash:user-1",
+        messageThreadId: "thread-1",
+        threadParentId: "parent-1",
+        commandBody: "/cas_status",
+        getCurrentConversationBinding: vi.fn(async () => ({
+          bindingId: "b1",
+          pluginId: "test-plugin",
+          pluginRoot: "/repo/openclaw-app-server",
+          channel: "discord",
+          accountId: "default",
+          conversationId: "channel:thread-1",
+          parentConversationId: "channel:parent-1",
+          threadId: "thread-1",
+          boundAt: Date.now(),
+        })),
+      }),
+    );
+
+    expect(reply).toEqual({
+      text: "Sent Codex status controls to this Discord conversation.",
+    });
+    expect(sendComponentMessage).toHaveBeenCalledWith(
+      "channel:thread-1",
+      expect.objectContaining({
+        text: expect.stringContaining("Binding: Discord Thread (openclaw)"),
+      }),
+      expect.objectContaining({ accountId: "default" }),
+    );
+  });
+
   it("sends Discord skills directly instead of returning Telegram buttons", async () => {
     const { controller, sendComponentMessage } = await createControllerHarness();
 
@@ -1464,7 +1549,7 @@ describe("Discord controller flows", () => {
   });
 
   it("falls back to direct Discord message edit when Discord picker rebuild is unavailable", async () => {
-    const { controller, sendComponentMessage } = await createControllerHarness();
+    const { controller, sendComponentMessage, api } = await createControllerHarness();
     const callback = await (controller as any).store.putCallback({
       kind: "picker-view",
       conversation: {
@@ -1528,6 +1613,7 @@ describe("Discord controller flows", () => {
       }),
       expect.objectContaining({ accountId: "default" }),
     );
+    expect((api.logger.warn as any).mock.calls).toEqual([]);
     expect(discordSdkState.registerBuiltDiscordComponentMessage).not.toHaveBeenCalled();
     expect(sendComponentMessage).not.toHaveBeenCalled();
   });
@@ -1982,8 +2068,8 @@ describe("Discord controller flows", () => {
     );
   });
 
-  it("shows cas_status as none when no core binding exists", async () => {
-    const { controller } = await createControllerHarness();
+  it("shows cas_status from the persisted local binding when core lookup is unavailable", async () => {
+    const { controller, sendComponentMessage } = await createControllerHarness();
     await (controller as any).store.upsertBinding({
       conversation: {
         channel: "discord",
@@ -2007,10 +2093,23 @@ describe("Discord controller flows", () => {
       }),
     );
 
-    expect(reply.text).toContain("Binding: none");
-    expect(reply.text).toContain(`Plugin version: ${TEST_PLUGIN_VERSION}`);
-    expect(reply.text).not.toContain("Project folder: /repo/discrawl");
-    expect(reply.text).not.toContain("Session: session-1");
+    expect(reply).toEqual({
+      text: "Sent Codex status controls to this Discord conversation.",
+    });
+    expect(sendComponentMessage).toHaveBeenCalledWith(
+      "user:1177378744822943744",
+      expect.objectContaining({
+        text: expect.stringContaining("Binding: Discord Thread (discrawl)"),
+      }),
+      expect.objectContaining({ accountId: "default" }),
+    );
+    expect(sendComponentMessage).toHaveBeenCalledWith(
+      "user:1177378744822943744",
+      expect.objectContaining({
+        text: expect.stringContaining("Project folder: /repo/discrawl"),
+      }),
+      expect.objectContaining({ accountId: "default" }),
+    );
   });
 
   it("does not hydrate a denied pending bind into cas_status", async () => {
@@ -4520,6 +4619,30 @@ describe("Discord controller flows", () => {
         mediaLocalRoots: expect.arrayContaining([stateDir, path.dirname(attachmentPath)]),
       }),
     );
+  });
+
+  it("does not forward Discord thread ids into outbound adapter sends", async () => {
+    const { controller, discordOutbound } = await createControllerHarnessWithoutLegacyDiscordRuntime();
+
+    const sent = await (controller as any).sendReply(
+      {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:1485612939816996956",
+        threadId: 1485612939816996900,
+      },
+      {
+        text: "hello from a bound discord thread",
+      },
+    );
+
+    expect(sent).toBe(true);
+    const outboundCall = discordOutbound.sendText.mock.calls.at(-1)?.[0] as
+      | { to?: string; accountId?: string; threadId?: unknown }
+      | undefined;
+    expect(outboundCall?.to).toBe("channel:1485612939816996956");
+    expect(outboundCall?.accountId).toBe("default");
+    expect("threadId" in (outboundCall ?? {})).toBe(false);
   });
 
   it("restarts a Discord bound run when the active queue path fails", async () => {
