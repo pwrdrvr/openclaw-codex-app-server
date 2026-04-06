@@ -101,10 +101,46 @@ import {
   resolveCompatFallbackPath,
 } from "./openclaw-sdk-compat.js";
 
-type DiscordSdkModule = typeof import("openclaw/plugin-sdk/discord");
-type TelegramAccountSdkModule = typeof import("openclaw/plugin-sdk/telegram-account");
-type DiscordComponentMessageSpec = import("openclaw/plugin-sdk/discord").DiscordComponentMessageSpec;
-type DiscordComponentBuildResult = ReturnType<DiscordSdkModule["buildDiscordComponentMessage"]>;
+// Structural types for lazily-loaded plugin-sdk subpath modules.
+// These must NOT use `typeof import("openclaw/plugin-sdk/...")` because jiti
+// resolves those at load time, which breaks on OpenClaw >=2026.4.2 where the
+// subpath exports were removed (see #84).
+type DiscordComponentMessageSpec = {
+  text?: string;
+  blocks?: Array<{
+    type: "actions";
+    buttons: Array<{
+      label: string;
+      style?: "primary" | "secondary" | "success" | "danger" | "link";
+      callbackData?: string;
+    }>;
+  }>;
+};
+type DiscordComponentBuildResult = {
+  content?: string;
+  components?: unknown[];
+};
+type DiscordSdkModule = {
+  buildDiscordComponentMessage(params: { spec: DiscordComponentMessageSpec }): DiscordComponentBuildResult;
+  editDiscordComponentMessage(
+    to: string,
+    messageId: string,
+    spec: DiscordComponentMessageSpec,
+    opts?: { cfg?: unknown; accountId?: string },
+  ): Promise<{ messageId: string; channelId: string }>;
+  registerBuiltDiscordComponentMessage(params: {
+    buildResult: DiscordComponentBuildResult;
+    messageId: string;
+  }): void;
+  resolveDiscordAccount(params: { cfg: unknown; accountId?: string }): {
+    token?: string;
+  };
+};
+type TelegramAccountSdkModule = {
+  resolveTelegramAccount(params: { cfg: unknown; accountId?: string }): {
+    token?: string;
+  };
+};
 type DiscordExtensionApiModule = {
   resolveDiscordAccount?: (params: { cfg: unknown; accountId?: string }) => {
     token?: string;
