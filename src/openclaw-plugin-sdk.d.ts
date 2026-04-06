@@ -46,7 +46,8 @@ declare module "openclaw/plugin-sdk" {
     from?: string;
     to?: string;
     accountId?: string;
-    messageThreadId?: number;
+    messageThreadId?: string | number;
+    threadParentId?: string;
     media?: PluginInboundMedia[];
   };
 

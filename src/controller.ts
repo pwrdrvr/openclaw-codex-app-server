@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { existsSync, promises as fs } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import type {
   PluginConversationBindingResolvedEvent,
@@ -16,13 +16,6 @@ import type {
   ReplyPayload,
   ConversationRef,
 } from "openclaw/plugin-sdk";
-import {
-  buildDiscordComponentMessage,
-  editDiscordComponentMessage,
-  registerBuiltDiscordComponentMessage,
-  type DiscordComponentMessageSpec,
-  resolveDiscordAccount,
-} from "openclaw/plugin-sdk/discord";
 import { resolvePluginSettings, resolveWorkspaceDir } from "./config.js";
 import { CodexAppServerModeClient, type ActiveCodexRun, isMissingThreadError } from "./client.js";
 import { getThreadDisplayTitle } from "./thread-display.js";
@@ -101,6 +94,71 @@ import {
   type StoredPendingBind,
   type StoredPendingRequest,
 } from "./types.js";
+import {
+  isMissingPluginSdkSubpathError,
+  loadOpenClawCompatModule,
+  resolveOpenClawEntrypointPath,
+  resolveCompatFallbackPath,
+} from "./openclaw-sdk-compat.js";
+
+type DiscordSdkModule = typeof import("openclaw/plugin-sdk/discord");
+type TelegramAccountSdkModule = typeof import("openclaw/plugin-sdk/telegram-account");
+type DiscordComponentMessageSpec = import("openclaw/plugin-sdk/discord").DiscordComponentMessageSpec;
+type DiscordComponentBuildResult = ReturnType<DiscordSdkModule["buildDiscordComponentMessage"]>;
+type DiscordExtensionApiModule = {
+  resolveDiscordAccount?: (params: { cfg: unknown; accountId?: string }) => {
+    token?: string;
+  };
+};
+type DiscordRuntimeApiModule = {
+  editDiscordComponentMessage?: (
+    to: string,
+    messageId: string,
+    spec: DiscordComponentMessageSpec,
+    opts?: {
+      cfg?: unknown;
+      accountId?: string;
+    },
+  ) => Promise<{ messageId: string; channelId: string }>;
+  registerBuiltDiscordComponentMessage?: (params: {
+    buildResult: DiscordComponentBuildResult;
+    messageId: string;
+  }) => void;
+  sendDiscordComponentMessage?: (
+    to: string,
+    spec: DiscordComponentMessageSpec,
+    opts?: {
+      cfg?: unknown;
+      accountId?: string;
+      mediaUrl?: string;
+      mediaLocalRoots?: readonly string[];
+    },
+  ) => Promise<{ messageId: string; channelId: string }>;
+  sendMessageDiscord?: (
+    to: string,
+    text: string,
+    opts?: {
+      cfg?: unknown;
+      accountId?: string;
+      mediaUrl?: string;
+      mediaLocalRoots?: readonly string[];
+    },
+  ) => Promise<{ messageId: string; channelId: string }>;
+  sendTypingDiscord?: (
+    channelId: string,
+    opts?: {
+      cfg?: unknown;
+      accountId?: string;
+    },
+  ) => Promise<unknown>;
+  editChannelDiscord?: (
+    payload: { channelId: string; name?: string },
+    opts?: {
+      cfg?: unknown;
+      accountId?: string;
+    },
+  ) => Promise<unknown>;
+};
 
 type ActiveRunRecord = {
   conversation: ConversationTarget;
@@ -159,6 +217,33 @@ type TelegramOutboundAdapter = {
     threadId?: string | number;
     mediaLocalRoots?: readonly string[];
   }) => Promise<{ messageId: string; chatId?: string }>;
+};
+
+type DiscordOutboundAdapter = {
+  sendText?: (ctx: {
+    cfg: unknown;
+    to: string;
+    text: string;
+    accountId?: string;
+    threadId?: string | number;
+  }) => Promise<{ messageId: string; channelId?: string }>;
+  sendMedia?: (ctx: {
+    cfg: unknown;
+    to: string;
+    text: string;
+    mediaUrl: string;
+    accountId?: string;
+    threadId?: string | number;
+    mediaLocalRoots?: readonly string[];
+  }) => Promise<{ messageId: string; channelId?: string }>;
+  sendPayload?: (ctx: {
+    cfg: unknown;
+    to: string;
+    payload: ReplyPayload;
+    accountId?: string;
+    threadId?: string | number;
+    mediaLocalRoots?: readonly string[];
+  }) => Promise<{ messageId: string; channelId?: string }>;
 };
 const MAX_TEXT_ATTACHMENT_CHARS = 16_000;
 const PLUGIN_VERSION = (() => {
@@ -382,6 +467,77 @@ function normalizeDiscordInteractiveConversationId(params: {
   return params.guildId ? `channel:${normalized}` : `user:${normalized}`;
 }
 
+function readCommandContextId(ctx: PluginCommandContext, key: string): string | undefined {
+  const value = asRecord(ctx)?.[key];
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed || undefined;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(Math.trunc(value));
+  }
+  return undefined;
+}
+
+function normalizeDiscordChannelConversationId(raw?: string): string | undefined {
+  const normalized = normalizeDiscordConversationId(raw);
+  if (!normalized) {
+    return undefined;
+  }
+  return normalized.includes(":") ? normalized : `channel:${normalized}`;
+}
+
+function resolveDiscordCommandConversation(
+  ctx: PluginCommandContext,
+): ConversationTarget | null {
+  const threadConversationId = normalizeDiscordChannelConversationId(
+    readCommandContextId(ctx, "messageThreadId"),
+  );
+  if (threadConversationId) {
+    return {
+      channel: "discord",
+      accountId: ctx.accountId ?? "default",
+      conversationId: threadConversationId,
+      parentConversationId: normalizeDiscordChannelConversationId(
+        readCommandContextId(ctx, "threadParentId"),
+      ),
+    };
+  }
+  const candidates = [ctx.from, ctx.to]
+    .map((raw) => {
+      const normalized = normalizeDiscordConversationId(raw);
+      if (!normalized) {
+        return undefined;
+      }
+      const kind = normalized.startsWith("channel:")
+        ? 2
+        : normalized.startsWith("user:")
+          ? 1
+          : 0;
+      return {
+        raw: raw?.trim() ?? "",
+        normalized,
+        kind,
+      };
+    })
+    .filter((candidate): candidate is { raw: string; normalized: string; kind: number } =>
+      Boolean(candidate),
+    );
+  if (candidates.length === 0) {
+    return null;
+  }
+  candidates.sort((left, right) => right.kind - left.kind);
+  const conversationId = candidates[0]?.normalized;
+  if (!conversationId) {
+    return null;
+  }
+  return {
+    channel: "discord",
+    accountId: ctx.accountId ?? "default",
+    conversationId,
+  };
+}
+
 function toConversationTargetFromCommand(ctx: PluginCommandContext): ConversationTarget | null {
   if (isTelegramChannel(ctx.channel)) {
     const chatId = normalizeTelegramChatId(ctx.to ?? ctx.from ?? ctx.senderId);
@@ -394,24 +550,11 @@ function toConversationTargetFromCommand(ctx: PluginCommandContext): Conversatio
       conversationId:
         typeof ctx.messageThreadId === "number" ? `${chatId}:topic:${ctx.messageThreadId}` : chatId,
       parentConversationId: typeof ctx.messageThreadId === "number" ? chatId : undefined,
-      threadId: ctx.messageThreadId,
+      threadId: typeof ctx.messageThreadId === "number" ? ctx.messageThreadId : undefined,
     };
   }
   if (isDiscordChannel(ctx.channel)) {
-    // In brand-new Discord threads, the slash interaction may place the slash
-    // user identity in ctx.from (e.g. "slash:user-id") while ctx.to holds the
-    // real channel target. Prefer ctx.to when ctx.from is a slash identity so
-    // /cas_resume resolves to the correct channel from the first attempt.
-    const sourceId = ctx.from?.startsWith("slash:") ? ctx.to : (ctx.from ?? ctx.to);
-    const conversationId = normalizeDiscordConversationId(sourceId);
-    if (!conversationId) {
-      return null;
-    }
-    return {
-      channel: "discord",
-      accountId: ctx.accountId ?? "default",
-      conversationId,
-    };
+    return resolveDiscordCommandConversation(ctx);
   }
   return null;
 }
@@ -459,13 +602,15 @@ function toConversationTargetFromInbound(event: {
     conversationId,
     parentConversationId,
     threadId:
-      typeof event.threadId === "number"
-        ? event.threadId
-        : typeof event.threadId === "string"
-          ? Number.isFinite(Number(event.threadId))
-            ? Number(event.threadId)
-            : undefined
-          : undefined,
+      channel === "discord"
+        ? undefined
+        : typeof event.threadId === "number"
+          ? event.threadId
+          : typeof event.threadId === "string"
+            ? Number.isFinite(Number(event.threadId))
+              ? Number(event.threadId)
+              : undefined
+            : undefined,
   };
 }
 
@@ -1571,7 +1716,7 @@ export class CodexPluginController {
               callback.kind === "pending-questionnaire"
                 ? "Recorded your answers and sent them to Codex."
                 : "Sent to Codex.";
-            await editDiscordComponentMessage(
+            await this.editDiscordComponentMessage(
               conversation.conversationId,
               messageId,
               {
@@ -1612,26 +1757,42 @@ export class CodexPluginController {
             `codex discord picker refresh conversation=${conversationId} rows=${picker.buttons?.length ?? 0}`,
           );
           const messageId = ctx.interaction.messageId?.trim();
-          const builtPicker = this.buildDiscordPickerMessage(picker);
-          try {
-            await ctx.respond.editMessage({
-              components: builtPicker.components,
-            });
-            interactionSettled = true;
-            if (messageId) {
-              registerBuiltDiscordComponentMessage({
-                buildResult: builtPicker,
-                messageId,
+          const builtPicker = await this.tryBuildDiscordPickerMessage(picker);
+          let alreadyAcknowledged = false;
+          if (builtPicker) {
+            try {
+              await ctx.respond.editMessage({
+                components: builtPicker.components,
               });
+              interactionSettled = true;
+              if (messageId) {
+                await this.registerBuiltDiscordComponentMessage({
+                  buildResult: builtPicker,
+                  messageId,
+                });
+              }
+              return;
+            } catch (error) {
+              const detail = String(error);
+              if (!messageId) {
+                this.api.logger.warn(
+                  `codex discord picker edit failed conversation=${conversationId}: ${detail}`,
+                );
+              } else if (!detail.includes("already been acknowledged")) {
+                await ctx.respond
+                  .acknowledge()
+                  .then(() => {
+                    interactionSettled = true;
+                  })
+                  .catch(() => undefined);
+              } else {
+                alreadyAcknowledged = true;
+              }
             }
-            return;
-          } catch (error) {
-            const detail = String(error);
-            this.api.logger.warn(
-              `codex discord picker edit failed conversation=${conversationId}: ${detail}`,
-            );
-            if (messageId) {
-              if (!detail.includes("already been acknowledged")) {
+          }
+          if (messageId) {
+            try {
+              if (!interactionSettled && !alreadyAcknowledged) {
                 await ctx.respond
                   .acknowledge()
                   .then(() => {
@@ -1639,7 +1800,7 @@ export class CodexPluginController {
                   })
                   .catch(() => undefined);
               }
-              await editDiscordComponentMessage(
+              await this.editDiscordComponentMessage(
                 conversation.conversationId,
                 messageId,
                 this.buildDiscordPickerSpec(picker),
@@ -1648,9 +1809,20 @@ export class CodexPluginController {
                 },
               );
               return;
+            } catch (error) {
+              this.api.logger.warn(
+                `codex discord picker edit failed conversation=${conversationId}: ${String(error)}`,
+              );
             }
           }
-          await this.sendDiscordPicker(conversation, picker);
+          try {
+            await this.sendDiscordPicker(conversation, picker);
+          } catch (error) {
+            this.api.logger.warn(
+              `codex discord picker send failed conversation=${conversationId}: ${String(error)}`,
+            );
+            throw error;
+          }
         },
         requestConversationBinding: async (params) => {
           const requestConversationBinding = bindingApi.requestConversationBinding;
@@ -1666,7 +1838,7 @@ export class CodexPluginController {
             });
             const originalMessageId = ctx.interaction.messageId?.trim();
             if (callback.kind === "resume-thread" && originalMessageId) {
-              await editDiscordComponentMessage(
+              await this.editDiscordComponentMessage(
                 conversation.conversationId,
                 originalMessageId,
                 {
@@ -1705,8 +1877,7 @@ export class CodexPluginController {
         ? await bindingApi.getCurrentConversationBinding()
         : null;
     const pendingBind = conversation ? this.store.getPendingBind(conversation) : null;
-    const existingBinding =
-      conversation && currentBinding ? this.store.getBinding(conversation) : null;
+    const existingBinding = conversation ? this.store.getBinding(conversation) : null;
     const hydratedBinding =
       conversation && currentBinding && !existingBinding
         ? await this.hydrateApprovedBinding(conversation)
@@ -2464,11 +2635,11 @@ export class CodexPluginController {
         });
         return true;
       }
-      const builtPicker = this.buildDiscordPickerMessage({
+      const builtPicker = await this.buildDiscordPickerMessage({
         text: statusCard.text,
         buttons: statusCard.buttons,
-      });
-      await editDiscordComponentMessage(
+      }).catch(() => undefined);
+      await this.editDiscordComponentMessage(
         message.channelId,
         message.messageId,
         this.buildDiscordPickerSpec({
@@ -2479,10 +2650,12 @@ export class CodexPluginController {
           accountId: conversation.accountId,
         },
       );
-      registerBuiltDiscordComponentMessage({
-        buildResult: builtPicker,
-        messageId: message.messageId,
-      });
+      if (builtPicker) {
+        await this.registerBuiltDiscordComponentMessage({
+          buildResult: builtPicker,
+          messageId: message.messageId,
+        });
+      }
       return true;
     } catch (error) {
       this.api.logger.warn(
@@ -4819,13 +4992,91 @@ export class CodexPluginController {
     this.api.logger.debug(
       `codex discord picker send conversation=${conversation.conversationId} rows=${picker.buttons?.length ?? 0}`,
     );
-    await this.api.runtime.channel.discord.sendComponentMessage(
-      conversation.conversationId,
-      this.buildDiscordPickerSpec(picker),
-      {
+    const outbound = await this.loadDiscordOutboundAdapter();
+    if (outbound?.sendPayload) {
+      await outbound.sendPayload({
+        cfg: this.getOpenClawConfig(),
+        to: conversation.conversationId,
         accountId: conversation.accountId,
-      },
-    );
+        payload: {
+          text: picker.text,
+          channelData: {
+            discord: {
+              components: this.buildDiscordPickerSpec(picker),
+            },
+          },
+        },
+      });
+      return;
+    }
+    const legacySend = (this.api.runtime.channel as {
+      discord?: {
+        sendComponentMessage?: (
+          to: string,
+          spec: DiscordComponentMessageSpec,
+          opts?: { accountId?: string },
+        ) => Promise<unknown>;
+      };
+    }).discord?.sendComponentMessage;
+    if (typeof legacySend === "function") {
+      await legacySend(
+        conversation.conversationId,
+        this.buildDiscordPickerSpec(picker),
+        {
+          accountId: conversation.accountId,
+        },
+      );
+      return;
+    }
+    const runtimeApi = await this.loadDiscordRuntimeApi();
+    if (typeof runtimeApi?.sendDiscordComponentMessage === "function") {
+      await runtimeApi.sendDiscordComponentMessage(
+        conversation.conversationId,
+        this.buildDiscordPickerSpec(picker),
+        {
+          cfg: this.getOpenClawConfig(),
+          accountId: conversation.accountId,
+        },
+      );
+      return;
+    }
+    throw new Error("Discord component messaging is unavailable.");
+  }
+
+  private async sendDiscordPickerMessageLegacy(
+    conversation: ConversationTarget,
+    picker: PickerRender,
+  ): Promise<unknown> {
+    const legacySend = (this.api.runtime.channel as {
+      discord?: {
+        sendComponentMessage?: (
+          to: string,
+          spec: DiscordComponentMessageSpec,
+          opts?: { accountId?: string },
+        ) => Promise<unknown>;
+      };
+    }).discord?.sendComponentMessage;
+    if (typeof legacySend === "function") {
+      return await legacySend(
+        conversation.conversationId,
+        this.buildDiscordPickerSpec(picker),
+        {
+          accountId: conversation.accountId,
+        },
+      );
+    }
+    const runtimeApi = await this.loadDiscordRuntimeApi();
+    if (typeof runtimeApi?.sendDiscordComponentMessage === "function") {
+      return await runtimeApi.sendDiscordComponentMessage(
+        conversation.conversationId,
+        this.buildDiscordPickerSpec(picker),
+        {
+          cfg: this.getOpenClawConfig(),
+          accountId: conversation.accountId,
+        },
+      );
+    }
+    throw new Error("Discord component messaging is unavailable.");
   }
 
   private buildDiscordPickerSpec(picker: PickerRender): DiscordComponentMessageSpec {
@@ -4842,10 +5093,117 @@ export class CodexPluginController {
     };
   }
 
-  private buildDiscordPickerMessage(picker: PickerRender) {
-    return buildDiscordComponentMessage({
+  private async buildDiscordPickerMessage(
+    picker: PickerRender,
+  ): Promise<DiscordComponentBuildResult> {
+    const discordSdk = await this.loadDiscordSdk();
+    return discordSdk.buildDiscordComponentMessage({
       spec: this.buildDiscordPickerSpec(picker),
     });
+  }
+
+  private async tryBuildDiscordPickerMessage(
+    picker: PickerRender,
+  ): Promise<DiscordComponentBuildResult | undefined> {
+    try {
+      return await this.buildDiscordPickerMessage(picker);
+    } catch (error) {
+      if (!isMissingPluginSdkSubpathError(error, "openclaw/plugin-sdk/discord")) {
+        this.api.logger.debug?.(`codex discord picker build fallback: ${String(error)}`);
+      }
+      return undefined;
+    }
+  }
+
+  private async loadDiscordSdk(): Promise<DiscordSdkModule> {
+    return await loadOpenClawCompatModule<DiscordSdkModule>({
+      specifier: "openclaw/plugin-sdk/discord",
+      fallbackRelativePath: "dist/plugin-sdk/discord.js",
+      label: "discord",
+      logger: this.api.logger,
+    });
+  }
+
+  private async loadTelegramAccountSdk(): Promise<TelegramAccountSdkModule> {
+    return await loadOpenClawCompatModule<TelegramAccountSdkModule>({
+      specifier: "openclaw/plugin-sdk/telegram-account",
+      fallbackRelativePath: "dist/plugin-sdk/telegram-account.js",
+      label: "telegram account",
+      logger: this.api.logger,
+    });
+  }
+
+  private async loadDiscordRuntimeApi(): Promise<DiscordRuntimeApiModule | undefined> {
+    try {
+      const openClawEntrypointPath = resolveOpenClawEntrypointPath();
+      const runtimeApiPath = resolveCompatFallbackPath(
+        openClawEntrypointPath,
+        "dist/extensions/discord/runtime-api.js",
+      );
+      if (!existsSync(runtimeApiPath)) {
+        return undefined;
+      }
+      return (await import(pathToFileURL(runtimeApiPath).href)) as DiscordRuntimeApiModule;
+    } catch (error) {
+      this.api.logger.debug?.(`codex discord runtime api unavailable: ${String(error)}`);
+      return undefined;
+    }
+  }
+
+  private async loadDiscordExtensionApi(): Promise<DiscordExtensionApiModule | undefined> {
+    try {
+      const openClawEntrypointPath = resolveOpenClawEntrypointPath();
+      const apiPath = resolveCompatFallbackPath(
+        openClawEntrypointPath,
+        "dist/extensions/discord/api.js",
+      );
+      if (!existsSync(apiPath)) {
+        return undefined;
+      }
+      return (await import(pathToFileURL(apiPath).href)) as DiscordExtensionApiModule;
+    } catch (error) {
+      this.api.logger.debug?.(`codex discord extension api unavailable: ${String(error)}`);
+      return undefined;
+    }
+  }
+
+  private async editDiscordComponentMessage(
+    to: string,
+    messageId: string,
+    spec: DiscordComponentMessageSpec,
+    opts?: { accountId?: string },
+  ): Promise<{ messageId: string; channelId: string }> {
+    try {
+      const discordSdk = await this.loadDiscordSdk();
+      return await discordSdk.editDiscordComponentMessage(to, messageId, spec, opts);
+    } catch (error) {
+      const runtimeApi = await this.loadDiscordRuntimeApi();
+      if (typeof runtimeApi?.editDiscordComponentMessage === "function") {
+        return await runtimeApi.editDiscordComponentMessage(to, messageId, spec, {
+          cfg: this.getOpenClawConfig(),
+          accountId: opts?.accountId,
+        });
+      }
+      throw error;
+    }
+  }
+
+  private async registerBuiltDiscordComponentMessage(params: {
+    buildResult: DiscordComponentBuildResult;
+    messageId: string;
+  }): Promise<void> {
+    try {
+      const discordSdk = await this.loadDiscordSdk();
+      discordSdk.registerBuiltDiscordComponentMessage(params);
+      return;
+    } catch (error) {
+      const runtimeApi = await this.loadDiscordRuntimeApi();
+      if (typeof runtimeApi?.registerBuiltDiscordComponentMessage === "function") {
+        runtimeApi.registerBuiltDiscordComponentMessage(params);
+        return;
+      }
+      throw error;
+    }
   }
 
   private async dispatchCallbackAction(
@@ -6469,6 +6827,7 @@ export class CodexPluginController {
       return delivered;
     }
     if (isDiscordChannel(conversation.channel)) {
+      const outbound = await this.loadDiscordOutboundAdapter();
       const mediaLocalRoots = this.resolveReplyMediaLocalRoots(payload.mediaUrl);
       const limit = this.api.runtime.channel.text.resolveTextChunkLimit(
         undefined,
@@ -6486,51 +6845,55 @@ export class CodexPluginController {
         );
         const attachmentChunk = hasMedia ? (chunks.shift() ?? text) : undefined;
         if (hasMedia) {
-          const result = await this.api.runtime.channel.discord.sendMessageDiscord(
-            conversation.conversationId,
-            attachmentChunk ?? "",
-            {
-              accountId: conversation.accountId,
-              mediaUrl: payload.mediaUrl,
-              mediaLocalRoots,
-            },
-          );
+          const result = await this.sendDiscordTextChunk(outbound, conversation, attachmentChunk ?? "", {
+            mediaUrl: payload.mediaUrl,
+            mediaLocalRoots,
+          });
           delivered = {
             provider: "discord",
             messageId: result.messageId,
-            channelId: result.channelId,
+            channelId:
+              typeof result.channelId === "string"
+                ? result.channelId
+                : conversation.conversationId,
           };
         }
         const finalChunk = chunks.pop() ?? (hasMedia ? "" : text);
         for (const chunk of chunks) {
-          const result = await this.api.runtime.channel.discord.sendMessageDiscord(conversation.conversationId, chunk, {
-            accountId: conversation.accountId,
-          });
+          const result = await this.sendDiscordTextChunk(outbound, conversation, chunk);
           if (!delivered) {
             delivered = {
               provider: "discord",
               messageId: result.messageId,
-              channelId: result.channelId,
+              channelId:
+                typeof result.channelId === "string"
+                  ? result.channelId
+                  : conversation.conversationId,
             };
           }
         }
-        const result = await this.api.runtime.channel.discord.sendComponentMessage(
-          conversation.conversationId,
-          {
-            text: finalChunk,
-            blocks: payload.buttons.map((row) => ({
-              type: "actions" as const,
-              buttons: row.map((button) => ({
-                label: truncateDiscordLabel(button.text),
-                style: "primary" as const,
-                callbackData: button.callback_data,
-              })),
-            })),
-          },
-          {
-            accountId: conversation.accountId,
-          },
-        );
+        const result = outbound?.sendPayload
+          ? await outbound.sendPayload({
+              cfg: this.getOpenClawConfig(),
+              to: conversation.conversationId,
+              accountId: conversation.accountId,
+              mediaLocalRoots,
+              payload: {
+                text: finalChunk,
+                channelData: {
+                  discord: {
+                    components: this.buildDiscordPickerSpec({
+                      text: finalChunk,
+                      buttons: payload.buttons,
+                    }),
+                  },
+                },
+              },
+            })
+          : await this.sendDiscordPickerMessageLegacy(conversation, {
+              text: finalChunk,
+              buttons: payload.buttons,
+            });
         if (
           result &&
           typeof result === "object" &&
@@ -6540,7 +6903,10 @@ export class CodexPluginController {
           delivered = {
             provider: "discord",
             messageId: (result as { messageId: string }).messageId,
-            channelId: (result as { channelId: string }).channelId,
+            channelId:
+              typeof (result as { channelId?: unknown }).channelId === "string"
+                ? (result as { channelId: string }).channelId
+                : conversation.conversationId,
           };
         }
         this.api.logger.debug?.(
@@ -6551,33 +6917,30 @@ export class CodexPluginController {
       const textChunks = chunks.length > 0 ? chunks : [text];
       if (hasMedia) {
         const firstChunk = textChunks.shift() ?? "";
-        const result = await this.api.runtime.channel.discord.sendMessageDiscord(
-          conversation.conversationId,
-          firstChunk,
-          {
-            accountId: conversation.accountId,
-            mediaUrl: payload.mediaUrl,
-            mediaLocalRoots,
-          },
-        );
+        const result = await this.sendDiscordTextChunk(outbound, conversation, firstChunk, {
+          mediaUrl: payload.mediaUrl,
+          mediaLocalRoots,
+        });
         delivered = {
           provider: "discord",
           messageId: result.messageId,
-          channelId: result.channelId,
+          channelId:
+            typeof result.channelId === "string" ? result.channelId : conversation.conversationId,
         };
       }
       for (const chunk of textChunks) {
         if (!chunk) {
           continue;
         }
-        const result = await this.api.runtime.channel.discord.sendMessageDiscord(conversation.conversationId, chunk, {
-          accountId: conversation.accountId,
-        });
+        const result = await this.sendDiscordTextChunk(outbound, conversation, chunk);
         if (!delivered) {
           delivered = {
             provider: "discord",
             messageId: result.messageId,
-            channelId: result.channelId,
+            channelId:
+              typeof result.channelId === "string"
+                ? result.channelId
+                : conversation.conversationId,
           };
         }
       }
@@ -6599,6 +6962,14 @@ export class CodexPluginController {
       return undefined;
     }
     return (await loadAdapter("telegram")) as TelegramOutboundAdapter | undefined;
+  }
+
+  private async loadDiscordOutboundAdapter(): Promise<DiscordOutboundAdapter | undefined> {
+    const loadAdapter = this.api.runtime.channel.outbound?.loadAdapter;
+    if (typeof loadAdapter !== "function") {
+      return undefined;
+    }
+    return (await loadAdapter("discord")) as DiscordOutboundAdapter | undefined;
   }
 
   private async sendTelegramTextChunk(
@@ -6717,6 +7088,64 @@ export class CodexPluginController {
     });
   }
 
+  private async sendDiscordTextChunk(
+    outbound: DiscordOutboundAdapter | undefined,
+    conversation: ConversationTarget,
+    text: string,
+    opts?: { mediaUrl?: string; mediaLocalRoots?: readonly string[] },
+  ): Promise<{ messageId: string; channelId?: string }> {
+    const mediaUrl = opts?.mediaUrl;
+    const mediaLocalRoots = opts?.mediaLocalRoots;
+    if (mediaUrl && outbound?.sendMedia) {
+      return await outbound.sendMedia({
+        cfg: this.getOpenClawConfig(),
+        to: conversation.conversationId,
+        text,
+        mediaUrl,
+        accountId: conversation.accountId,
+        mediaLocalRoots,
+      });
+    }
+    if (!mediaUrl && outbound?.sendText) {
+      return await outbound.sendText({
+        cfg: this.getOpenClawConfig(),
+        to: conversation.conversationId,
+        text,
+        accountId: conversation.accountId,
+      });
+    }
+    const legacySend = (this.api.runtime.channel as {
+      discord?: {
+        sendMessageDiscord?: (
+          to: string,
+          text: string,
+          opts?: {
+            accountId?: string;
+            mediaUrl?: string;
+            mediaLocalRoots?: readonly string[];
+          },
+        ) => Promise<{ messageId: string; channelId: string }>;
+      };
+    }).discord?.sendMessageDiscord;
+    if (typeof legacySend === "function") {
+      return await legacySend(conversation.conversationId, text, {
+        accountId: conversation.accountId,
+        mediaUrl,
+        mediaLocalRoots,
+      });
+    }
+    const runtimeApi = await this.loadDiscordRuntimeApi();
+    if (typeof runtimeApi?.sendMessageDiscord === "function") {
+      return await runtimeApi.sendMessageDiscord(conversation.conversationId, text, {
+        cfg: this.getOpenClawConfig(),
+        accountId: conversation.accountId,
+        mediaUrl,
+        mediaLocalRoots,
+      });
+    }
+    throw new Error("Discord outbound messaging is unavailable.");
+  }
+
   private resolveReplyMediaLocalRoots(mediaUrl?: string): readonly string[] | undefined {
     const rawValue = mediaUrl?.trim();
     if (!rawValue) {
@@ -6773,6 +7202,7 @@ export class CodexPluginController {
 
   private async startTypingLease(conversation: ConversationTarget): Promise<{
     stop: () => void;
+    refresh?: () => Promise<void>;
   } | null> {
     if (isTelegramChannel(conversation.channel)) {
       const legacyTyping = this.api.runtime.channel.telegram?.typing?.start;
@@ -6791,7 +7221,41 @@ export class CodexPluginController {
       }
       const channelId =
         denormalizeDiscordConversationId(conversation.conversationId) ?? conversation.conversationId;
-      return await this.api.runtime.channel.discord.typing.start({
+      const legacyTyping = (this.api.runtime.channel as {
+        discord?: {
+          typing?: {
+            start?: (params: {
+              channelId: string;
+              accountId?: string;
+            }) => Promise<{ refresh: () => Promise<void>; stop: () => void }>;
+          };
+        };
+      }).discord?.typing?.start;
+      if (typeof legacyTyping !== "function") {
+        const runtimeApi = await this.loadDiscordRuntimeApi();
+        if (typeof runtimeApi?.sendTypingDiscord !== "function") {
+          return null;
+        }
+        const sendTyping = async () => {
+          await runtimeApi.sendTypingDiscord?.(channelId, {
+            cfg: this.getOpenClawConfig(),
+            accountId: conversation.accountId,
+          });
+        };
+        await sendTyping().catch((error) => {
+          this.api.logger.debug?.(`codex discord typing skipped: ${String(error)}`);
+        });
+        const timer = setInterval(() => {
+          void sendTyping().catch((error) => {
+            this.api.logger.debug?.(`codex discord typing refresh failed: ${String(error)}`);
+          });
+        }, 4_000);
+        return {
+          refresh: sendTyping,
+          stop: () => clearInterval(timer),
+        };
+      }
+      return await legacyTyping({
         channelId,
         accountId: conversation.accountId,
       });
@@ -6845,6 +7309,7 @@ export class CodexPluginController {
       return firstDelivered;
     }
     if (isDiscordChannel(conversation.channel)) {
+      const outbound = await this.loadDiscordOutboundAdapter();
       const limit = this.api.runtime.channel.text.resolveTextChunkLimit(
         undefined,
         "discord",
@@ -6855,18 +7320,15 @@ export class CodexPluginController {
       const textChunks = chunks.length > 0 ? chunks : [trimmed];
       let firstDelivered: DeliveredMessageRef | null = null;
       for (const chunk of textChunks) {
-        const result = await this.api.runtime.channel.discord.sendMessageDiscord(
-          conversation.conversationId,
-          chunk,
-          {
-            accountId: conversation.accountId,
-          },
-        );
+        const result = await this.sendDiscordTextChunk(outbound, conversation, chunk);
         if (!firstDelivered) {
           firstDelivered = {
             provider: "discord",
             messageId: result.messageId,
-            channelId: result.channelId,
+            channelId:
+              typeof result.channelId === "string"
+                ? result.channelId
+                : conversation.conversationId,
           };
         }
       }
@@ -6971,7 +7433,7 @@ export class CodexPluginController {
       return undefined;
     }
     try {
-      const telegramAccount = await import("openclaw/plugin-sdk/telegram-account");
+      const telegramAccount = await this.loadTelegramAccountSdk();
       const account = telegramAccount.resolveTelegramAccount({
         cfg,
         accountId,
@@ -6989,11 +7451,25 @@ export class CodexPluginController {
     if (!cfg) {
       return undefined;
     }
-    const account = resolveDiscordAccount({
-      cfg: cfg as Parameters<typeof resolveDiscordAccount>[0]["cfg"],
+    try {
+      const discordSdk = await this.loadDiscordSdk();
+      const account = discordSdk.resolveDiscordAccount({
+        cfg: cfg as Parameters<DiscordSdkModule["resolveDiscordAccount"]>[0]["cfg"],
+        accountId,
+      });
+      const token = account.token?.trim();
+      if (token) {
+        return token;
+      }
+    } catch (error) {
+      this.api.logger.debug?.(`codex discord account facade unavailable: ${String(error)}`);
+    }
+    const discordApi = await this.loadDiscordExtensionApi();
+    const account = discordApi?.resolveDiscordAccount?.({
+      cfg,
       accountId,
     });
-    const token = account.token?.trim();
+    const token = account?.token?.trim();
     return token || undefined;
   }
 
@@ -7154,7 +7630,39 @@ export class CodexPluginController {
       return;
     }
     if (isDiscordChannel(conversation.channel)) {
-      await this.api.runtime.channel.discord.conversationActions.editChannel(
+      const legacyEditChannel = (this.api.runtime.channel as {
+        discord?: {
+          conversationActions?: {
+            editChannel?: (
+              channelId: string,
+              params: { name?: string },
+              opts?: { accountId?: string },
+            ) => Promise<unknown>;
+          };
+        };
+      }).discord?.conversationActions?.editChannel;
+      if (typeof legacyEditChannel !== "function") {
+        const runtimeApi = await this.loadDiscordRuntimeApi();
+        if (typeof runtimeApi?.editChannelDiscord !== "function") {
+          return;
+        }
+        await runtimeApi.editChannelDiscord(
+          {
+            channelId:
+              denormalizeDiscordConversationId(conversation.conversationId) ??
+              conversation.conversationId,
+            name,
+          },
+          {
+            cfg: this.getOpenClawConfig(),
+            accountId: conversation.accountId,
+          },
+        ).catch((error) => {
+          this.api.logger.warn(`codex discord channel rename failed: ${String(error)}`);
+        });
+        return;
+      }
+      await legacyEditChannel(
         conversation.conversationId,
         {
           name,
