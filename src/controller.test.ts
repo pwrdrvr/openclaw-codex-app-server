@@ -610,6 +610,26 @@ function collectFeishuActionValues(node: unknown, out: Array<Record<string, unkn
   return out;
 }
 
+function collectFeishuButtons(node: unknown, out: Array<Record<string, unknown>> = []): Array<Record<string, unknown>> {
+  if (Array.isArray(node)) {
+    for (const entry of node) {
+      collectFeishuButtons(entry, out);
+    }
+    return out;
+  }
+  if (!node || typeof node !== "object") {
+    return out;
+  }
+  const record = node as Record<string, unknown>;
+  if (record.tag === "button") {
+    out.push(record);
+  }
+  for (const value of Object.values(record)) {
+    collectFeishuButtons(value, out);
+  }
+  return out;
+}
+
 function collectFeishuMarkdownContents(node: unknown, out: string[] = []): string[] {
   if (Array.isArray(node)) {
     for (const entry of node) {
@@ -2452,8 +2472,9 @@ describe("Discord controller flows", () => {
     );
   });
 
-  it("renders cas_status as plain text for Feishu without sending interactive controls", async () => {
-    const { controller, sendMessageFeishu, sendComponentMessage, sendMessageTelegram } = await createControllerHarness();
+  it("renders Feishu cas_status as an interactive card when controls are available", async () => {
+    const { controller, sendCardFeishu, sendMessageFeishu, sendComponentMessage, sendMessageTelegram } =
+      await createControllerHarness();
     await (controller as any).store.upsertBinding({
       conversation: {
         channel: "feishu",
@@ -2476,15 +2497,30 @@ describe("Discord controller flows", () => {
       }),
     );
 
-    expect(reply.text).toContain("Binding: Discord Thread (openclaw)");
-    expect(reply.text).toContain("Use /cas_model, /cas_stop, or /cas_detach for text-only control in Feishu.");
+    expect(reply).toEqual({});
+    expect(sendCardFeishu).toHaveBeenCalledTimes(1);
     expect(sendMessageFeishu).not.toHaveBeenCalled();
     expect(sendComponentMessage).not.toHaveBeenCalled();
     expect(sendMessageTelegram).not.toHaveBeenCalled();
+    const payload = ((sendCardFeishu.mock.calls as unknown) as Array<[Record<string, unknown>]>)?.[0]?.[0];
+    expect(payload).toEqual(expect.objectContaining({
+      accountId: "default",
+    }));
+    const serializedCard = JSON.stringify(payload?.card);
+    expect(serializedCard).toContain("Binding:");
+    expect(serializedCard).toContain("Select Model");
+    expect(serializedCard).toContain("Permissions: toggle");
+    expect(serializedCard).toContain("Skills");
+    expect(serializedCard).toContain("MCPs");
+    const actions = collectFeishuActionValues(payload?.card);
+    expect(actions.length).toBeGreaterThan(0);
+    const buttons = collectFeishuButtons(payload?.card);
+    expect(buttons.length).toBeGreaterThan(0);
+    expect(buttons.every((button) => button.type === "primary")).toBe(true);
   });
 
   it("uses local Feishu binding for cas_status when host binding is unavailable", async () => {
-    const { controller } = await createControllerHarness();
+    const { controller, sendCardFeishu } = await createControllerHarness();
     await (controller as any).store.upsertBinding({
       conversation: {
         channel: "feishu",
@@ -2507,9 +2543,13 @@ describe("Discord controller flows", () => {
       }),
     );
 
-    expect(reply.text).toContain("Binding: Discord Thread (openclaw)");
-    expect(reply.text).toContain("Thread:");
-    expect(reply.text).not.toContain("Binding: none");
+    expect(reply).toEqual({});
+    expect(sendCardFeishu).toHaveBeenCalledTimes(1);
+    const payload = ((sendCardFeishu.mock.calls as unknown) as Array<[Record<string, unknown>]>)?.[0]?.[0];
+    const serializedCard = JSON.stringify(payload?.card);
+    expect(serializedCard).toContain("Binding: Discord Thread (openclaw)");
+    expect(serializedCard).toContain("Thread:");
+    expect(serializedCard).not.toContain("Binding: none");
   });
 
   it("binds a Feishu conversation locally when core binding helpers are unavailable", async () => {
@@ -3408,7 +3448,7 @@ describe("Discord controller flows", () => {
   });
 
   it("falls back to plugin command handling for Feishu /cas_status received via inbound claim", async () => {
-    const { controller, sendMessageFeishu } = await createControllerHarness();
+    const { controller, sendCardFeishu, sendMessageFeishu } = await createControllerHarness();
     const startTurn = vi.fn(async () => undefined);
     (controller as any).startTurn = startTurn;
     await (controller as any).store.upsertBinding({
@@ -3433,12 +3473,14 @@ describe("Discord controller flows", () => {
 
     expect(result).toEqual({ handled: true });
     expect(startTurn).not.toHaveBeenCalled();
-    expect(sendMessageFeishu).toHaveBeenCalled();
-    expect(sendMessageFeishu).toHaveBeenLastCalledWith(
-      "oc_group_chat",
-      expect.stringContaining("Binding:"),
-      expect.objectContaining({ accountId: "default" }),
-    );
+    expect(sendMessageFeishu).not.toHaveBeenCalled();
+    expect(sendCardFeishu).toHaveBeenCalledTimes(1);
+    const payload = ((sendCardFeishu.mock.calls as unknown) as Array<[Record<string, unknown>]>)?.[0]?.[0];
+    expect(payload).toEqual(expect.objectContaining({
+      to: "oc_group_chat",
+      accountId: "default",
+    }));
+    expect(JSON.stringify(payload?.card)).toContain("Binding:");
   });
 
   it("falls back to plugin command handling for Feishu /cas_detach received via inbound claim", async () => {
@@ -4157,6 +4199,83 @@ describe("Discord controller flows", () => {
       "Last Agent Reply in Thread:",
       expect.objectContaining({ accountId: "default" }),
     );
+  });
+
+  it("replays pending Feishu cas_resume effects with last request, last reply, and status card", async () => {
+    const { controller, sendCardFeishu, sendMessageFeishu } = await createControllerHarness();
+    (controller as any).client.readThreadContext = vi.fn(async () => ({
+      lastUserMessage: "Who are you?",
+      lastAssistantMessage: "I am Codex.",
+    }));
+    const requestConversationBinding = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: "pending" as const,
+        reply: { text: "Plugin bind approval required" },
+      });
+
+    const pendingReply = await controller.handleCommand(
+      "cas_resume",
+      buildFeishuCommandContext({
+        args: "thread-1",
+        commandBody: "/cas_resume thread-1",
+        requestConversationBinding,
+      }),
+    );
+
+    expect(pendingReply).toEqual({ text: "Plugin bind approval required" });
+
+    const hydratedReply = await controller.handleCommand(
+      "cas_resume",
+      buildFeishuCommandContext({
+        commandBody: "/cas_resume",
+        getCurrentConversationBinding: vi.fn(async () => ({ bindingId: "b1" })),
+      }),
+    );
+
+    await flushAsyncWork();
+
+    expect(hydratedReply).toEqual({});
+    expect(sendMessageFeishu).toHaveBeenCalledWith(
+      "oc_group_chat",
+      "Last User Request in Thread:",
+      expect.objectContaining({ accountId: "default" }),
+    );
+    expect(sendMessageFeishu).toHaveBeenCalledWith(
+      "oc_group_chat",
+      "Last Agent Reply in Thread:",
+      expect.objectContaining({ accountId: "default" }),
+    );
+    expect(sendCardFeishu).toHaveBeenCalledTimes(1);
+    const payload = ((sendCardFeishu.mock.calls as unknown) as Array<[Record<string, unknown>]>)?.at(-1)?.[0];
+    const serializedCard = JSON.stringify(payload?.card);
+    expect(serializedCard).toContain("Binding:");
+    expect(serializedCard).toContain("Select Model");
+    expect(serializedCard).toContain("Permissions: toggle");
+  });
+
+  it("renders Feishu cas_skills as an interactive card with primary buttons", async () => {
+    const { controller, sendCardFeishu, sendMessageFeishu } = await createControllerHarness();
+    const result = await controller.handleCommand(
+      "cas_skills",
+      buildFeishuCommandContext({
+        commandBody: "/cas_skills",
+      }),
+    );
+
+    expect(result).toEqual({});
+    expect(sendMessageFeishu).not.toHaveBeenCalled();
+    expect(sendCardFeishu).toHaveBeenCalledTimes(1);
+    const payload = ((sendCardFeishu.mock.calls as unknown) as Array<[Record<string, unknown>]>)?.[0]?.[0];
+    expect(payload).toEqual(expect.objectContaining({
+      accountId: "default",
+    }));
+    const actions = collectFeishuActionValues(payload?.card);
+    expect(actions.length).toBeGreaterThan(0);
+    const buttons = collectFeishuButtons(payload?.card);
+    expect(buttons.length).toBeGreaterThan(0);
+    expect(buttons.every((button) => button.type === "primary")).toBe(true);
+    expect(JSON.stringify(payload?.card)).toContain("Codex skills.");
   });
 
   it("retries an incomplete cas_resume bind before falling back to the picker", async () => {

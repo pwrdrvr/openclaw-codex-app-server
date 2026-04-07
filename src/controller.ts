@@ -3210,11 +3210,9 @@ export class CodexPluginController {
     }
     const card = await this.buildStatusCard(conversation, binding, bindingActive);
     const text = note ? `${card.text}\n\n${note}` : card.text;
-    if (!card.buttons || !conversation || isFeishuChannel(conversation.channel)) {
+    if (!card.buttons || !conversation) {
       return {
-        text: isFeishuChannel(conversation?.channel ?? "")
-          ? `${text}\n\nUse /cas_model, /cas_stop, or /cas_detach for text-only control in Feishu.`
-          : text,
+        text,
       };
     }
     return await this.sendStatusCardCommandReply(conversation, text, card.buttons);
@@ -4073,6 +4071,18 @@ export class CodexPluginController {
         return { text: "Sent Codex skills to this Discord conversation." };
       } catch (error) {
         this.api.logger.warn(`codex discord skills send failed: ${String(error)}`);
+        return { text: picker.text };
+      }
+    }
+    if (conversation && isFeishuChannel(conversation.channel) && picker.buttons) {
+      try {
+        await this.sendReplyWithDeliveryRef(conversation, {
+          text: picker.text,
+          buttons: picker.buttons,
+        });
+        return {};
+      } catch (error) {
+        this.api.logger.warn(`codex feishu skills send failed: ${String(error)}`);
         return { text: picker.text };
       }
     }
@@ -7924,12 +7934,6 @@ export class CodexPluginController {
       parentConversationId: conversation.parentConversationId,
       threadId: "threadId" in conversation ? conversation.threadId : undefined,
     };
-    if (isFeishuChannel(target.channel)) {
-      const messages = await this.buildBoundConversationMessages(conversation);
-      const summary = messages[0]?.trim() || "Codex thread bound.";
-      await this.sendText(target, summary);
-      return;
-    }
     const messages = await this.buildBoundConversationMessages(conversation);
     for (const message of messages.slice(1)) {
       await this.sendText(target, message);
@@ -8874,9 +8878,7 @@ export class CodexPluginController {
               tag: "plain_text",
               content: button.text,
             },
-            ...(button.style === "primary" || button.style === "danger"
-              ? { type: button.style }
-              : {}),
+            type: "primary",
             value,
           };
         })
