@@ -2634,6 +2634,65 @@ describe("Discord controller flows", () => {
     }));
   });
 
+  it("binds a Feishu conversation locally when host binding rejects the current conversation", async () => {
+    const { controller } = await createControllerHarness();
+
+    const reply = await controller.handleCommand(
+      "cas_resume",
+      buildFeishuCommandContext({
+        args: "thread-1",
+        commandBody: "/cas_resume thread-1",
+        requestConversationBinding: vi.fn(async () => ({
+          status: "error" as const,
+          message: "This command cannot bind the current conversation.",
+        })),
+      }),
+    );
+
+    expect(reply).toEqual({});
+    expect(
+      (controller as any).store.getBinding({
+        channel: "feishu",
+        accountId: "default",
+        conversationId: "oc_group_chat:topic:om_topic_root",
+        parentConversationId: "oc_group_chat",
+      }),
+    ).toEqual(expect.objectContaining({
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+    }));
+  });
+
+  it("starts a new Feishu thread locally when host binding rejects the current conversation", async () => {
+    const { controller, clientMock, sendCardFeishu } = await createControllerHarness();
+
+    const reply = await controller.handleCommand(
+      "cas_resume",
+      buildFeishuCommandContext({
+        args: "--new openclaw",
+        commandBody: "/cas_resume --new openclaw",
+        requestConversationBinding: vi.fn(async () => ({
+          status: "error" as const,
+          message: "This command cannot bind the current conversation.",
+        })),
+      }),
+    );
+
+    expect(reply).toEqual({});
+    expect(clientMock.startThread).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceDir: "/repo/openclaw",
+      strictNew: true,
+    }));
+    const binding = (controller as any).store
+      .listBindings()
+      .find((entry: any) => entry.conversation.channel === "feishu" && entry.workspaceDir === "/repo/openclaw");
+    expect(binding).toEqual(expect.objectContaining({
+      workspaceDir: "/repo/openclaw",
+    }));
+    expect(binding?.threadId).toBe("thread-new");
+    expect(sendCardFeishu).toHaveBeenCalled();
+  });
+
   it("sends Feishu text through outbound adapter when direct Feishu sender is unavailable", async () => {
     const { controller, api, loadOutboundAdapter, sendOutboundText } = await createControllerHarness();
     delete (api as any).runtime.channel.feishu;

@@ -385,6 +385,10 @@ function isFeishuChannel(channel: string): boolean {
   return normalized === "feishu" || normalized === "lark";
 }
 
+function isFeishuCurrentConversationBindRejection(message: string | undefined): boolean {
+  return message?.trim().toLowerCase() === "this command cannot bind the current conversation.";
+}
+
 const IMAGE_FILE_EXTENSIONS = new Set([
   ".png",
   ".jpg",
@@ -7737,6 +7741,14 @@ export class CodexPluginController {
       summary: `Bind this conversation to Codex thread ${params.threadTitle?.trim() || params.threadId}.`,
     });
     if (approval.status !== "bound") {
+      if (
+        approval.status === "error" &&
+        isFeishuChannel(conversation.channel) &&
+        isFeishuCurrentConversationBindRejection(approval.message)
+      ) {
+        const binding = await this.bindConversation(conversation, params);
+        return { status: "bound", binding };
+      }
       if (approval.status === "pending") {
         await this.store.upsertPendingBind({
           conversation: {
