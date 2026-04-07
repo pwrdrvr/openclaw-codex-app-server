@@ -2660,25 +2660,17 @@ export class CodexPluginController {
         ? await this.hydrateApprovedBinding(conversation)
         : null;
     const localBinding = existingBinding ?? hydratedBinding?.binding ?? null;
-    const feishuLocalBindingFallback =
+    const hostBindingUnavailableWithLocalFallback =
       conversation !== null &&
-      isFeishuChannel(conversation.channel) &&
       Boolean(bindingApi.getCurrentConversationBinding) &&
       !currentBinding &&
       Boolean(localBinding);
-    if (feishuLocalBindingFallback && conversation && localBinding) {
+    if (hostBindingUnavailableWithLocalFallback && conversation && localBinding) {
       this.api.logger.debug?.(
-        `codex feishu binding fallback conversation=${conversation.conversationId} thread=${localBinding.threadId} hostBinding=no localBinding=yes`,
+        `codex binding fallback conversation=${conversation.conversationId} channel=${conversation.channel} thread=${localBinding.threadId} hostBinding=no localBinding=yes`,
       );
     }
-    const binding =
-      conversation && bindingApi.getCurrentConversationBinding
-        ? currentBinding
-          ? localBinding
-          : isFeishuChannel(conversation.channel)
-            ? localBinding
-            : null
-        : localBinding;
+    const binding = localBinding;
     const args = ctx.args?.trim() ?? "";
     const normalizedArgs = normalizeOptionDashes(args).trim();
     if (normalizedArgs === "help" || normalizedArgs === "--help") {
@@ -9290,9 +9282,27 @@ export class CodexPluginController {
   ): Promise<void> {
     const telegramThreadId = getTelegramThreadId(conversation.threadId);
     if (isTelegramChannel(conversation.channel) && telegramThreadId != null) {
-      await this.api.runtime.channel.telegram.conversationActions.renameTopic(
-        conversation.parentConversationId ?? conversation.conversationId,
-        telegramThreadId,
+      const legacyRename = this.api.runtime.channel.telegram?.conversationActions?.renameTopic;
+      if (typeof legacyRename === "function") {
+        await legacyRename(
+          conversation.parentConversationId ?? conversation.conversationId,
+          telegramThreadId,
+          name,
+          {
+            accountId: conversation.accountId,
+          },
+        ).catch((error) => {
+          this.api.logger.warn(`codex telegram topic rename failed: ${String(error)}`);
+        });
+        return;
+      }
+      const token = await this.resolveTelegramBotToken(conversation.accountId);
+      if (!token) {
+        return;
+      }
+      await this.callTelegramTopicEditApi(token, {
+        chat_id: conversation.parentConversationId ?? conversation.conversationId,
+        message_thread_id: telegramThreadId,
         name,
       }).catch((error) => {
         this.api.logger.warn(`codex telegram topic rename failed: ${String(error)}`);

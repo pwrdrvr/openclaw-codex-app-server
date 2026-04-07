@@ -50,6 +50,20 @@ function createApiMock() {
   const sendMessageFeishu = vi.fn(async () => ({ messageId: "feishu-msg-1", chatId: "oc_group_chat" }));
   const sendCardFeishu = vi.fn(async () => ({ messageId: "feishu-card-1", chatId: "oc_group_chat" }));
   const sendOutboundText = vi.fn(async () => ({ channel: "feishu", ok: true, messageId: "feishu-outbound-1" }));
+  const loadOutboundAdapter = vi.fn(async (channel: string) => {
+    if (channel === "telegram") {
+      return telegramOutbound;
+    }
+    if (channel === "discord") {
+      return undefined;
+    }
+    if (channel === "feishu" || channel === "lark") {
+      return {
+        sendText: sendOutboundText,
+      };
+    }
+    return undefined;
+  });
   const discordTypingStart = vi.fn(async () => ({ refresh: vi.fn(async () => {}), stop: vi.fn() }));
   const renameTopic = vi.fn(async () => ({}));
   const resolveTelegramToken = vi.fn(() => ({ token: "telegram-token", source: "config" }));
@@ -181,20 +195,7 @@ function createApiMock() {
           sendCardFeishu,
         },
         outbound: {
-          loadAdapter: vi.fn(async (channel: string) => {
-            if (channel === "telegram") {
-              return telegramOutbound;
-            }
-            if (channel === "discord") {
-              return undefined;
-            }
-            if (channel === "feishu" || channel === "lark") {
-              return {
-                sendText: sendOutboundText,
-              };
-            }
-            return undefined;
-          }),
+          loadAdapter: loadOutboundAdapter,
         },
       },
     },
@@ -213,6 +214,7 @@ function createApiMock() {
     sendMessageFeishu,
     sendCardFeishu,
     sendOutboundText,
+    loadOutboundAdapter,
     discordTypingStart,
     renameTopic,
     resolveTelegramToken,
@@ -232,6 +234,7 @@ async function createControllerHarness() {
     sendMessageFeishu,
     sendCardFeishu,
     sendOutboundText,
+    loadOutboundAdapter,
     discordTypingStart,
     renameTopic,
     resolveTelegramToken,
@@ -328,6 +331,7 @@ async function createControllerHarness() {
     sendMessageFeishu,
     sendCardFeishu,
     sendOutboundText,
+    loadOutboundAdapter,
     discordTypingStart,
     renameTopic,
     resolveTelegramToken,
