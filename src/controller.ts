@@ -2866,14 +2866,8 @@ export class CodexPluginController {
       return { text: result.message };
     }
     if (isFeishuChannel(channel)) {
-      return {
-        text: [
-          "Codex thread bound.",
-          `Project: ${result.binding.workspaceDir}`,
-          `Thread ID: ${result.binding.threadId}`,
-          "Use /cas_status to inspect it, or send normal messages to continue the thread.",
-        ].join("\n"),
-      };
+      await this.sendBoundConversationNotifications(conversation);
+      return {};
     }
     return {};
   }

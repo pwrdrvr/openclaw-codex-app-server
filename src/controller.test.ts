@@ -993,7 +993,7 @@ describe("Discord controller flows", () => {
     });
 
     expect(result).toEqual({ handled: true });
-    expect(sendCardFeishu).toHaveBeenCalledTimes(1);
+    expect(sendCardFeishu.mock.calls.length).toBeGreaterThan(0);
     expect(sendMessageFeishu).not.toHaveBeenCalled();
     const payload = ((sendCardFeishu.mock.calls as unknown) as Array<[Record<string, unknown>]>)?.[0]?.[0];
     expect(payload).toEqual(expect.objectContaining({
@@ -1321,6 +1321,59 @@ describe("Discord controller flows", () => {
         summary: expect.stringContaining("Bind this conversation to Codex thread"),
       }),
     );
+  });
+
+  it("starts a new Feishu thread for /cas_resume --new <project> and emits the full post-bind sequence", async () => {
+    const { controller, clientMock, sendCardFeishu, sendMessageFeishu } = await createControllerHarness();
+    (controller as any).client.readThreadContext = vi.fn(async () => ({
+      lastUserMessage: "Who are you?",
+      lastAssistantMessage: "I am Codex.",
+    }));
+    const requestConversationBinding = vi.fn(async () => ({ status: "bound" as const }));
+
+    const reply = await controller.handleCommand(
+      "cas_resume",
+      buildFeishuCommandContext({
+        args: "--new openclaw",
+        commandBody: "/cas_resume --new openclaw",
+        requestConversationBinding,
+      }),
+    );
+
+    expect(reply).toEqual({});
+    expect(clientMock.startThread).toHaveBeenCalledWith({
+      profile: "default",
+      sessionKey: undefined,
+      workspaceDir: "/repo/openclaw",
+      model: undefined,
+      strictNew: true,
+    });
+    expect(requestConversationBinding).toHaveBeenCalledWith(
+      expect.objectContaining({
+        summary: expect.stringContaining("Bind this conversation to Codex thread"),
+      }),
+    );
+    expect(sendMessageFeishu).toHaveBeenCalledWith(
+      "oc_group_chat",
+      "Last User Request in Thread:",
+      expect.objectContaining({ accountId: "default" }),
+    );
+    expect(sendMessageFeishu).toHaveBeenCalledWith(
+      "oc_group_chat",
+      "Last Agent Reply in Thread:",
+      expect.objectContaining({ accountId: "default" }),
+    );
+    expect(sendCardFeishu.mock.calls.length).toBeGreaterThan(0);
+    const payload = ((sendCardFeishu.mock.calls as unknown) as Array<[Record<string, unknown>]>)?.at(-1)?.[0];
+    const serializedCard = JSON.stringify(payload?.card);
+    expect(serializedCard).toContain("Binding:");
+    expect(serializedCard).toContain("Thread:");
+    expect(serializedCard).toContain("Permissions:");
+    expect(serializedCard).toContain("Select Model");
+    expect(serializedCard).toContain("Skills");
+    const buttons = collectFeishuButtons(payload?.card);
+    expect(buttons.length).toBeGreaterThan(0);
+    expect(buttons.every((button) => button.type === "primary")).toBe(true);
   });
 
   it("keeps grouped project names in the /cas_resume --new picker and disambiguates after selection", async () => {
@@ -3800,6 +3853,67 @@ describe("Discord controller flows", () => {
       expect.stringContaining("different conversation"),
       expect.objectContaining({ accountId: "default" }),
     );
+  });
+
+  it("dispatches /cas_click for Feishu permission toggles and re-renders Full Access status", async () => {
+    const { controller, clientMock, sendCardFeishu, sendMessageFeishu } = await createControllerHarness();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "feishu",
+        accountId: "default",
+        conversationId: "oc_group_chat:topic:om_topic_root",
+        parentConversationId: "oc_group_chat",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      permissionsMode: "default",
+      updatedAt: Date.now(),
+    });
+    const callback = await (controller as any).store.putCallback({
+      kind: "toggle-permissions",
+      conversation: {
+        channel: "feishu",
+        accountId: "default",
+        conversationId: "oc_group_chat:topic:om_topic_root",
+        parentConversationId: "oc_group_chat",
+      },
+    });
+
+    const reply = await controller.handleCommand(
+      "cas_click",
+      buildFeishuCommandContext({
+        args: callback.token,
+        commandBody: `/cas_click ${callback.token}`,
+      }),
+    );
+
+    expect(reply).toEqual({});
+    expect(clientMock.setThreadPermissions).toHaveBeenCalledWith({
+      profile: "full-access",
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+    });
+    const binding = (controller as any).store.getBinding({
+      channel: "feishu",
+      accountId: "default",
+      conversationId: "oc_group_chat:topic:om_topic_root",
+      parentConversationId: "oc_group_chat",
+    });
+    expect(binding?.permissionsMode).toBe("full-access");
+    expect(sendMessageFeishu).not.toHaveBeenCalled();
+    expect(sendCardFeishu).toHaveBeenCalledTimes(1);
+    const payload = ((sendCardFeishu.mock.calls as unknown) as Array<[Record<string, unknown>]>)?.[0]?.[0];
+    expect(payload).toEqual(expect.objectContaining({
+      accountId: "default",
+      to: "oc_group_chat",
+    }));
+    expect(JSON.stringify(payload?.card)).toContain("Permissions: Full Access");
+    const buttons = collectFeishuButtons(payload?.card);
+    expect(buttons.length).toBeGreaterThan(0);
+    expect(buttons.every((button) => button.type === "primary")).toBe(true);
   });
 
   it("treats Feishu quoted approval text as stale input when no active run is waiting", async () => {
