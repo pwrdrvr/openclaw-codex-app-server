@@ -1,9 +1,10 @@
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const require = createRequire(import.meta.url);
+const THIS_PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 export type PluginSdkCompatLogger = {
   debug?: (message: string) => void;
@@ -113,19 +114,36 @@ function resolveTrustedOpenClawRootFromStart(
   return null;
 }
 
+function isDisallowedResolvedOpenClawRoot(packageRoot: string): boolean {
+  const normalizedRoot = path.resolve(packageRoot);
+  if (
+    normalizedRoot === THIS_PACKAGE_ROOT ||
+    normalizedRoot.startsWith(`${THIS_PACKAGE_ROOT}${path.sep}`)
+  ) {
+    return true;
+  }
+  return normalizedRoot.includes(`${path.sep}.openclaw${path.sep}extensions${path.sep}`);
+}
+
 export function resolveOpenClawEntrypointPath(params?: {
   resolver?: CompatResolver;
   pathExists?: CompatPathExists;
   readFile?: CompatReadFile;
   argv1?: string;
   cwd?: string;
+  mainFilename?: string;
 }): string {
   const resolver = params?.resolver ?? ((specifier: string) => require.resolve(specifier));
   const pathExists = params?.pathExists ?? existsSync;
   const readFile = params?.readFile ?? ((targetPath: string) => readFileSync(targetPath, "utf-8"));
   const hostRoot =
     resolveTrustedOpenClawRootFromStart(params?.argv1 ?? process.argv[1], pathExists, readFile) ??
-    resolveTrustedOpenClawRootFromStart(params?.cwd ?? process.cwd(), pathExists, readFile);
+    resolveTrustedOpenClawRootFromStart(params?.cwd ?? process.cwd(), pathExists, readFile) ??
+    resolveTrustedOpenClawRootFromStart(
+      params?.mainFilename ?? require.main?.filename,
+      pathExists,
+      readFile,
+    );
   if (hostRoot) {
     const distEntrypoint = path.join(hostRoot, "dist", "index.js");
     if (pathExists(distEntrypoint)) {
@@ -133,7 +151,18 @@ export function resolveOpenClawEntrypointPath(params?: {
     }
     return path.join(hostRoot, "src", "index.ts");
   }
-  return resolver("openclaw");
+  const resolvedEntrypoint = resolver("openclaw");
+  const resolvedRoot = resolveTrustedOpenClawRootFromStart(resolvedEntrypoint, pathExists, readFile);
+  if (!resolvedRoot || isDisallowedResolvedOpenClawRoot(resolvedRoot)) {
+    throw new Error(
+      `Unable to resolve a trusted host OpenClaw installation from ${resolvedEntrypoint}`,
+    );
+  }
+  const distEntrypoint = path.join(resolvedRoot, "dist", "index.js");
+  if (pathExists(distEntrypoint)) {
+    return distEntrypoint;
+  }
+  return path.join(resolvedRoot, "src", "index.ts");
 }
 
 export async function loadOpenClawCompatModule<T>(params: {
@@ -144,6 +173,10 @@ export async function loadOpenClawCompatModule<T>(params: {
   importer?: CompatImporter;
   resolver?: CompatResolver;
   pathExists?: CompatPathExists;
+  readFile?: CompatReadFile;
+  argv1?: string;
+  cwd?: string;
+  mainFilename?: string;
   cache?: Map<string, Promise<unknown>>;
 }): Promise<T> {
   const cache = params.cache ?? compatModuleCache;
@@ -167,6 +200,10 @@ export async function loadOpenClawCompatModule<T>(params: {
       const openClawEntrypointPath = resolveOpenClawEntrypointPath({
         resolver: params.resolver,
         pathExists,
+        readFile: params.readFile,
+        argv1: params.argv1,
+        cwd: params.cwd,
+        mainFilename: params.mainFilename,
       });
       const fallbackPath = resolveCompatFallbackPath(
         openClawEntrypointPath,
