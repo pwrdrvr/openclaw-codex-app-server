@@ -47,6 +47,9 @@ function createApiMock() {
   const sendComponentMessage = vi.fn(async (..._args: unknown[]) => ({ messageId: "discord-component-1", channelId: "channel:chan-1" }));
   const sendMessageDiscord = vi.fn(async (..._args: unknown[]) => ({ messageId: "discord-msg-1", channelId: "channel:chan-1" }));
   const sendMessageTelegram = vi.fn(async (..._args: unknown[]) => ({ messageId: "1", chatId: "123" }));
+  const sendMessageFeishu = vi.fn(async (..._args: unknown[]) => ({ messageId: "feishu-msg-1", chatId: "oc_group_chat" }));
+  const sendCardFeishu = vi.fn(async (..._args: unknown[]) => ({ messageId: "feishu-card-1", chatId: "oc_group_chat" }));
+  const sendOutboundText = vi.fn(async () => ({ channel: "feishu", ok: true, messageId: "feishu-outbound-1" }));
   const discordTypingStart = vi.fn(async () => ({ refresh: vi.fn(async () => {}), stop: vi.fn() }));
   const renameTopic = vi.fn(async () => ({}));
   const resolveTelegramToken = vi.fn(() => ({ token: "telegram-token", source: "config" }));
@@ -125,6 +128,17 @@ function createApiMock() {
         }),
     ),
   };
+  const loadOutboundAdapter = vi.fn(async (channel: string) => {
+    if (channel === "telegram") {
+      return telegramOutbound;
+    }
+    if (channel === "feishu" || channel === "lark") {
+      return {
+        sendText: sendOutboundText,
+      };
+    }
+    return undefined;
+  });
   const api = {
     id: "test-plugin",
     config: {},
@@ -154,13 +168,7 @@ function createApiMock() {
             opts?.fallbackLimit ?? 2000,
         },
         outbound: {
-          loadAdapter: vi.fn(async (channel: string) =>
-            channel === "telegram"
-              ? telegramOutbound
-              : channel === "discord"
-                ? undefined
-                : undefined,
-          ),
+          loadAdapter: loadOutboundAdapter,
         },
         telegram: {
           sendMessageTelegram,
@@ -182,6 +190,10 @@ function createApiMock() {
             editChannel,
           },
         },
+        feishu: {
+          sendMessageFeishu,
+          sendCardFeishu,
+        },
       },
     },
     registerService: vi.fn(),
@@ -195,6 +207,10 @@ function createApiMock() {
     sendComponentMessage,
     sendMessageDiscord,
     sendMessageTelegram,
+    sendMessageFeishu,
+    sendCardFeishu,
+    sendOutboundText,
+    loadOutboundAdapter,
     telegramOutbound,
     discordTypingStart,
     renameTopic,
@@ -211,6 +227,10 @@ async function createControllerHarness() {
     sendComponentMessage,
     sendMessageDiscord,
     sendMessageTelegram,
+    sendMessageFeishu,
+    sendCardFeishu,
+    sendOutboundText,
+    loadOutboundAdapter,
     discordTypingStart,
     renameTopic,
     resolveTelegramToken,
@@ -278,6 +298,16 @@ async function createControllerHarness() {
       threadState.sandbox = params.sandbox;
       return { ...threadState };
     }),
+    compactThread: vi.fn(async () => ({})),
+    startTurn: vi.fn(() => ({
+      result: Promise.resolve({ threadId: "thread-1", text: "handled" }),
+      getThreadId: () => "thread-1",
+      queueMessage: vi.fn(async () => true),
+      interrupt: vi.fn(async () => {}),
+      isAwaitingInput: () => false,
+      submitPendingInput: vi.fn(async () => false),
+      submitPendingInputPayload: vi.fn(async () => false),
+    })),
     startReview: vi.fn(() => ({
       result: new Promise(() => {}),
       getThreadId: () => "thread-1",
@@ -303,6 +333,10 @@ async function createControllerHarness() {
     sendComponentMessage,
     sendMessageDiscord,
     sendMessageTelegram,
+    sendMessageFeishu,
+    sendCardFeishu,
+    sendOutboundText,
+    loadOutboundAdapter,
     discordTypingStart,
     renameTopic,
     resolveTelegramToken,
@@ -542,6 +576,69 @@ function buildTelegramCommandContext(
   } as unknown as PluginCommandContext;
 }
 
+function buildFeishuCommandContext(
+  overrides: Partial<PluginCommandContext> & Record<string, unknown> = {},
+): PluginCommandContext {
+  return {
+    senderId: "ou_user_1",
+    channel: "feishu",
+    channelId: "feishu",
+    isAuthorizedSender: true,
+    args: "",
+    commandBody: "/cas_status",
+    config: {},
+    from: "feishu:group:oc_group_chat",
+    to: "feishu:group:oc_group_chat",
+    originatingTo: "chat:oc_group_chat",
+    accountId: "default",
+    messageThreadId: "om_topic_root",
+    requestConversationBinding: vi.fn(async () => ({ status: "bound" as const })),
+    detachConversationBinding: vi.fn(async () => ({ removed: true })),
+    getCurrentConversationBinding: vi.fn(async () => null),
+    ...overrides,
+  } as unknown as PluginCommandContext;
+}
+
+function collectFeishuActionValues(node: unknown, out: Array<Record<string, unknown>> = []): Array<Record<string, unknown>> {
+  if (Array.isArray(node)) {
+    for (const entry of node) {
+      collectFeishuActionValues(entry, out);
+    }
+    return out;
+  }
+  if (!node || typeof node !== "object") {
+    return out;
+  }
+  const record = node as Record<string, unknown>;
+  if (record.oc === "ocf1") {
+    out.push(record);
+  }
+  for (const value of Object.values(record)) {
+    collectFeishuActionValues(value, out);
+  }
+  return out;
+}
+
+function collectFeishuMarkdownContents(node: unknown, out: string[] = []): string[] {
+  if (Array.isArray(node)) {
+    for (const entry of node) {
+      collectFeishuMarkdownContents(entry, out);
+    }
+    return out;
+  }
+  if (!node || typeof node !== "object") {
+    return out;
+  }
+  const record = node as Record<string, unknown>;
+  if (record.tag === "markdown" && typeof record.content === "string") {
+    out.push(record.content);
+  }
+  for (const value of Object.values(record)) {
+    collectFeishuMarkdownContents(value, out);
+  }
+  return out;
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -625,6 +722,252 @@ describe("Discord controller flows", () => {
         accountId: "default",
       }),
     );
+  });
+
+  it("routes bound Feishu messages through before_dispatch using stored DM chat recovery", async () => {
+    const { controller, clientMock } = await createControllerHarness();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "feishu",
+        accountId: "default",
+        conversationId: "oc_dm_chat",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+    await (controller as any).store.upsertFeishuDmConversation({
+      accountId: "default",
+      userId: "ou_user_1",
+      conversationId: "oc_dm_chat",
+      updatedAt: Date.now(),
+    });
+    clientMock.startTurn = vi.fn(() => ({
+      result: Promise.resolve({ threadId: "thread-1", text: "handled" }),
+      getThreadId: () => "thread-1",
+      queueMessage: vi.fn(async () => true),
+      interrupt: vi.fn(async () => {}),
+      isAwaitingInput: () => false,
+      submitPendingInput: vi.fn(async () => false),
+      submitPendingInputPayload: vi.fn(async () => false),
+    }));
+
+    const result = await controller.handleBeforeDispatch(
+      {
+        channel: "feishu",
+        content: "hello from feishu",
+        isGroup: false,
+      },
+      {
+        accountId: "default",
+        channelId: "feishu",
+        senderId: "ou_user_1",
+        to: "user:ou_user_1",
+      } as any,
+    );
+
+    expect(result).toEqual({ handled: true });
+    expect(clientMock.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: "hello from feishu",
+        existingThreadId: "thread-1",
+        sessionKey: "session-1",
+        workspaceDir: "/repo/openclaw",
+      }),
+    );
+  });
+
+  it("renders Feishu cas_status as an interactive card when controls are available", async () => {
+    const { controller, sendCardFeishu, sendMessageFeishu } = await createControllerHarness();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "feishu",
+        accountId: "default",
+        conversationId: "oc_group_chat:topic:om_topic_root",
+        parentConversationId: "oc_group_chat",
+        threadId: "om_topic_root",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      threadTitle: "Feishu Thread",
+      updatedAt: Date.now(),
+    });
+
+    const reply = await controller.handleCommand(
+      "cas_status",
+      buildFeishuCommandContext({
+        commandBody: "/cas_status",
+        getCurrentConversationBinding: vi.fn(async () => ({ bindingId: "b1" })),
+      }),
+    );
+
+    expect(reply).toEqual({});
+    expect(sendCardFeishu).toHaveBeenCalledTimes(1);
+    expect(sendMessageFeishu).not.toHaveBeenCalled();
+    const payload = ((sendCardFeishu.mock.calls as unknown) as Array<[Record<string, unknown>]>)?.[0]?.[0];
+    const actions = collectFeishuActionValues(payload?.card);
+    expect(actions.some((action) => typeof action.q === "string" && action.q.startsWith("/cas_click "))).toBe(true);
+    const markdownContents = collectFeishuMarkdownContents(payload?.card).join("\n");
+    expect(markdownContents).toContain("Binding:");
+    expect(markdownContents).toContain("Permissions:");
+  });
+
+  it("sends Feishu cas_skills as a card with callback-backed buttons", async () => {
+    const { controller, sendCardFeishu } = await createControllerHarness();
+
+    const reply = await controller.handleCommand(
+      "cas_skills",
+      buildFeishuCommandContext({
+        commandBody: "/cas_skills",
+      }),
+    );
+
+    expect(reply).toEqual({});
+    expect(sendCardFeishu).toHaveBeenCalledTimes(1);
+    const payload = ((sendCardFeishu.mock.calls as unknown) as Array<[Record<string, unknown>]>)?.[0]?.[0];
+    const serializedCard = JSON.stringify(payload?.card);
+    expect(serializedCard).toContain("skill-a");
+    expect(serializedCard).toContain("/cas_click ");
+  });
+
+  it("sends Feishu cas_resume as a card with callback-backed thread choices", async () => {
+    const { controller, sendCardFeishu } = await createControllerHarness();
+
+    const reply = await controller.handleCommand(
+      "cas_resume",
+      buildFeishuCommandContext({
+        commandBody: "/cas_resume",
+        messageThreadId: undefined,
+      }),
+    );
+
+    expect(reply).toEqual({});
+    expect(sendCardFeishu).toHaveBeenCalledTimes(1);
+    const payload = ((sendCardFeishu.mock.calls as unknown) as Array<[Record<string, unknown>]>)?.[0]?.[0];
+    const serializedCard = JSON.stringify(payload?.card);
+    expect(serializedCard).toContain("Discord Thread");
+    expect(serializedCard).toContain("/cas_click ");
+  });
+
+  it("dispatches Feishu cas_click callbacks and re-renders status after toggling permissions", async () => {
+    const { controller, sendCardFeishu } = await createControllerHarness();
+    const conversation = {
+      channel: "feishu",
+      accountId: "default",
+      conversationId: "oc_group_chat:topic:om_topic_root",
+      parentConversationId: "oc_group_chat",
+      threadId: "om_topic_root",
+    };
+    await (controller as any).store.upsertBinding({
+      conversation,
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+    const callback = await (controller as any).store.putCallback({
+      kind: "toggle-permissions",
+      conversation,
+    });
+
+    const reply = await controller.handleCommand(
+      "cas_click",
+      buildFeishuCommandContext({
+        args: callback.token,
+        commandBody: `/cas_click ${callback.token}`,
+        getCurrentConversationBinding: vi.fn(async () => ({ bindingId: "b1" })),
+      }),
+    );
+
+    expect(reply).toEqual({});
+    expect((controller as any).store.getBinding(conversation)?.permissionsMode).toBe("full-access");
+    expect(sendCardFeishu).toHaveBeenCalledTimes(1);
+    const payload = ((sendCardFeishu.mock.calls as unknown) as Array<[Record<string, unknown>]>)?.[0]?.[0];
+    const markdownContents = collectFeishuMarkdownContents(payload?.card).join("\n");
+    expect(markdownContents).toContain("Permissions: Full Access");
+  });
+
+  it("falls back to the direct Feishu card sender when runtime card capability is unavailable", async () => {
+    const { controller, api, sendCardFeishu } = await createControllerHarness();
+    const directCardSender = vi.fn(async () => ({ messageId: "direct-card-1" }));
+    (api as any).runtime.channel.feishu.sendCardFeishu = undefined;
+    (controller as any).resolveFeishuDirectCardSender = vi.fn(async () => directCardSender);
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "feishu",
+        accountId: "default",
+        conversationId: "oc_group_chat:topic:om_topic_root",
+        parentConversationId: "oc_group_chat",
+        threadId: "om_topic_root",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      threadTitle: "Feishu Thread",
+      updatedAt: Date.now(),
+    });
+
+    const reply = await controller.handleCommand(
+      "cas_status",
+      buildFeishuCommandContext({
+        commandBody: "/cas_status",
+        getCurrentConversationBinding: vi.fn(async () => ({ bindingId: "b1" })),
+      }),
+    );
+
+    expect(reply).toEqual({});
+    expect(sendCardFeishu).not.toHaveBeenCalled();
+    expect(directCardSender).toHaveBeenCalledTimes(1);
+    const firstCall = directCardSender.mock.calls[0] as unknown[] | undefined;
+    expect(firstCall).toBeDefined();
+    const params = (firstCall?.[0] ?? {}) as { card?: unknown; to?: string; accountId?: string };
+    expect(params.to).toBe("oc_group_chat");
+    expect(params.accountId).toBe("default");
+    const actions = collectFeishuActionValues(params.card);
+    expect(actions.some((action) => typeof action.q === "string" && action.q.startsWith("/cas_click "))).toBe(true);
+  });
+
+  it("sends Feishu text-only callback replies only once", async () => {
+    const { controller, sendMessageFeishu, sendCardFeishu } = await createControllerHarness();
+    const conversation = {
+      channel: "feishu",
+      accountId: "default",
+      conversationId: "oc_group_chat",
+    };
+    await (controller as any).store.upsertBinding({
+      conversation,
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+    const callback = await (controller as any).store.putCallback({
+      kind: "show-mcp",
+      conversation,
+    });
+
+    const reply = await controller.handleCommand(
+      "cas_click",
+      buildFeishuCommandContext({
+        args: callback.token,
+        commandBody: `/cas_click ${callback.token}`,
+        to: "chat:oc_group_chat",
+        originatingTo: "chat:oc_group_chat",
+      }),
+    );
+
+    expect(reply).toEqual({});
+    expect(sendMessageFeishu).toHaveBeenCalledTimes(1);
+    expect(sendMessageFeishu).toHaveBeenCalledWith(
+      "oc_group_chat",
+      expect.stringContaining("No MCP servers reported."),
+      expect.objectContaining({
+        accountId: "default",
+      }),
+    );
+    expect(sendCardFeishu).not.toHaveBeenCalled();
   });
 
   it("sends resume pickers through the Discord outbound adapter when the legacy runtime is absent", async () => {

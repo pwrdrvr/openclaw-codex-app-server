@@ -4,6 +4,7 @@ import { COMMANDS } from "./src/commands.js";
 const controllerState = vi.hoisted(() => ({
   createService: vi.fn(() => ({ start: vi.fn(), stop: vi.fn() })),
   handleConversationBindingResolved: vi.fn(),
+  handleBeforeDispatch: vi.fn(),
   handleInboundClaim: vi.fn(),
   handleTelegramInteractive: vi.fn(),
   handleDiscordInteractive: vi.fn(),
@@ -14,6 +15,7 @@ vi.mock("./src/controller.js", () => ({
   CodexPluginController: class {
     createService = controllerState.createService;
     handleConversationBindingResolved = controllerState.handleConversationBindingResolved;
+    handleBeforeDispatch = controllerState.handleBeforeDispatch;
     handleInboundClaim = controllerState.handleInboundClaim;
     handleTelegramInteractive = controllerState.handleTelegramInteractive;
     handleDiscordInteractive = controllerState.handleDiscordInteractive;
@@ -35,10 +37,11 @@ describe("plugin registration", () => {
     expect(() => plugin.register(api as never)).not.toThrow();
     expect(api.registerService).toHaveBeenCalledTimes(1);
     expect(api.on).toHaveBeenCalledWith("inbound_claim", expect.any(Function));
+    expect(api.on).toHaveBeenCalledWith("before_dispatch", expect.any(Function));
     expect(api.registerInteractiveHandler).toHaveBeenCalledTimes(2);
     expect(api.registerCommand).toHaveBeenCalled();
     expect(api.registerCommand.mock.calls.map(([params]) => params.name)).toEqual(
-      COMMANDS.map(([name]) => name),
+      [...COMMANDS.map(([name]) => name), "cas_click"],
     );
   });
 
