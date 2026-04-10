@@ -906,22 +906,22 @@ describe("Discord controller flows", () => {
       updatedAt: Date.now(),
     });
     const callback = await (controller as any).store.putCallback({
-      kind: "toggle-permissions",
+      kind: "toggle-fast",
       conversation,
     });
 
     const reply = await controller.handleCommand(
       "cas_click",
       buildFeishuCommandContext({
-        args: `/cas_click ${callback.token}`,
+        args: "",
         commandBody: `/cas_click ${callback.token}`,
         getCurrentConversationBinding: vi.fn(async () => ({ bindingId: "b1" })),
       }),
     );
 
     expect(reply).toEqual({});
-    expect((controller as any).store.getBinding(conversation)?.permissionsMode).toBe("full-access");
     expect(sendCardFeishu).toHaveBeenCalledTimes(1);
+    expect((controller as any).store.getBinding(conversation)?.preferences?.preferredServiceTier).toBe("fast");
   });
 
   it("falls back to the direct Feishu card sender when runtime card capability is unavailable", async () => {

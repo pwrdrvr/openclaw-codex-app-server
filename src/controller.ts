@@ -1045,6 +1045,22 @@ function parseInboundCodexCommand(content: string): { commandName: string; args:
   };
 }
 
+function extractFeishuCardClickToken(ctx: PluginCommandContext): string | undefined {
+  const argsToken = ctx.args?.trim().split(/\s+/, 1)[0]?.trim();
+  if (argsToken) {
+    return argsToken;
+  }
+  const commandBody = ctx.commandBody?.trim();
+  if (!commandBody) {
+    return undefined;
+  }
+  const parsed = parseInboundCodexCommand(commandBody);
+  if (!parsed || parsed.commandName !== "cas_click") {
+    return undefined;
+  }
+  return parsed.args.split(/\s+/, 1)[0]?.trim() || undefined;
+}
+
 function extractCallbackTokenFromData(callbackData: string): string | undefined {
   const trimmed = callbackData.trim();
   if (!trimmed) {
@@ -3784,7 +3800,7 @@ export class CodexPluginController {
     if (!conversation || !isFeishuChannel(conversation.channel)) {
       return buildSupportedConversationRequiredReply();
     }
-    const token = this.extractFeishuCardClickToken(ctx);
+    const token = extractFeishuCardClickToken(ctx);
     if (!token) {
       return { text: "Usage: /cas_click <token>" };
     }
@@ -3820,24 +3836,6 @@ export class CodexPluginController {
       detachConversationBinding: bindingApi.detachConversationBinding,
     });
     return {};
-  }
-
-  private extractFeishuCardClickToken(ctx: PluginCommandContext): string | undefined {
-    const candidates = [ctx.args, ctx.commandBody];
-    for (const candidate of candidates) {
-      const trimmed = candidate?.trim();
-      if (!trimmed) {
-        continue;
-      }
-      const withoutCommand = trimmed.toLowerCase().startsWith("/cas_click")
-        ? trimmed.slice("/cas_click".length).trim()
-        : trimmed;
-      const token = withoutCommand.split(/\s+/, 1)[0]?.trim();
-      if (token) {
-        return token;
-      }
-    }
-    return undefined;
   }
 
   private async handlePromptAlias(
