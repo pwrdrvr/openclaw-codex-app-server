@@ -2852,6 +2852,7 @@ export class CodexAppServerClient {
   async compactThread(params: {
     sessionKey?: string;
     threadId: string;
+    signal?: AbortSignal;
     onProgress?: (progress: CompactProgress) => Promise<void> | void;
   }): Promise<CompactResult> {
     const connectionPromise = this.ensureConnected();
@@ -2890,6 +2891,15 @@ export class CodexAppServerClient {
       }
       reject?.(new Error(message));
     };
+
+    const abortListener = () => {
+      fail("Codex thread compaction canceled.");
+    };
+    if (params.signal?.aborted) {
+      abortListener();
+    } else {
+      params.signal?.addEventListener("abort", abortListener, { once: true });
+    }
 
     const removeNotificationListener = this.addNotificationListener(async (method, notificationParams) => {
       const methodLower = method.trim().toLowerCase();
@@ -2955,6 +2965,7 @@ export class CodexAppServerClient {
       if (settleTimer) {
         clearTimeout(settleTimer);
       }
+      params.signal?.removeEventListener("abort", abortListener);
     }
   }
 
