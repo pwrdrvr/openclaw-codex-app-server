@@ -889,6 +889,41 @@ describe("Discord controller flows", () => {
     expect(markdownContents).toContain("Permissions: Full Access");
   });
 
+  it("accepts a full Feishu cas_click command body when extracting the callback token", async () => {
+    const { controller, sendCardFeishu } = await createControllerHarness();
+    const conversation = {
+      channel: "feishu",
+      accountId: "default",
+      conversationId: "oc_group_chat:topic:om_topic_root",
+      parentConversationId: "oc_group_chat",
+      threadId: "om_topic_root",
+    };
+    await (controller as any).store.upsertBinding({
+      conversation,
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+    const callback = await (controller as any).store.putCallback({
+      kind: "toggle-permissions",
+      conversation,
+    });
+
+    const reply = await controller.handleCommand(
+      "cas_click",
+      buildFeishuCommandContext({
+        args: `/cas_click ${callback.token}`,
+        commandBody: `/cas_click ${callback.token}`,
+        getCurrentConversationBinding: vi.fn(async () => ({ bindingId: "b1" })),
+      }),
+    );
+
+    expect(reply).toEqual({});
+    expect((controller as any).store.getBinding(conversation)?.permissionsMode).toBe("full-access");
+    expect(sendCardFeishu).toHaveBeenCalledTimes(1);
+  });
+
   it("falls back to the direct Feishu card sender when runtime card capability is unavailable", async () => {
     const { controller, api, sendCardFeishu } = await createControllerHarness();
     const directCardSender = vi.fn(async () => ({ messageId: "direct-card-1" }));

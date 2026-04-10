@@ -3784,7 +3784,7 @@ export class CodexPluginController {
     if (!conversation || !isFeishuChannel(conversation.channel)) {
       return buildSupportedConversationRequiredReply();
     }
-    const token = (ctx.args?.trim() ?? "").split(/\s+/, 1)[0]?.trim();
+    const token = this.extractFeishuCardClickToken(ctx);
     if (!token) {
       return { text: "Usage: /cas_click <token>" };
     }
@@ -3820,6 +3820,24 @@ export class CodexPluginController {
       detachConversationBinding: bindingApi.detachConversationBinding,
     });
     return {};
+  }
+
+  private extractFeishuCardClickToken(ctx: PluginCommandContext): string | undefined {
+    const candidates = [ctx.args, ctx.commandBody];
+    for (const candidate of candidates) {
+      const trimmed = candidate?.trim();
+      if (!trimmed) {
+        continue;
+      }
+      const withoutCommand = trimmed.toLowerCase().startsWith("/cas_click")
+        ? trimmed.slice("/cas_click".length).trim()
+        : trimmed;
+      const token = withoutCommand.split(/\s+/, 1)[0]?.trim();
+      if (token) {
+        return token;
+      }
+    }
+    return undefined;
   }
 
   private async handlePromptAlias(
