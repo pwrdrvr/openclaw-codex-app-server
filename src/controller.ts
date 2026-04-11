@@ -2257,7 +2257,15 @@ export class CodexPluginController {
       if (!binding || !conversation) {
         return { text: "Bind this conversation to Codex before changing status settings." };
       }
-      const { state: currentThreadState, effectiveState } = await this.readEffectiveThreadState(binding);
+      const {
+        binding: currentBinding,
+        state: currentThreadState,
+        effectiveState,
+      } = await this.readEffectiveThreadState(binding);
+      if (!currentBinding) {
+        return { text: "Bind this conversation to Codex before changing status settings." };
+      }
+      binding = currentBinding;
       const effectiveModel =
         parsed.requestedModel?.trim() ||
         (await this.resolveCurrentModelHint(binding, effectiveState));
@@ -2391,10 +2399,12 @@ export class CodexPluginController {
   }
 
   private async readEffectiveThreadState(binding: StoredBinding): Promise<{
+    binding: StoredBinding | null;
     state: ThreadState | undefined;
     effectiveState: ThreadState | undefined;
   }> {
     const profile = this.getPermissionsMode(binding);
+    let bindingCleared = false;
     const state = await this.client.readThreadState({
       profile,
       sessionKey: binding.sessionKey,
@@ -2402,11 +2412,16 @@ export class CodexPluginController {
     }).catch(async (error) => {
       if (shouldClearBindingForThreadError(error)) {
         await this.clearStaleBinding(binding, "read effective thread state");
+        bindingCleared = true;
       }
       return undefined;
     });
-    const desired = buildDesiredThreadConfiguration(state, binding);
+    const currentBinding =
+      this.store.getBinding(this.toConversationTarget(binding.conversation)) ??
+      (bindingCleared ? null : binding);
+    const desired = buildDesiredThreadConfiguration(state, currentBinding);
     return {
+      binding: currentBinding,
       state,
       effectiveState: desired.effectiveState,
     };
@@ -2564,10 +2579,13 @@ export class CodexPluginController {
     conversation: ConversationTarget,
     binding: StoredBinding,
   ): Promise<PluginInteractiveButtons> {
-    const { effectiveState } = await this.readEffectiveThreadState(binding);
-    const currentModel = await this.resolveCurrentModelHint(binding, effectiveState);
+    const { binding: currentBinding, effectiveState } = await this.readEffectiveThreadState(binding);
+    if (!currentBinding) {
+      return [];
+    }
+    const currentModel = await this.resolveCurrentModelHint(currentBinding, effectiveState);
     const currentReasoning = normalizeReasoningEffort(
-      effectiveState?.reasoningEffort ?? binding.preferences?.preferredReasoningEffort,
+      effectiveState?.reasoningEffort ?? currentBinding.preferences?.preferredReasoningEffort,
     );
     const [showModelPicker, showReasoningPicker, togglePermissions, compactThread, stopRun, refreshStatus, detachThread, showSkills, showMcp] = await Promise.all([
       this.store.putCallback({
@@ -3281,8 +3299,16 @@ export class CodexPluginController {
     if (typeof action === "object") {
       return { text: action.error };
     }
+    const {
+      binding: currentBinding,
+      state: threadState,
+      effectiveState,
+    } = await this.readEffectiveThreadState(binding);
+    if (!currentBinding) {
+      return { text: "Bind this conversation to a Codex thread before toggling fast mode." };
+    }
+    binding = currentBinding;
     const profile = this.getPermissionsMode(binding);
-    const { state: threadState, effectiveState } = await this.readEffectiveThreadState(binding);
     const currentModel =
       effectiveState?.model?.trim() || binding.preferences?.preferredModel?.trim() || undefined;
     if (!modelSupportsFast(currentModel)) {
@@ -5559,9 +5585,17 @@ export class CodexPluginController {
         await responders.reply("No Codex binding for this conversation.");
         return;
       }
-      const profile = this.getPermissionsMode(binding);
-      const { state: threadState, effectiveState } = await this.readEffectiveThreadState(binding);
-      const currentModel = await this.resolveCurrentModelHint(binding, effectiveState);
+      const {
+        binding: currentBinding,
+        state: threadState,
+        effectiveState,
+      } = await this.readEffectiveThreadState(binding);
+      if (!currentBinding) {
+        await responders.reply("No Codex binding for this conversation.");
+        return;
+      }
+      const profile = this.getPermissionsMode(currentBinding);
+      const currentModel = await this.resolveCurrentModelHint(currentBinding, effectiveState);
       if (!modelSupportsFast(currentModel)) {
         await responders.reply(
           `Fast mode is unavailable for ${currentModel ?? "the current model"}. Use a GPT-5.4+ model to enable it.`,
@@ -5576,8 +5610,8 @@ export class CodexPluginController {
       if (threadState) {
         updatedState = await this.client.setThreadServiceTier({
           profile,
-          sessionKey: binding.sessionKey,
-          threadId: binding.threadId,
+          sessionKey: currentBinding.sessionKey,
+          threadId: currentBinding.threadId,
           serviceTier: nextTier,
         }).catch((error) => {
           if (isMissingThreadError(error)) {
@@ -5588,9 +5622,9 @@ export class CodexPluginController {
       }
       const preferredServiceTier = preferredServiceTierFromRequest(nextTier);
       const updatedBinding: StoredBinding = {
-        ...binding,
+        ...currentBinding,
         preferences: {
-          ...(binding.preferences ?? {
+          ...(currentBinding.preferences ?? {
             preferredServiceTier: null,
             updatedAt: Date.now(),
           }),
@@ -5725,9 +5759,16 @@ export class CodexPluginController {
         return;
       }
       const active = this.activeRuns.get(buildConversationKey(callback.conversation));
-      const { state: currentThreadState } = await this.readEffectiveThreadState(binding);
+      const {
+        binding: currentBinding,
+        state: currentThreadState,
+      } = await this.readEffectiveThreadState(binding);
+      if (!currentBinding) {
+        await responders.reply("No Codex binding for this conversation.");
+        return;
+      }
       const updatedBindingBase: StoredBinding = {
-        ...binding,
+        ...currentBinding,
         permissionsMode: active ? currentProfile : nextProfile,
         pendingPermissionsMode: active ? nextProfile : undefined,
         updatedAt: Date.now(),
@@ -6001,14 +6042,18 @@ export class CodexPluginController {
         await responders.reply("No Codex binding for this conversation.");
         return;
       }
-      const profile = this.getPermissionsMode(binding);
-      const { state: threadState } = await this.readEffectiveThreadState(binding);
+      const { binding: currentBinding, state: threadState } = await this.readEffectiveThreadState(binding);
+      if (!currentBinding) {
+        await responders.reply("No Codex binding for this conversation.");
+        return;
+      }
+      const profile = this.getPermissionsMode(currentBinding);
       let state = threadState;
       if (threadState) {
         state = await this.client.setThreadModel({
           profile,
-          sessionKey: binding.sessionKey,
-          threadId: binding.threadId,
+          sessionKey: currentBinding.sessionKey,
+          threadId: currentBinding.threadId,
           model: callback.model,
         }).catch((error) => {
           if (isMissingThreadError(error)) {
@@ -6018,23 +6063,23 @@ export class CodexPluginController {
         });
       }
       const nextPreferredServiceTier = modelSupportsFast(callback.model)
-        ? binding.preferences?.preferredServiceTier ?? null
+        ? currentBinding.preferences?.preferredServiceTier ?? null
         : "default";
       let nextState = state;
       if (!modelSupportsFast(callback.model) && normalizeServiceTier(state?.serviceTier) === "fast") {
         nextState = await this.client
           .setThreadServiceTier({
             profile,
-            sessionKey: binding.sessionKey,
-            threadId: binding.threadId,
+            sessionKey: currentBinding.sessionKey,
+            threadId: currentBinding.threadId,
             serviceTier: null,
           })
           .catch(() => ({ ...state, serviceTier: "default" } as ThreadState));
       }
       const updatedBinding: StoredBinding = {
-        ...binding,
+        ...currentBinding,
         preferences: {
-          ...(binding.preferences ?? {
+          ...(currentBinding.preferences ?? {
             preferredServiceTier: null,
             updatedAt: Date.now(),
           }),

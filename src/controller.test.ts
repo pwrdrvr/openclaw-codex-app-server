@@ -2429,6 +2429,47 @@ describe("Discord controller flows", () => {
     );
   });
 
+  it("does not restore a dead binding when cas_status applies overrides", async () => {
+    const { controller, api, clientMock } = await createControllerHarness();
+    const conversation = {
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+    } as const;
+    const binding = {
+      conversation,
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      preferences: {
+        preferredModel: "openai/gpt-5.4",
+        updatedAt: Date.now(),
+      },
+      updatedAt: Date.now(),
+    };
+    clientMock.readThreadState.mockRejectedValue(
+      new Error("codex app server rpc error (-32600): no rollout found for thread id thread-1"),
+    );
+    await (controller as any).store.upsertBinding(binding);
+
+    const reply = await controller.handleCommand(
+      "cas_status",
+      buildTelegramCommandContext({
+        args: "--model openai/gpt-5.4-mini",
+        commandBody: "/cas_status --model openai/gpt-5.4-mini",
+        getCurrentConversationBinding: vi.fn(async () => ({ bindingId: "b1" })),
+      }),
+    );
+
+    expect(reply).toEqual({
+      text: "Bind this conversation to Codex before changing status settings.",
+    });
+    expect((controller as any).store.getBinding(conversation)).toBeNull();
+    expect(api.logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("codex clearing stale binding"),
+    );
+  });
+
   it("hides the fast button on status controls when the current model does not support it", async () => {
     const { controller, sendMessageTelegram } = await createControllerHarness();
     await (controller as any).store.upsertBinding({
