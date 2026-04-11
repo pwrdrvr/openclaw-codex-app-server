@@ -2377,6 +2377,58 @@ describe("Discord controller flows", () => {
     expect(buttons[1][1].text).toBe("Permissions: toggle");
   });
 
+  it("clears a dead binding when status reads hit a missing thread", async () => {
+    const { controller, api, clientMock } = await createControllerHarness();
+    const conversation = {
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+    } as const;
+    const binding = {
+      conversation,
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    };
+    clientMock.readThreadState.mockRejectedValue(
+      new Error("codex app server rpc error (-32600): no rollout found for thread id thread-1"),
+    );
+    await (controller as any).store.upsertBinding(binding);
+    await (controller as any).store.upsertPendingRequest({
+      requestId: "pending-1",
+      conversation,
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      state: {
+        requestId: "pending-1",
+        options: ["Approve Once", "Cancel"],
+        expiresAt: Date.now() + 60_000,
+      },
+      updatedAt: Date.now(),
+    });
+    const callback = await (controller as any).store.putCallback({
+      kind: "refresh-status",
+      conversation,
+    });
+
+    const reply = await controller.handleCommand(
+      "cas_status",
+      buildTelegramCommandContext({
+        commandBody: "/cas_status",
+        getCurrentConversationBinding: vi.fn(async () => ({ bindingId: "b1" })),
+      }),
+    );
+
+    expect(reply.text).toContain("Binding: none");
+    expect((controller as any).store.getBinding(conversation)).toBeNull();
+    expect((controller as any).store.getPendingRequestByConversation(conversation)).toBeNull();
+    expect((controller as any).store.getCallback(callback.token)).toBeNull();
+    expect(api.logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("codex clearing stale binding"),
+    );
+  });
+
   it("hides the fast button on status controls when the current model does not support it", async () => {
     const { controller, sendMessageTelegram } = await createControllerHarness();
     await (controller as any).store.upsertBinding({
@@ -4841,6 +4893,50 @@ describe("Discord controller flows", () => {
     expect(staleQueueMessage).not.toHaveBeenCalled();
     expect(staleInterrupt).toHaveBeenCalled();
     expect(startTurn).toHaveBeenCalled();
+  });
+
+  it("drops a dead bound thread before starting a new turn", async () => {
+    const { controller, clientMock } = await createControllerHarness();
+    const conversation = {
+      channel: "discord",
+      accountId: "default",
+      conversationId: "channel:chan-1",
+    } as const;
+    const binding = {
+      conversation,
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    };
+    clientMock.readThreadState.mockRejectedValue(
+      new Error("codex app server rpc error (-32600): no rollout found for thread id thread-1"),
+    );
+    await (controller as any).store.upsertBinding(binding);
+    const startTurn = vi.fn(() => ({
+      result: new Promise(() => {}),
+      getThreadId: () => undefined,
+      queueMessage: vi.fn(async () => true),
+      interrupt: vi.fn(async () => {}),
+      isAwaitingInput: () => false,
+      submitPendingInput: vi.fn(async () => false),
+      submitPendingInputPayload: vi.fn(async () => false),
+    }));
+    (controller as any).client.startTurn = startTurn;
+
+    await (controller as any).startTurn({
+      conversation,
+      binding,
+      workspaceDir: "/repo/openclaw",
+      prompt: "who are you?",
+      reason: "command",
+    });
+
+    expect(startTurn).toHaveBeenCalledWith(expect.objectContaining({
+      sessionKey: undefined,
+      existingThreadId: undefined,
+    }));
+    expect((controller as any).store.getBinding(conversation)).toBeNull();
   });
 
   it("does not send the plan keepalive after a questionnaire is already visible", async () => {
