@@ -1,3 +1,6 @@
+import { accessSync, constants } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import type { PluginSettings } from "./types.js";
 import {
   DEFAULT_REQUEST_TIMEOUT_MS,
@@ -56,10 +59,90 @@ function readNumber(
   return fallback;
 }
 
+function listExecutableNames(command: string): string[] {
+  if (process.platform !== "win32") {
+    return [command];
+  }
+  if (path.extname(command)) {
+    return [command];
+  }
+  const extensions = (process.env.PATHEXT || ".COM;.EXE;.BAT;.CMD")
+    .split(";")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  return [command, ...extensions.map((extension) => `${command}${extension.toLowerCase()}`)];
+}
+
+function isExecutableFile(candidate: string): boolean {
+  try {
+    accessSync(candidate, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function resolveExecutableInDir(dir: string, command: string): string | undefined {
+  for (const executableName of listExecutableNames(command)) {
+    const candidate = path.join(dir, executableName);
+    if (isExecutableFile(candidate)) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+function uniqueDirs(entries: Array<string | undefined>): string[] {
+  const seen = new Set<string>();
+  const dirs: string[] = [];
+  for (const entry of entries) {
+    const trimmed = entry?.trim();
+    if (!trimmed) {
+      continue;
+    }
+    const resolved = path.resolve(trimmed);
+    if (seen.has(resolved)) {
+      continue;
+    }
+    seen.add(resolved);
+    dirs.push(resolved);
+  }
+  return dirs;
+}
+
+function resolveDefaultStdioCommand(): string | undefined {
+  const command = "codex";
+  const homeDir = os.homedir().trim();
+  const pathDirs = (process.env.PATH || "")
+    .split(path.delimiter)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  const homePathDirs = homeDir
+    ? pathDirs.filter((entry) => {
+        const resolved = path.resolve(entry);
+        return resolved === homeDir || resolved.startsWith(`${homeDir}${path.sep}`);
+      })
+    : [];
+  const candidateDirs = uniqueDirs([
+    process.env.XDG_BIN_HOME,
+    homeDir ? path.join(homeDir, ".local", "bin") : undefined,
+    homeDir ? path.join(homeDir, "bin") : undefined,
+    ...homePathDirs,
+  ]);
+  for (const dir of candidateDirs) {
+    const resolved = resolveExecutableInDir(dir, command);
+    if (resolved) {
+      return resolved;
+    }
+  }
+  return undefined;
+}
+
 export function resolvePluginSettings(rawConfig: unknown): PluginSettings {
   const record = asRecord(rawConfig);
   const transport = record.transport === "websocket" ? "websocket" : "stdio";
   const authToken = readString(record, "authToken");
+  const configuredCommand = readString(record, "command");
   const configuredHeaders = readHeaders(record);
   const headers = {
     ...(configuredHeaders ?? {}),
@@ -69,7 +152,7 @@ export function resolvePluginSettings(rawConfig: unknown): PluginSettings {
   return {
     enabled: record.enabled !== false,
     transport,
-    command: readString(record, "command") ?? "codex",
+    command: configuredCommand ?? resolveDefaultStdioCommand() ?? "codex",
     args: readStringArray(record, "args"),
     url: readString(record, "url"),
     headers: Object.keys(headers).length > 0 ? headers : undefined,
