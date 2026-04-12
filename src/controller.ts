@@ -166,6 +166,7 @@ type ActiveRunRecord = {
   mode: "default" | "plan" | "review";
   profile: PermissionsMode;
   handle: ActiveCodexRun;
+  cleanupWhenInputSettles?: boolean;
 };
 
 const execFileAsync = promisify(execFile);
@@ -2331,6 +2332,66 @@ export class CodexPluginController {
     return !this.activeRuns.has(key);
   }
 
+  private ensureActiveRunRegistration(params: {
+    conversation: ConversationTarget;
+    workspaceDir: string;
+    mode: ActiveRunRecord["mode"];
+    profile: PermissionsMode;
+    run: ActiveCodexRun;
+    reason: string;
+  }): boolean {
+    const key = buildConversationKey(params.conversation);
+    const active = this.activeRuns.get(key);
+    if (active?.handle === params.run) {
+      return true;
+    }
+    if (active && active.handle !== params.run) {
+      this.api.logger.warn(
+        `codex ignoring ${params.reason} for stale run ${this.formatConversationForLog(params.conversation)} activeMode=${active.mode} incomingMode=${params.mode}`,
+      );
+      return false;
+    }
+    this.activeRuns.set(key, {
+      conversation: params.conversation,
+      workspaceDir: params.workspaceDir,
+      mode: params.mode,
+      profile: params.profile,
+      handle: params.run,
+    });
+    this.api.logger.warn(
+      `codex restored active run from ${params.reason} ${this.formatConversationForLog(params.conversation)} mode=${params.mode}`,
+    );
+    return true;
+  }
+
+  private async finalizeActiveRun(
+    conversation: ConversationTarget,
+    run: ActiveCodexRun,
+    reason: string,
+  ): Promise<void> {
+    const key = buildConversationKey(conversation);
+    const active = this.activeRuns.get(key);
+    if (!active || active.handle !== run) {
+      this.api.logger.debug?.(
+        `codex skipped active run cleanup ${this.formatConversationForLog(conversation)} reason=${reason} active=${active ? "other-run" : "none"}`,
+      );
+      return;
+    }
+    const pending = this.store.getPendingRequestByConversation(conversation);
+    const awaitingInput = typeof run.isAwaitingInput === "function" && run.isAwaitingInput();
+    if (awaitingInput || pending) {
+      active.cleanupWhenInputSettles = true;
+      this.api.logger.debug?.(
+        `codex deferred active run cleanup ${this.formatConversationForLog(conversation)} reason=${reason} awaitingInput=${awaitingInput ? "yes" : "no"} pendingRequest=${pending?.requestId ?? "none"}`,
+      );
+      return;
+    }
+    this.activeRuns.delete(key);
+    await this.applyPendingBindingPermissionsModeMigration(conversation);
+    this.api.logger.debug?.(
+      `codex cleaned up active run ${this.formatConversationForLog(conversation)} reason=${reason}`,
+    );
+  }
   private async readEffectiveThreadState(binding: StoredBinding): Promise<{
     state: ThreadState | undefined;
     effectiveState: ThreadState | undefined;
@@ -3555,7 +3616,14 @@ export class CodexPluginController {
         this.api.logger.debug?.(
           `codex turn pending input ${state ? "received" : "cleared"} ${this.formatConversationForLog(params.conversation)} questionnaire=${state?.questionnaire ? "yes" : "no"}`,
         );
-        await this.handlePendingInputState(params.conversation, params.workspaceDir, state, run);
+        await this.handlePendingInputState(
+          params.conversation,
+          params.workspaceDir,
+          params.collaborationMode?.mode === "plan" ? "plan" : "default",
+          profile,
+          state,
+          run,
+        );
       },
       onFileEdits: async (text) => {
         await this.sendText(params.conversation, text);
@@ -3644,15 +3712,7 @@ export class CodexPluginController {
       })
       .finally(async () => {
         typing?.stop();
-        this.activeRuns.delete(key);
-        const pending = this.store.getPendingRequestByConversation(params.conversation);
-        if (pending) {
-          await this.store.removePendingRequest(pending.requestId);
-        }
-        await this.applyPendingBindingPermissionsModeMigration(params.conversation);
-        this.api.logger.debug?.(
-          `codex turn cleaned up ${this.formatConversationForLog(params.conversation)}`,
-        );
+        await this.finalizeActiveRun(params.conversation, run, "turn settled");
       });
   }
 
@@ -3816,7 +3876,14 @@ export class CodexPluginController {
         this.api.logger.debug(
           `codex plan pending input ${state ? `received (questionnaire=${state.questionnaire ? "yes" : "no"})` : "cleared"}`,
         );
-        await this.handlePendingInputState(params.conversation, params.workspaceDir, state, run);
+        await this.handlePendingInputState(
+          params.conversation,
+          params.workspaceDir,
+          "plan",
+          profile,
+          state,
+          run,
+        );
       },
       onInterrupted: async () => {
         await this.sendText(params.conversation, formatInterruptedText("plan"));
@@ -3917,12 +3984,7 @@ export class CodexPluginController {
       .finally(async () => {
         stopProgressTimer();
         typing?.stop();
-        this.activeRuns.delete(key);
-        const pending = this.store.getPendingRequestByConversation(params.conversation);
-        if (pending) {
-          await this.store.removePendingRequest(pending.requestId);
-        }
-        await this.applyPendingBindingPermissionsModeMigration(params.conversation);
+        await this.finalizeActiveRun(params.conversation, run, "plan settled");
       });
   }
 
@@ -3993,7 +4055,14 @@ export class CodexPluginController {
         if (state) {
           stopProgressTimer();
         }
-        await this.handlePendingInputState(params.conversation, params.workspaceDir, state, run);
+        await this.handlePendingInputState(
+          params.conversation,
+          params.workspaceDir,
+          "review",
+          profile,
+          state,
+          run,
+        );
       },
       onInterrupted: async () => {
         await this.sendText(params.conversation, "Codex review stopped.");
@@ -4080,25 +4149,38 @@ export class CodexPluginController {
       .finally(async () => {
         stopProgressTimer();
         typing?.stop();
-        this.activeRuns.delete(key);
-        const pending = this.store.getPendingRequestByConversation(params.conversation);
-        if (pending) {
-          await this.store.removePendingRequest(pending.requestId);
-        }
-        await this.applyPendingBindingPermissionsModeMigration(params.conversation);
+        await this.finalizeActiveRun(params.conversation, run, "review settled");
       });
   }
 
   private async handlePendingInputState(
     conversation: ConversationTarget,
     workspaceDir: string,
+    mode: ActiveRunRecord["mode"],
+    profile: PermissionsMode,
     state: PendingInputState | null,
     run: ActiveCodexRun,
   ): Promise<void> {
+    if (state) {
+      if (!this.ensureActiveRunRegistration({
+        conversation,
+        workspaceDir,
+        mode,
+        profile,
+        run,
+        reason: "pending input",
+      })) {
+        return;
+      }
+    }
     if (!state) {
       const existing = this.store.getPendingRequestByConversation(conversation);
       if (existing) {
         await this.store.removePendingRequest(existing.requestId);
+      }
+      const active = this.activeRuns.get(buildConversationKey(conversation));
+      if (active?.handle === run && active.cleanupWhenInputSettles) {
+        await this.finalizeActiveRun(conversation, run, "pending input settled");
       }
       return;
     }
@@ -5308,6 +5390,9 @@ export class CodexPluginController {
       }
       const active = this.activeRuns.get(buildConversationKey(callback.conversation));
       if (!active) {
+        this.api.logger.warn(
+          `codex pending-input callback missing active run ${this.formatConversationForLog(callback.conversation)} requestId=${callback.requestId} pendingRequest=${pending.requestId} thread=${pending.threadId || "<none>"}`,
+        );
         await responders.reply("No active Codex run is waiting for input.");
         return;
       }
@@ -5331,6 +5416,9 @@ export class CodexPluginController {
       }
       const active = this.activeRuns.get(buildConversationKey(callback.conversation));
       if (!active) {
+        this.api.logger.warn(
+          `codex questionnaire callback missing active run ${this.formatConversationForLog(callback.conversation)} requestId=${callback.requestId} pendingRequest=${pending.requestId} thread=${pending.threadId || "<none>"}`,
+        );
         await responders.reply("No active Codex run is waiting for input.");
         return;
       }

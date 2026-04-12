@@ -4850,6 +4850,7 @@ describe("Discord controller flows", () => {
       const harness = await createControllerHarness();
       const { controller } = harness;
       const { sendMessageTelegram } = harness;
+      const activeKey = `telegram::default::${TEST_TELEGRAM_PEER_ID}::`;
       let resolveResult: ((value: unknown) => void) | undefined;
       const result = new Promise((resolve) => {
         resolveResult = resolve;
@@ -4925,9 +4926,101 @@ describe("Discord controller flows", () => {
       });
       await Promise.resolve();
       await Promise.resolve();
+      expect((controller as any).activeRuns.get(activeKey)?.mode).toBe("plan");
+      expect((controller as any).store.getPendingRequestById("req-plan-1")).not.toBeNull();
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("restores the active plan run when questionnaire input arrives after result cleanup", async () => {
+    const { controller } = await createControllerHarness();
+    const conversation = {
+      channel: "telegram",
+      accountId: "default",
+      conversationId: TEST_TELEGRAM_PEER_ID,
+    } as const;
+    const activeKey = `telegram::default::${TEST_TELEGRAM_PEER_ID}::`;
+    let onPendingInput: ((state: any) => Promise<void>) | undefined;
+    const submitPendingInputPayload = vi.fn(async () => true);
+    (controller as any).client.startTurn = vi.fn((params: any) => {
+      onPendingInput = params.onPendingInput;
+      return {
+        result: Promise.resolve({ threadId: "thread-1" }),
+        getThreadId: () => "thread-1",
+        queueMessage: vi.fn(async () => false),
+        interrupt: vi.fn(async () => {}),
+        isAwaitingInput: () => false,
+        submitPendingInput: vi.fn(async () => false),
+        submitPendingInputPayload,
+      };
+    });
+
+    await (controller as any).startPlan({
+      conversation,
+      binding: null,
+      workspaceDir: "/repo/openclaw",
+      prompt: "Ask the breakfast question.",
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    (controller as any).activeRuns.delete(activeKey);
+    expect((controller as any).activeRuns.get(activeKey)).toBeUndefined();
+
+    await onPendingInput?.({
+      requestId: "req-plan-race",
+      options: [],
+      expiresAt: Date.now() + 7 * 24 * 60 * 60_000,
+      method: "item/tool/requestUserInput",
+      questionnaire: {
+        currentIndex: 0,
+        questions: [
+          {
+            index: 0,
+            id: "breakfast",
+            header: "Breakfast",
+            prompt: "Do you like cereal?",
+            options: [
+              { key: "A", label: "Yes", description: "Choose yes." },
+            ],
+            guidance: [],
+          },
+        ],
+        answers: [null],
+        responseMode: "structured",
+      },
+    });
+
+    expect((controller as any).activeRuns.get(activeKey)?.mode).toBe("plan");
+    const callback = (controller as any).store.snapshot.callbacks.find((entry: any) =>
+      entry.kind === "pending-questionnaire" &&
+      entry.requestId === "req-plan-race" &&
+      entry.action === "select"
+    );
+    expect(callback).toBeTruthy();
+    const reply = vi.fn(async () => {});
+
+    await controller.handleTelegramInteractive({
+      ...conversation,
+      callback: {
+        payload: callback.token,
+      },
+      respond: {
+        clearButtons: vi.fn(async () => {}),
+        reply,
+        editMessage: vi.fn(async () => {}),
+      },
+    } as any);
+
+    expect(submitPendingInputPayload).toHaveBeenCalledWith({
+      answers: {
+        breakfast: { answers: ["Yes"] },
+      },
+    });
+    expect(reply).toHaveBeenCalledWith({
+      text: "Recorded your answers and sent them to Codex.",
+    });
   });
 
   it("tells the user to log back in when Codex reports OpenAI auth is required", async () => {
