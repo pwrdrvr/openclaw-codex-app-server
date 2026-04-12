@@ -29,14 +29,12 @@
     "release:metadata": "node ./scripts/release-metadata.mjs",
     "release:apply-version": "node ./scripts/apply-release-version.mjs"
   },
-  "peerDependencies": {
-    "openclaw": ">=2026.3.22"
-  },
   "dependencies": {
     "ws": "^8.18.3"
   },
   "devDependencies": {
     "@types/node": "^24.6.0",
+    "openclaw": "2026.4.1",
     "typescript": "^5.9.2",
     "vitest": "^3.2.4",
     "yaml": "^2.8.2"

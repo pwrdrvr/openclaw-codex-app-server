@@ -40,6 +40,19 @@ describe("openclaw sdk compat", () => {
   });
 
   it("falls back to the dist facade when the public subpath is gone", async () => {
+    const files = new Map<string, string>([
+      [
+        "/tmp/node_modules/openclaw/package.json",
+        JSON.stringify({
+          name: "openclaw",
+          exports: {
+            "./plugin-sdk": { default: "./dist/plugin-sdk/index.js" },
+            "./cli-entry": { default: "./dist/cli-entry.js" },
+          },
+        }),
+      ],
+      ["/tmp/node_modules/openclaw/dist/plugin-sdk/discord.js", ""],
+    ]);
     const importer = vi.fn(async (specifier: string) => {
       if (specifier === "openclaw/plugin-sdk/discord") {
         throw Object.assign(
@@ -58,7 +71,15 @@ describe("openclaw sdk compat", () => {
       label: "discord",
       importer,
       resolver: () => "/tmp/node_modules/openclaw/dist/index.js",
-      pathExists: () => true,
+      pathExists: (targetPath) =>
+        targetPath === "/tmp/node_modules/openclaw/dist/index.js" || files.has(targetPath),
+      readFile: (targetPath) => {
+        const content = files.get(targetPath);
+        if (!content) {
+          throw new Error(`missing ${targetPath}`);
+        }
+        return content;
+      },
       cache: new Map(),
     });
 
@@ -101,6 +122,76 @@ describe("openclaw sdk compat", () => {
     });
 
     expect(result).toBe("/host/openclaw/dist/index.js");
+  });
+
+  it("falls back to the host OpenClaw entrypoint from require.main when argv/cwd do not identify it", () => {
+    const files = new Map<string, string>([
+      [
+        "/opt/homebrew/lib/node_modules/openclaw/package.json",
+        JSON.stringify({
+          name: "openclaw",
+          exports: {
+            "./plugin-sdk": { default: "./dist/plugin-sdk/index.js" },
+            "./cli-entry": { default: "./dist/cli-entry.js" },
+          },
+        }),
+      ],
+    ]);
+
+    const result = resolveOpenClawEntrypointPath({
+      argv1: "/Users/huntharo/.openclaw/extensions/openclaw-codex-app-server/index.ts",
+      cwd: "/Users/huntharo/.openclaw/extensions/openclaw-codex-app-server",
+      mainFilename: "/opt/homebrew/lib/node_modules/openclaw/dist/index.js",
+      pathExists: (targetPath) =>
+        targetPath === "/opt/homebrew/lib/node_modules/openclaw/dist/index.js" ||
+        files.has(targetPath),
+      readFile: (targetPath) => {
+        const content = files.get(targetPath);
+        if (!content) {
+          throw new Error(`missing ${targetPath}`);
+        }
+        return content;
+      },
+      resolver: () =>
+        "/Users/huntharo/.openclaw/extensions/openclaw-codex-app-server/node_modules/openclaw/dist/index.js",
+    });
+
+    expect(result).toBe("/opt/homebrew/lib/node_modules/openclaw/dist/index.js");
+  });
+
+  it("rejects extension-local vendored openclaw fallbacks", () => {
+    const files = new Map<string, string>([
+      [
+        "/Users/huntharo/.openclaw/extensions/openclaw-codex-app-server/node_modules/openclaw/package.json",
+        JSON.stringify({
+          name: "openclaw",
+          exports: {
+            "./plugin-sdk": { default: "./dist/plugin-sdk/index.js" },
+            "./cli-entry": { default: "./dist/cli-entry.js" },
+          },
+        }),
+      ],
+    ]);
+
+    expect(() =>
+      resolveOpenClawEntrypointPath({
+        argv1: "/Users/huntharo/.openclaw/extensions/openclaw-codex-app-server/index.ts",
+        cwd: "/Users/huntharo/.openclaw/extensions/openclaw-codex-app-server",
+        pathExists: (targetPath) =>
+          targetPath ===
+            "/Users/huntharo/.openclaw/extensions/openclaw-codex-app-server/node_modules/openclaw/dist/index.js" ||
+          files.has(targetPath),
+        readFile: (targetPath) => {
+          const content = files.get(targetPath);
+          if (!content) {
+            throw new Error(`missing ${targetPath}`);
+          }
+          return content;
+        },
+        resolver: () =>
+          "/Users/huntharo/.openclaw/extensions/openclaw-codex-app-server/node_modules/openclaw/dist/index.js",
+      }),
+    ).toThrow("Unable to resolve a trusted host OpenClaw installation");
   });
 
   it("rethrows non-resolution failures from the public import", async () => {
