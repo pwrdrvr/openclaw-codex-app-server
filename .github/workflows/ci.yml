@@ -27,7 +27,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Install Node.js and dependencies
-        uses: ./.github/actions/configure-nodejs
+        uses: pwrdrvr/configure-nodejs@codex/skip-setup-node-on-lookup-only
         with:
           lookup-only: "true"
 
@@ -40,7 +40,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Install Node.js and dependencies
-        uses: ./.github/actions/configure-nodejs
+        uses: pwrdrvr/configure-nodejs@codex/skip-setup-node-on-lookup-only
 
       - name: Run typecheck
         run: pnpm typecheck
@@ -54,7 +54,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Install Node.js and dependencies
-        uses: ./.github/actions/configure-nodejs
+        uses: pwrdrvr/configure-nodejs@codex/skip-setup-node-on-lookup-only
 
       - name: Run tests
         run: pnpm test
@@ -68,7 +68,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Install Node.js and dependencies
-        uses: ./.github/actions/configure-nodejs
+        uses: pwrdrvr/configure-nodejs@codex/skip-setup-node-on-lookup-only
 
       - name: Pack and install the publishable package
         run: pnpm pack:smoke
