@@ -2388,10 +2388,10 @@ export class CodexPluginController {
       return binding;
     } catch (error) {
       if (!shouldClearBindingForThreadError(error)) {
-        if (isMissingThreadError(error)) {
-          return binding;
-        }
-        throw error;
+        this.api.logger.warn(
+          `codex could not verify bound thread before ${reason} ${this.formatConversationForLog(this.toConversationTarget(binding.conversation))} thread=${binding.threadId}: ${String(error)}`,
+        );
+        return binding;
       }
       await this.clearStaleBinding(binding, reason);
       return null;

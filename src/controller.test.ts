@@ -5038,6 +5038,56 @@ describe("Discord controller flows", () => {
     expect((controller as any).store.getBinding(conversation)).toBeNull();
   });
 
+  it("keeps the saved binding when preflight thread verification fails for a generic error", async () => {
+    const { controller, api, clientMock } = await createControllerHarness();
+    const conversation = {
+      channel: "discord",
+      accountId: "default",
+      conversationId: "channel:chan-1",
+    } as const;
+    const binding = {
+      conversation,
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    };
+    clientMock.readThreadState.mockRejectedValue(new Error("rpc timeout"));
+    await (controller as any).store.upsertBinding(binding);
+    const startTurn = vi.fn(() => ({
+      result: new Promise(() => {}),
+      getThreadId: () => undefined,
+      queueMessage: vi.fn(async () => true),
+      interrupt: vi.fn(async () => {}),
+      isAwaitingInput: () => false,
+      submitPendingInput: vi.fn(async () => false),
+      submitPendingInputPayload: vi.fn(async () => false),
+    }));
+    (controller as any).client.startTurn = startTurn;
+
+    await (controller as any).startTurn({
+      conversation,
+      binding,
+      workspaceDir: "/repo/openclaw",
+      prompt: "who are you?",
+      reason: "command",
+    });
+
+    expect(startTurn).toHaveBeenCalledWith(expect.objectContaining({
+      sessionKey: "session-1",
+      existingThreadId: "thread-1",
+    }));
+    expect((controller as any).store.getBinding(conversation)).toEqual(
+      expect.objectContaining({
+        sessionKey: "session-1",
+        threadId: "thread-1",
+      }),
+    );
+    expect(api.logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("codex could not verify bound thread before start turn (command)"),
+    );
+  });
+
   it("does not send the plan keepalive after a questionnaire is already visible", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-23T13:10:00-04:00"));
