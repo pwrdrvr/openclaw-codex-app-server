@@ -124,10 +124,10 @@ function resolveDefaultStdioCommand(): string | undefined {
       })
     : [];
   const candidateDirs = uniqueDirs([
+    ...homePathDirs,
     process.env.XDG_BIN_HOME,
     homeDir ? path.join(homeDir, ".local", "bin") : undefined,
     homeDir ? path.join(homeDir, "bin") : undefined,
-    ...homePathDirs,
   ]);
   for (const dir of candidateDirs) {
     const resolved = resolveExecutableInDir(dir, command);

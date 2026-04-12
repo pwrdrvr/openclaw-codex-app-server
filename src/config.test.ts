@@ -62,6 +62,18 @@ describe("resolvePluginSettings", () => {
     expect(resolvePluginSettings({}).command).toBe(path.join(localBin, "codex"));
   });
 
+  it("keeps PATH order when multiple home-local codex binaries exist", () => {
+    const homeDir = makeTempHome();
+    const localBin = path.join(homeDir, ".local", "bin");
+    const asdfBin = path.join(homeDir, ".asdf", "shims");
+    writeExecutable(path.join(localBin, "codex"));
+    writeExecutable(path.join(asdfBin, "codex"));
+    process.env.HOME = homeDir;
+    process.env.PATH = [asdfBin, localBin, "/usr/bin"].join(path.delimiter);
+
+    expect(resolvePluginSettings({}).command).toBe(path.join(asdfBin, "codex"));
+  });
+
   it("falls back to bare codex when no preferred user-local binary exists", () => {
     const homeDir = makeTempHome();
     process.env.HOME = homeDir;
