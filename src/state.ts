@@ -7,6 +7,7 @@ import type {
   CollaborationMode,
   ConversationTarget,
   ConversationPreferences,
+  FeishuDmConversation,
   PermissionsMode,
   StoreSnapshot,
   StoredBinding,
@@ -192,12 +193,26 @@ type PutCallbackInput =
 
 function toConversationKey(target: ConversationTarget): string {
   const channel = target.channel.trim().toLowerCase();
+  const conversationId =
+    channel === "feishu" || channel === "lark"
+      ? normalizeFeishuConversationIdForKey(target.conversationId)
+      : target.conversationId.trim();
   return [
     channel,
     target.accountId.trim(),
-    target.conversationId.trim(),
+    conversationId,
     channel === "telegram" ? (target.parentConversationId?.trim() ?? "") : "",
   ].join("::");
+}
+
+function normalizeFeishuConversationIdForKey(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return trimmed;
+  }
+  const withoutProvider = trimmed.replace(/^(feishu|lark):/i, "");
+  const withoutRoute = withoutProvider.replace(/^(chat|channel|group|dm|user):/i, "");
+  return withoutRoute || trimmed;
 }
 
 function cloneSnapshot(value?: Partial<StoreSnapshot>): StoreSnapshot {
@@ -207,6 +222,7 @@ function cloneSnapshot(value?: Partial<StoreSnapshot>): StoreSnapshot {
     pendingBinds: value?.pendingBinds ?? [],
     pendingRequests: value?.pendingRequests ?? [],
     callbacks: value?.callbacks ?? [],
+    feishuDmConversations: value?.feishuDmConversations ?? [],
   };
 }
 
@@ -297,6 +313,20 @@ function normalizeSnapshot(value?: Partial<StoreSnapshot>): StoreSnapshot {
       preferences: normalizeConversationPreferences(legacyPreferences),
     };
   });
+  snapshot.feishuDmConversations = snapshot.feishuDmConversations
+    .map((entry) => {
+      const accountId = entry.accountId?.trim() || "default";
+      const userId = normalizeFeishuConversationIdForKey(entry.userId ?? "");
+      const conversationId = normalizeFeishuConversationIdForKey(entry.conversationId ?? "");
+      return {
+        accountId,
+        userId,
+        conversationId,
+        updatedAt: Number.isFinite(entry.updatedAt) ? entry.updatedAt : Date.now(),
+      };
+    })
+    .filter((entry) => entry.userId.startsWith("ou_") || entry.userId.startsWith("on_"))
+    .filter((entry) => entry.conversationId.startsWith("oc_"));
   return snapshot;
 }
 
@@ -343,6 +373,11 @@ export class PluginStateStore {
       (entry) => entry.state.expiresAt > now,
     );
     this.snapshot.callbacks = this.snapshot.callbacks.filter((entry) => entry.expiresAt > now);
+    this.snapshot.feishuDmConversations = this.snapshot.feishuDmConversations.filter(
+      (entry) =>
+        (entry.userId.startsWith("ou_") || entry.userId.startsWith("on_")) &&
+        entry.conversationId.startsWith("oc_"),
+    );
   }
 
   listBindings(): StoredBinding[] {
@@ -380,6 +415,56 @@ export class PluginStateStore {
     this.snapshot.callbacks = this.snapshot.callbacks.filter(
       (entry) => toConversationKey(entry.conversation) !== key,
     );
+    if (target.channel === "feishu" || target.channel === "lark") {
+      const normalizedConversation = normalizeFeishuConversationIdForKey(target.conversationId);
+      this.snapshot.feishuDmConversations = this.snapshot.feishuDmConversations.filter(
+        (entry) => normalizeFeishuConversationIdForKey(entry.conversationId) !== normalizedConversation,
+      );
+    }
+    await this.save();
+  }
+
+  getFeishuDmConversation(params: {
+    accountId?: string;
+    userId?: string;
+  }): string | undefined {
+    const accountId = params.accountId?.trim() || "default";
+    const userId = normalizeFeishuConversationIdForKey(params.userId ?? "");
+    if (!userId) {
+      return undefined;
+    }
+    return this.snapshot.feishuDmConversations.find(
+      (entry) =>
+        entry.accountId === accountId &&
+        normalizeFeishuConversationIdForKey(entry.userId) === userId,
+    )?.conversationId;
+  }
+
+  async upsertFeishuDmConversation(entry: FeishuDmConversation): Promise<void> {
+    const accountId = entry.accountId?.trim() || "default";
+    const userId = normalizeFeishuConversationIdForKey(entry.userId ?? "");
+    const conversationId = normalizeFeishuConversationIdForKey(entry.conversationId ?? "");
+    if (
+      !userId ||
+      !conversationId ||
+      (!userId.startsWith("ou_") && !userId.startsWith("on_")) ||
+      !conversationId.startsWith("oc_")
+    ) {
+      return;
+    }
+    this.snapshot.feishuDmConversations = this.snapshot.feishuDmConversations.filter(
+      (current) =>
+        !(
+          current.accountId === accountId &&
+          normalizeFeishuConversationIdForKey(current.userId) === userId
+        ),
+    );
+    this.snapshot.feishuDmConversations.push({
+      accountId,
+      userId,
+      conversationId,
+      updatedAt: Number.isFinite(entry.updatedAt) ? entry.updatedAt : Date.now(),
+    });
     await this.save();
   }
 

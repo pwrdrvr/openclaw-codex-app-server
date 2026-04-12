@@ -289,6 +289,22 @@ declare module "openclaw/plugin-sdk" {
             ) => Promise<unknown>;
           };
         };
+        feishu: {
+          sendMessageFeishu: (
+            to: string,
+            text: string,
+            opts?: {
+              accountId?: string;
+              replyInThread?: boolean;
+            },
+          ) => Promise<{ messageId?: string; chatId?: string }>;
+          sendCardFeishu?: (params: {
+            to: string;
+            card: Record<string, unknown>;
+            accountId?: string;
+            replyInThread?: boolean;
+          }) => Promise<{ messageId?: string; chatId?: string }>;
+        };
       };
     };
     registerService: (service: OpenClawPluginService) => void;
@@ -307,7 +323,7 @@ declare module "openclaw/plugin-sdk" {
       handler: (ctx: PluginCommandContext) => Promise<ReplyPayload> | ReplyPayload;
     }) => void;
     on: (
-      hookName: "inbound_claim",
+      hookName: "inbound_claim" | "before_dispatch",
       handler: (event: {
         content: string;
         channel: string;
@@ -316,7 +332,7 @@ declare module "openclaw/plugin-sdk" {
         parentConversationId?: string;
         threadId?: string | number;
         media?: PluginInboundMedia[];
-      }) => Promise<{ handled: boolean }> | { handled: boolean },
+      }, ctx?: Record<string, unknown>) => Promise<{ handled: boolean }> | { handled: boolean },
     ) => void;
   };
 }

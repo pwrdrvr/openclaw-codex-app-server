@@ -281,6 +281,25 @@ describe("state store", () => {
     expect(binding?.permissionsMode).toBe("full-access");
   });
 
+  it("persists Feishu DM user-to-chat mappings across reload", async () => {
+    const dir = await makeStoreDir();
+    const store = await makeStore(dir);
+    await store.upsertFeishuDmConversation({
+      accountId: "default",
+      userId: "feishu:user:ou_user_1",
+      conversationId: "chat:oc_b57524acd79413d9b6c87fc6c9f4c684",
+      updatedAt: Date.now(),
+    });
+
+    const reloaded = await makeStore(dir);
+    expect(
+      reloaded.getFeishuDmConversation({
+        accountId: "default",
+        userId: "ou_user_1",
+      }),
+    ).toBe("oc_b57524acd79413d9b6c87fc6c9f4c684");
+  });
+
   it("migrates legacy profile and permission fields into permissions mode", async () => {
     const dir = await makeStoreDir();
     const stateDir = path.join(dir, "openclaw-codex-app-server");
