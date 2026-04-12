@@ -3818,6 +3818,64 @@ describe("Discord controller flows", () => {
     });
   });
 
+  it("clears sibling resume-thread callbacks once a resume selection enters pending approval", async () => {
+    const { controller } = await createControllerHarness();
+    const conversation = {
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123:topic:456",
+      parentConversationId: "123",
+    } as const;
+    const first = await (controller as any).store.putCallback({
+      kind: "resume-thread",
+      conversation,
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+    });
+    const second = await (controller as any).store.putCallback({
+      kind: "resume-thread",
+      conversation,
+      threadId: "thread-2",
+      workspaceDir: "/repo/openclaw",
+    });
+    const pickerView = await (controller as any).store.putCallback({
+      kind: "picker-view",
+      conversation,
+      view: {
+        mode: "threads",
+        page: 0,
+      },
+    });
+
+    await controller.handleTelegramInteractive({
+      ...conversation,
+      threadId: 456,
+      requestConversationBinding: vi.fn(async () => ({
+        status: "pending" as const,
+        reply: {
+          text: "Plugin bind approval required",
+          channelData: {
+            telegram: {
+              buttons: [[{ text: "Allow once", callback_data: "pluginbind:approval:o" }]],
+            },
+          },
+        },
+      })),
+      callback: {
+        payload: first.token,
+      },
+      respond: {
+        clearButtons: vi.fn(async () => {}),
+        reply: vi.fn(async () => {}),
+        editMessage: vi.fn(async () => {}),
+      },
+    } as any);
+
+    expect((controller as any).store.getCallback(first.token)).toBeNull();
+    expect((controller as any).store.getCallback(second.token)).toBeNull();
+    expect((controller as any).store.getCallback(pickerView.token)?.kind).toBe("picker-view");
+  });
+
   it("renders Telegram bind approval buttons from interactive reply blocks", async () => {
     const { controller } = await createControllerHarness();
     const callback = await (controller as any).store.putCallback({

@@ -5390,6 +5390,9 @@ export class CodexPluginController {
         responders.requestConversationBinding,
       );
       if (bindResult.status === "pending") {
+        await this.store.removeConversationCallbacks(callback.conversation, {
+          kinds: ["resume-thread"],
+        });
         // Interactive bind requests already send the approval prompt with the
         // channel-specific buttons/components from responders.requestConversationBinding.
         // Sending another plain-text reply here duplicates the same prompt.
@@ -5399,7 +5402,9 @@ export class CodexPluginController {
         await responders.reply(bindResult.message);
         return;
       }
-      await this.store.removeCallback(callback.token);
+      await this.store.removeConversationCallbacks(callback.conversation, {
+        kinds: ["resume-thread"],
+      });
       if (callback.syncTopic) {
         const syncedName = buildResumeTopicName({
           title: threadState?.threadName?.trim() || callback.threadTitle,
