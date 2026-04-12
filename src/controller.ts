@@ -166,6 +166,7 @@ type ActiveRunRecord = {
   mode: "default" | "plan" | "review";
   profile: PermissionsMode;
   handle: ActiveCodexRun;
+  cleanupWhenInputSettles?: boolean;
 };
 
 const execFileAsync = promisify(execFile);
@@ -3644,12 +3645,7 @@ export class CodexPluginController {
       })
       .finally(async () => {
         typing?.stop();
-        this.activeRuns.delete(key);
-        const pending = this.store.getPendingRequestByConversation(params.conversation);
-        if (pending) {
-          await this.store.removePendingRequest(pending.requestId);
-        }
-        await this.applyPendingBindingPermissionsModeMigration(params.conversation);
+        await this.finalizeActiveRun(params.conversation, run);
         this.api.logger.debug?.(
           `codex turn cleaned up ${this.formatConversationForLog(params.conversation)}`,
         );
@@ -3917,12 +3913,7 @@ export class CodexPluginController {
       .finally(async () => {
         stopProgressTimer();
         typing?.stop();
-        this.activeRuns.delete(key);
-        const pending = this.store.getPendingRequestByConversation(params.conversation);
-        if (pending) {
-          await this.store.removePendingRequest(pending.requestId);
-        }
-        await this.applyPendingBindingPermissionsModeMigration(params.conversation);
+        await this.finalizeActiveRun(params.conversation, run);
       });
   }
 
@@ -4080,13 +4071,29 @@ export class CodexPluginController {
       .finally(async () => {
         stopProgressTimer();
         typing?.stop();
-        this.activeRuns.delete(key);
-        const pending = this.store.getPendingRequestByConversation(params.conversation);
-        if (pending) {
-          await this.store.removePendingRequest(pending.requestId);
-        }
-        await this.applyPendingBindingPermissionsModeMigration(params.conversation);
+        await this.finalizeActiveRun(params.conversation, run);
       });
+  }
+
+  private async finalizeActiveRun(
+    conversation: ConversationTarget,
+    run: ActiveCodexRun,
+  ): Promise<void> {
+    const key = buildConversationKey(conversation);
+    const active = this.activeRuns.get(key);
+    if (!active || active.handle !== run) {
+      return;
+    }
+    if (typeof run.isAwaitingInput === "function" && run.isAwaitingInput()) {
+      active.cleanupWhenInputSettles = true;
+      return;
+    }
+    this.activeRuns.delete(key);
+    const pending = this.store.getPendingRequestByConversation(conversation);
+    if (pending) {
+      await this.store.removePendingRequest(pending.requestId);
+    }
+    await this.applyPendingBindingPermissionsModeMigration(conversation);
   }
 
   private async handlePendingInputState(
@@ -4099,6 +4106,14 @@ export class CodexPluginController {
       const existing = this.store.getPendingRequestByConversation(conversation);
       if (existing) {
         await this.store.removePendingRequest(existing.requestId);
+      }
+      const active = this.activeRuns.get(buildConversationKey(conversation));
+      if (
+        active?.handle === run &&
+        active.cleanupWhenInputSettles &&
+        (typeof run.isAwaitingInput !== "function" || !run.isAwaitingInput())
+      ) {
+        await this.finalizeActiveRun(conversation, run);
       }
       return;
     }
