@@ -41,6 +41,53 @@
         "type": "number",
         "minimum": 100
       },
+      "defaultEndpoint": {
+        "type": "string"
+      },
+      "endpoints": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "transport": {
+              "type": "string",
+              "enum": [
+                "stdio",
+                "websocket"
+              ]
+            },
+            "command": {
+              "type": "string"
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "url": {
+              "type": "string"
+            },
+            "authToken": {
+              "type": "string"
+            },
+            "headers": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "requestTimeoutMs": {
+              "type": "number",
+              "minimum": 100
+            }
+          }
+        }
+      },
       "inputTimeoutMs": {
         "type": "number",
         "minimum": 1000
@@ -84,6 +131,14 @@
     },
     "requestTimeoutMs": {
       "label": "Request Timeout (ms)",
+      "advanced": true
+    },
+    "defaultEndpoint": {
+      "label": "Default Endpoint",
+      "advanced": true
+    },
+    "endpoints": {
+      "label": "Endpoints",
       "advanced": true
     },
     "inputTimeoutMs": {
