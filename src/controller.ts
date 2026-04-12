@@ -1363,6 +1363,7 @@ export class CodexPluginController {
   private readonly settings;
   private readonly client;
   private readonly activeRuns = new Map<string, ActiveRunRecord>();
+  private readonly settledRuns = new WeakSet<ActiveCodexRun>();
   private readonly threadChangesCache = new Map<string, Promise<boolean | undefined>>();
   private readonly store;
   private serviceWorkspaceDir?: string;
@@ -2357,11 +2358,27 @@ export class CodexPluginController {
       mode: params.mode,
       profile: params.profile,
       handle: params.run,
+      cleanupWhenInputSettles: this.settledRuns.has(params.run),
     });
     this.api.logger.warn(
       `codex restored active run from ${params.reason} ${this.formatConversationForLog(params.conversation)} mode=${params.mode}`,
     );
     return true;
+  }
+
+  private async maybeCleanupSettledInteractiveRun(
+    conversation: ConversationTarget,
+    run: ActiveCodexRun,
+    reason: string,
+  ): Promise<void> {
+    const active = this.activeRuns.get(buildConversationKey(conversation));
+    if (!active || active.handle !== run || !active.cleanupWhenInputSettles) {
+      return;
+    }
+    if (this.store.getPendingRequestByConversation(conversation)) {
+      return;
+    }
+    await this.finalizeActiveRun(conversation, run, reason);
   }
 
   private async finalizeActiveRun(
@@ -3712,6 +3729,7 @@ export class CodexPluginController {
       })
       .finally(async () => {
         typing?.stop();
+        this.settledRuns.add(run);
         await this.finalizeActiveRun(params.conversation, run, "turn settled");
       });
   }
@@ -3984,6 +4002,7 @@ export class CodexPluginController {
       .finally(async () => {
         stopProgressTimer();
         typing?.stop();
+        this.settledRuns.add(run);
         await this.finalizeActiveRun(params.conversation, run, "plan settled");
       });
   }
@@ -4149,6 +4168,7 @@ export class CodexPluginController {
       .finally(async () => {
         stopProgressTimer();
         typing?.stop();
+        this.settledRuns.add(run);
         await this.finalizeActiveRun(params.conversation, run, "review settled");
       });
   }
@@ -4178,10 +4198,7 @@ export class CodexPluginController {
       if (existing) {
         await this.store.removePendingRequest(existing.requestId);
       }
-      const active = this.activeRuns.get(buildConversationKey(conversation));
-      if (active?.handle === run && active.cleanupWhenInputSettles) {
-        await this.finalizeActiveRun(conversation, run, "pending input settled");
-      }
+      await this.maybeCleanupSettledInteractiveRun(conversation, run, "pending input settled");
       return;
     }
     if (state.questionnaire) {
@@ -4392,6 +4409,11 @@ export class CodexPluginController {
         return false;
       }
       await this.store.removePendingRequest(pending.requestId);
+      await this.maybeCleanupSettledInteractiveRun(
+        conversation,
+        run,
+        "questionnaire submitted",
+      );
       await this.sendText(conversation, "Recorded your answers and sent them to Codex.");
       return true;
     }
@@ -5501,6 +5523,11 @@ export class CodexPluginController {
         }
         await responders.clear().catch(() => undefined);
         await this.store.removePendingRequest(pending.requestId);
+        await this.maybeCleanupSettledInteractiveRun(
+          callback.conversation,
+          active.handle,
+          "questionnaire submitted",
+        );
         if (callback.conversation.channel !== "discord") {
           await responders.reply("Recorded your answers and sent them to Codex.");
         }

@@ -5021,6 +5021,76 @@ describe("Discord controller flows", () => {
     expect(reply).toHaveBeenCalledWith({
       text: "Recorded your answers and sent them to Codex.",
     });
+    expect((controller as any).activeRuns.get(activeKey)).toBeUndefined();
+    expect((controller as any).store.getPendingRequestById("req-plan-race")).toBeNull();
+  });
+
+  it("ignores late questionnaire input from an older run when a newer run is already active", async () => {
+    const { controller } = await createControllerHarness();
+    const conversation = {
+      channel: "telegram",
+      accountId: "default",
+      conversationId: TEST_TELEGRAM_PEER_ID,
+    } as const;
+    const activeKey = `telegram::default::${TEST_TELEGRAM_PEER_ID}::`;
+    const newerRun = {
+      getThreadId: () => "thread-new",
+      queueMessage: vi.fn(async () => false),
+      interrupt: vi.fn(async () => {}),
+      isAwaitingInput: () => false,
+      submitPendingInput: vi.fn(async () => false),
+      submitPendingInputPayload: vi.fn(async () => false),
+    };
+    const olderRun = {
+      getThreadId: () => "thread-old",
+      queueMessage: vi.fn(async () => false),
+      interrupt: vi.fn(async () => {}),
+      isAwaitingInput: () => false,
+      submitPendingInput: vi.fn(async () => false),
+      submitPendingInputPayload: vi.fn(async () => false),
+    };
+
+    (controller as any).activeRuns.set(activeKey, {
+      conversation,
+      workspaceDir: "/repo/new",
+      mode: "plan",
+      profile: "default",
+      handle: newerRun,
+    });
+
+    await (controller as any).handlePendingInputState(
+      conversation,
+      "/repo/old",
+      "plan",
+      "default",
+      {
+        requestId: "req-old-run",
+        options: [],
+        expiresAt: Date.now() + 7 * 24 * 60 * 60_000,
+        method: "item/tool/requestUserInput",
+        questionnaire: {
+          currentIndex: 0,
+          questions: [
+            {
+              index: 0,
+              id: "breakfast",
+              header: "Breakfast",
+              prompt: "Do you like cereal?",
+              options: [
+                { key: "A", label: "Yes", description: "Choose yes." },
+              ],
+              guidance: [],
+            },
+          ],
+          answers: [null],
+          responseMode: "structured",
+        },
+      },
+      olderRun as any,
+    );
+
+    expect((controller as any).activeRuns.get(activeKey)?.handle).toBe(newerRun);
+    expect((controller as any).store.getPendingRequestById("req-old-run")).toBeNull();
   });
 
   it("tells the user to log back in when Codex reports OpenAI auth is required", async () => {
