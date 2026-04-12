@@ -559,6 +559,34 @@ function toConversationTargetFromCommand(ctx: PluginCommandContext): Conversatio
   return null;
 }
 
+function normalizeTelegramThreadId(threadId: string | number | undefined): number | undefined {
+  if (typeof threadId === "number") {
+    return Number.isFinite(threadId) ? threadId : undefined;
+  }
+  if (typeof threadId === "string") {
+    const parsed = Number(threadId);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
+function buildTelegramTopicConversationId(
+  conversationId: string | undefined,
+  threadId: number | undefined,
+): string | undefined {
+  if (!conversationId) {
+    return undefined;
+  }
+  if (threadId == null) {
+    return conversationId;
+  }
+  const topicSeparator = ":topic:";
+  const baseConversationId = conversationId.includes(topicSeparator)
+    ? conversationId.split(topicSeparator)[0]
+    : conversationId;
+  return `${baseConversationId}:topic:${threadId}`;
+}
+
 function toConversationTargetFromInbound(event: {
   channel: string;
   accountId?: string;
@@ -573,6 +601,7 @@ function toConversationTargetFromInbound(event: {
   }
   const channel = event.channel.trim().toLowerCase();
   const conversationIdRaw = event.conversationId?.trim();
+  const telegramThreadId = normalizeTelegramThreadId(event.threadId);
   const conversationId =
     channel === "discord"
       ? (() => {
@@ -588,10 +617,18 @@ function toConversationTargetFromInbound(event: {
           const isChannel = Boolean(event.parentConversationId?.trim() || event.isGroup || guildId);
           return `${isChannel ? "channel" : "user"}:${normalized}`;
         })()
+      : channel === "telegram"
+        ? buildTelegramTopicConversationId(
+            normalizeTelegramChatId(conversationIdRaw),
+            telegramThreadId,
+          )
       : event.conversationId;
   const parentConversationId =
     channel === "discord"
       ? normalizeDiscordConversationId(event.parentConversationId)
+      : channel === "telegram" && telegramThreadId != null
+        ? normalizeTelegramChatId(event.parentConversationId) ??
+          normalizeTelegramChatId(conversationIdRaw)?.split(":topic:")[0]
       : event.parentConversationId;
   if (!conversationId) {
     return null;
@@ -604,13 +641,7 @@ function toConversationTargetFromInbound(event: {
     threadId:
       channel === "discord"
         ? undefined
-        : typeof event.threadId === "number"
-          ? event.threadId
-          : typeof event.threadId === "string"
-            ? Number.isFinite(Number(event.threadId))
-              ? Number(event.threadId)
-              : undefined
-            : undefined,
+        : telegramThreadId,
   };
 }
 
