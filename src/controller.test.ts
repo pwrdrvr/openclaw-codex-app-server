@@ -5026,6 +5026,88 @@ describe("Discord controller flows", () => {
     expect((controller as any).store.getPendingRequestById("req-plan-keepalive")).toBeNull();
   });
 
+  it("keeps standard pending-input callbacks active until the input is settled", async () => {
+    const { controller } = await createControllerHarness();
+    let awaitingInput = true;
+    let clearPendingInput: (() => Promise<void>) | null = null;
+    (controller as any).client.startTurn = vi.fn((params: any) => {
+      clearPendingInput = async () => {
+        awaitingInput = false;
+        await params.onPendingInput?.(null);
+      };
+      void Promise.resolve().then(() =>
+        params.onPendingInput?.({
+          requestId: "req-turn-keepalive",
+          options: ["Approve Once"],
+          actions: [
+            {
+              kind: "option",
+              label: "Approve Once",
+              value: "approve-once",
+            },
+          ],
+          expiresAt: Date.now() + 7 * 24 * 60 * 60_000,
+          promptText: "Codex needs input.",
+        }),
+      );
+      return {
+        result: Promise.resolve({
+          threadId: "thread-1",
+        }),
+        getThreadId: () => "thread-1",
+        queueMessage: vi.fn(async () => false),
+        interrupt: vi.fn(async () => {}),
+        isAwaitingInput: () => awaitingInput,
+        submitPendingInput: vi.fn(async () => {
+          await clearPendingInput?.();
+          return true;
+        }),
+        submitPendingInputPayload: vi.fn(async () => false),
+      };
+    });
+
+    await (controller as any).startTurn({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: TEST_TELEGRAM_PEER_ID,
+      },
+      binding: null,
+      workspaceDir: "/repo/openclaw",
+      prompt: "Continue.",
+      reason: "command",
+    });
+
+    await flushAsyncWork();
+    await flushAsyncWork();
+
+    const key = "telegram::default::telegram-user-1::";
+    expect((controller as any).activeRuns.get(key)?.mode).toBe("default");
+    expect((controller as any).store.getPendingRequestById("req-turn-keepalive")).not.toBeNull();
+
+    const callback = ((controller as any).store as any).snapshot.callbacks.find(
+      (entry: any) => entry.kind === "pending-input" && entry.requestId === "req-turn-keepalive",
+    );
+    expect(callback).toBeTruthy();
+
+    const reply = vi.fn(async () => {});
+    await controller.handleTelegramInteractive({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: TEST_TELEGRAM_PEER_ID,
+      callback: { payload: callback.token },
+      respond: {
+        clearButtons: vi.fn(async () => {}),
+        reply,
+        editMessage: vi.fn(async () => {}),
+      },
+    } as any);
+
+    expect(reply).toHaveBeenCalledWith(expect.objectContaining({ text: "Sent to Codex." }));
+    expect((controller as any).activeRuns.get(key)).toBeUndefined();
+    expect((controller as any).store.getPendingRequestById("req-turn-keepalive")).toBeNull();
+  });
+
   it("tells the user to log back in when Codex reports OpenAI auth is required", async () => {
     const { controller, clientMock, sendMessageTelegram } = await createControllerHarness();
     clientMock.readAccount.mockResolvedValue({
