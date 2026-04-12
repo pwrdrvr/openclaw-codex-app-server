@@ -147,6 +147,17 @@ export const COMMAND_HELP: Record<CommandName, CommandHelpEntry> = {
     ],
     notes: "The status card is the main interactive model-control surface, but this command remains available.",
   },
+  cas_endpoint: {
+    summary: COMMAND_SUMMARY.cas_endpoint,
+    usage: "/cas_endpoint [endpoint_id]",
+    flags: [{ flag: "[endpoint_id]", description: "Show the active endpoint or switch this conversation to a configured endpoint id." }],
+    examples: [
+      "/cas_endpoint",
+      "/cas_endpoint primary",
+      "/cas_endpoint backup",
+    ],
+    notes: "Changing the selected endpoint affects future /cas_resume and unbound CAS actions. Existing bindings stay attached to their original endpoint until you resume/bind there again.",
+  },
   cas_permissions: {
     summary: COMMAND_SUMMARY.cas_permissions,
     usage: "/cas_permissions",

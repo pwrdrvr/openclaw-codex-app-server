@@ -18,9 +18,9 @@ import {
   type ExperimentalFeatureSummary,
   type McpServerSummary,
   type ModelSummary,
+  type EndpointSettings,
   type PendingInputAction,
   type PendingInputState,
-  type PluginSettings,
   type PermissionsMode,
   type RateLimitSummary,
   type ReviewResult,
@@ -83,7 +83,7 @@ const TURN_INTERRUPT_METHODS = ["turn/interrupt"] as const;
 const execFileAsync = promisify(execFile);
 
 type StartupProbeInfo = {
-  transport: PluginSettings["transport"];
+  transport: EndpointSettings["transport"];
   command?: string;
   args?: string[];
   resolvedCommandPath?: string;
@@ -91,6 +91,8 @@ type StartupProbeInfo = {
   serverName?: string;
   serverVersion?: string;
 };
+
+type ClientEndpointSettings = EndpointSettings & { enabled?: boolean };
 
 type FileEditSummary = {
   path: string;
@@ -823,7 +825,7 @@ async function dispatchJsonRpcEnvelope(
 }
 
 function createJsonRpcClient(
-  settings: PluginSettings,
+  settings: ClientEndpointSettings,
   logger?: PluginLogger,
   onClose?: JsonRpcCloseHandler,
 ): JsonRpcClient {
@@ -890,7 +892,7 @@ async function resolveCommandPath(command: string): Promise<string | undefined> 
   }
 }
 
-async function probeStdioVersion(settings: PluginSettings): Promise<{
+async function probeStdioVersion(settings: ClientEndpointSettings): Promise<{
   resolvedCommandPath?: string;
   cliVersion?: string;
 }> {
@@ -1560,7 +1562,7 @@ function extractFileChangePathsFromReadResult(
 
 async function readFileChangePathsWithClient(params: {
   client: JsonRpcClient;
-  settings: PluginSettings;
+  settings: EndpointSettings;
   threadId: string;
   itemId: string;
   workspaceDir?: string;
@@ -2417,7 +2419,9 @@ export function isMissingThreadError(error: unknown): boolean {
   );
 }
 
-function buildFullAccessPluginSettings(settings: PluginSettings): PluginSettings | null {
+function buildFullAccessPluginSettings(
+  settings: ClientEndpointSettings,
+): ClientEndpointSettings | null {
   if (settings.transport === "websocket") {
     return {
       ...settings,
@@ -2450,7 +2454,7 @@ export class CodexAppServerClient {
   private readonly requestListeners = new Set<RequestListener>();
 
   constructor(
-    private readonly settings: PluginSettings,
+    private readonly settings: ClientEndpointSettings,
     private readonly logger: PluginLogger,
   ) {}
 
@@ -2543,7 +2547,7 @@ export class CodexAppServerClient {
     params: { sessionKey?: string },
     callback: (args: {
       client: JsonRpcClient;
-      settings: PluginSettings;
+      settings: EndpointSettings;
       initializeResult: unknown;
     }) => Promise<T>,
   ): Promise<T> {
@@ -3773,7 +3777,7 @@ export class CodexAppServerModeClient {
   private readonly clients: Record<PermissionsMode, CodexAppServerClient | null>;
 
   constructor(
-    settings: PluginSettings,
+    settings: ClientEndpointSettings,
     logger: PluginLogger,
   ) {
     const fullAccessSettings = buildFullAccessPluginSettings(settings);
