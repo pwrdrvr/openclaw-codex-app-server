@@ -367,4 +367,56 @@ describe("state store", () => {
       updatedAt: pendingBindUpdatedAt,
     });
   });
+
+  it("removes matching conversation callbacks without touching other kinds", async () => {
+    const store = await makeStore();
+    const conversation = {
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123:topic:456",
+      parentConversationId: "123",
+    } as const;
+    const otherConversation = {
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123:topic:789",
+      parentConversationId: "123",
+    } as const;
+    const resumeA = await store.putCallback({
+      kind: "resume-thread",
+      conversation,
+      threadId: "thread-1",
+      workspaceDir: "/tmp/work",
+    });
+    const resumeB = await store.putCallback({
+      kind: "resume-thread",
+      conversation,
+      threadId: "thread-2",
+      workspaceDir: "/tmp/work",
+    });
+    const pickerView = await store.putCallback({
+      kind: "picker-view",
+      conversation,
+      view: {
+        mode: "threads",
+        includeAll: false,
+        page: 0,
+      },
+    });
+    const otherResume = await store.putCallback({
+      kind: "resume-thread",
+      conversation: otherConversation,
+      threadId: "thread-3",
+      workspaceDir: "/tmp/other",
+    });
+
+    await store.removeConversationCallbacks(conversation, {
+      kinds: ["resume-thread"],
+    });
+
+    expect(store.getCallback(resumeA.token)).toBeNull();
+    expect(store.getCallback(resumeB.token)).toBeNull();
+    expect(store.getCallback(pickerView.token)?.kind).toBe("picker-view");
+    expect(store.getCallback(otherResume.token)?.kind).toBe("resume-thread");
+  });
 });
