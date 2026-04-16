@@ -547,9 +547,26 @@ export type CallbackAction =
     }
   | {
       token: string;
+      kind: "show-endpoint-picker";
+      conversation: ConversationRef;
+      createdAt: number;
+      expiresAt: number;
+    }
+  | {
+      token: string;
       kind: "set-model";
       conversation: ConversationRef;
       model: string;
+      returnToStatus?: boolean;
+      statusMessage?: InteractiveMessageRef;
+      createdAt: number;
+      expiresAt: number;
+    }
+  | {
+      token: string;
+      kind: "set-endpoint";
+      conversation: ConversationRef;
+      endpointId: string;
       returnToStatus?: boolean;
       statusMessage?: InteractiveMessageRef;
       createdAt: number;

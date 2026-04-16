@@ -171,11 +171,26 @@ type PutCallbackInput =
       ttlMs?: number;
     }
   | {
+      kind: "show-endpoint-picker";
+      conversation: ConversationTarget;
+      token?: string;
+      ttlMs?: number;
+    }
+  | {
       kind: "set-model";
       conversation: ConversationTarget;
       model: string;
       returnToStatus?: boolean;
       statusMessage?: Extract<CallbackAction, { kind: "set-model" }>["statusMessage"];
+      token?: string;
+      ttlMs?: number;
+    }
+  | {
+      kind: "set-endpoint";
+      conversation: ConversationTarget;
+      endpointId: string;
+      returnToStatus?: boolean;
+      statusMessage?: Extract<CallbackAction, { kind: "set-endpoint" }>["statusMessage"];
       token?: string;
       ttlMs?: number;
     }
@@ -683,6 +698,25 @@ export class PluginStateStore {
                       ? {
                           kind: "show-model-picker",
                           conversation: callback.conversation,
+                          token: callback.token ?? this.createCallbackToken(),
+                          createdAt: now,
+                          expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
+                        }
+                    : callback.kind === "show-endpoint-picker"
+                      ? {
+                          kind: "show-endpoint-picker",
+                          conversation: callback.conversation,
+                          token: callback.token ?? this.createCallbackToken(),
+                          createdAt: now,
+                          expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
+                        }
+                    : callback.kind === "set-endpoint"
+                      ? {
+                          kind: "set-endpoint",
+                          conversation: callback.conversation,
+                          endpointId: callback.endpointId,
+                          returnToStatus: callback.returnToStatus,
+                          statusMessage: callback.statusMessage,
                           token: callback.token ?? this.createCallbackToken(),
                           createdAt: now,
                           expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),

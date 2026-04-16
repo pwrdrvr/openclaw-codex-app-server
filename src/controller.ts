@@ -2640,9 +2640,13 @@ export class CodexPluginController {
     const currentReasoning = normalizeReasoningEffort(
       effectiveState?.reasoningEffort ?? binding.preferences?.preferredReasoningEffort,
     );
-    const [showModelPicker, showReasoningPicker, togglePermissions, compactThread, stopRun, refreshStatus, detachThread, showSkills, showMcp] = await Promise.all([
+    const [showModelPicker, showEndpointPicker, showReasoningPicker, togglePermissions, compactThread, stopRun, refreshStatus, detachThread, showSkills, showMcp] = await Promise.all([
       this.store.putCallback({
         kind: "show-model-picker",
+        conversation,
+      }),
+      this.store.putCallback({
+        kind: "show-endpoint-picker",
         conversation,
       }),
       this.store.putCallback({
@@ -2682,6 +2686,10 @@ export class CodexPluginController {
       {
         text: "Select Model",
         callback_data: `${INTERACTIVE_NAMESPACE}:${showModelPicker.token}`,
+      },
+      {
+        text: "Endpoint",
+        callback_data: `${INTERACTIVE_NAMESPACE}:${showEndpointPicker.token}`,
       },
     ];
     if (currentModel) {
@@ -2870,6 +2878,58 @@ export class CodexPluginController {
     }
     return {
       text: formatModels(models, effectiveState),
+      buttons,
+    };
+  }
+
+  private async buildEndpointPicker(
+    conversation: ConversationTarget,
+    binding: StoredBinding | null,
+    opts?: {
+      returnToStatus?: boolean;
+      statusMessage?: InteractiveMessageRef;
+    },
+  ): Promise<PickerRender> {
+    const selectedEndpointId = this.getSelectedEndpointId(conversation, binding);
+    const buttons: PluginInteractiveButtons = [];
+    for (const endpoint of this.settings.endpoints) {
+      const endpointId = endpoint.id ?? this.settings.defaultEndpoint;
+      const callback = await this.store.putCallback({
+        kind: "set-endpoint",
+        conversation,
+        endpointId,
+        returnToStatus: opts?.returnToStatus,
+        statusMessage: opts?.statusMessage,
+      });
+      const flags = [
+        endpointId === selectedEndpointId ? "selected" : "",
+        binding && endpointId === this.getEndpointIdForBinding(binding) ? "bound" : "",
+        endpointId === this.settings.defaultEndpoint ? "default" : "",
+      ].filter(Boolean);
+      buttons.push([
+        {
+          text: `${endpointId}${flags.length ? ` (${flags.join(", ")})` : ""}`,
+          callback_data: `${INTERACTIVE_NAMESPACE}:${callback.token}`,
+        },
+      ]);
+    }
+    if (opts?.returnToStatus) {
+      const cancel = await this.store.putCallback({
+        kind: "refresh-status",
+        conversation,
+      });
+      buttons.push([
+        {
+          text: "Cancel",
+          callback_data: `${INTERACTIVE_NAMESPACE}:${cancel.token}`,
+        },
+      ]);
+    }
+    return {
+      text: this.formatEndpointListText({
+        selectedEndpointId,
+        binding,
+      }),
       buttons,
     };
   }
@@ -3477,12 +3537,8 @@ export class CodexPluginController {
     }
     const currentSelected = this.getSelectedEndpointId(conversation, binding);
     if (!parsed.endpointId) {
-      return {
-        text: this.formatEndpointListText({
-          selectedEndpointId: currentSelected,
-          binding,
-        }),
-      };
+      const picker = await this.buildEndpointPicker(conversation, binding);
+      return buildReplyWithButtons(picker.text, picker.buttons);
     }
     const requested = parsed.endpointId.trim();
     const endpoint = this.settings.endpoints.find((entry) => entry.id === requested);
@@ -6099,6 +6155,48 @@ export class CodexPluginController {
       );
       return;
     }
+    if (callback.kind === "show-endpoint-picker") {
+      const binding = this.store.getBinding(callback.conversation);
+      await this.store.removeCallback(callback.token);
+      const conversation = {
+        ...callback.conversation,
+        threadId: responders.conversation.threadId,
+      };
+      if (responders.sourceMessage) {
+        const [picker, statusCard] = await Promise.all([
+          this.buildEndpointPicker(
+            conversation,
+            binding,
+            {
+              returnToStatus: true,
+            },
+          ),
+          binding
+            ? this.buildStatusCard(
+                conversation,
+                binding,
+                true,
+              )
+            : Promise.resolve({ text: this.formatEndpointListText({ selectedEndpointId: this.getSelectedEndpointId(conversation, binding), binding }), buttons: undefined }),
+        ]);
+        await responders.editPicker({
+          text: statusCard.text,
+          buttons: picker.buttons,
+        });
+        return;
+      }
+      const picker = await this.buildEndpointPicker(
+        conversation,
+        binding,
+        {
+          returnToStatus: Boolean(binding),
+          statusMessage: responders.sourceMessage,
+        },
+      );
+      await responders.acknowledge?.();
+      await this.sendPickerToConversation(conversation, picker);
+      return;
+    }
     if (callback.kind === "show-model-picker") {
       const binding = this.store.getBinding(callback.conversation);
       await this.store.removeCallback(callback.token);
@@ -6141,6 +6239,60 @@ export class CodexPluginController {
       );
       await responders.acknowledge?.();
       await this.sendPickerToConversation(conversation, picker);
+      return;
+    }
+    if (callback.kind === "set-endpoint") {
+      const binding = this.store.getBinding(callback.conversation);
+      await this.store.removeCallback(callback.token);
+      const conversation = {
+        ...callback.conversation,
+        threadId: responders.conversation.threadId,
+      };
+      await this.setSelectedEndpointId(conversation, callback.endpointId);
+      const refreshedBinding = this.store.getBinding(callback.conversation);
+      if (callback.returnToStatus && refreshedBinding) {
+        const statusCard = await this.buildStatusCard(
+          conversation,
+          refreshedBinding,
+          true,
+        );
+        if (responders.sourceMessage) {
+          await responders.editPicker({
+            text: statusCard.text,
+            buttons: statusCard.buttons,
+          });
+        } else {
+          await responders.acknowledge?.();
+          await this.sendText(conversation, statusCard.text, { buttons: statusCard.buttons });
+        }
+        return;
+      }
+      const text = [
+        `Selected endpoint set to ${callback.endpointId}.`,
+        refreshedBinding && this.getEndpointIdForBinding(refreshedBinding) !== callback.endpointId
+          ? `This conversation is still bound to a thread on ${this.getEndpointIdForBinding(refreshedBinding)}. Use /cas_resume to browse/bind on ${callback.endpointId}.`
+          : "",
+        "",
+        this.formatEndpointListText({
+          selectedEndpointId: callback.endpointId,
+          binding: refreshedBinding,
+        }),
+      ].filter(Boolean).join("\n");
+      if (responders.sourceMessage) {
+        const picker = await this.buildEndpointPicker(conversation, refreshedBinding, {
+          returnToStatus: false,
+        });
+        await responders.editPicker({
+          text,
+          buttons: picker.buttons,
+        });
+      } else {
+        await responders.acknowledge?.();
+        const picker = await this.buildEndpointPicker(conversation, refreshedBinding, {
+          returnToStatus: false,
+        });
+        await this.sendText(conversation, text, { buttons: picker.buttons });
+      }
       return;
     }
     if (callback.kind === "set-model") {
