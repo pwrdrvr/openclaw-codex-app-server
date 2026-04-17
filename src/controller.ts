@@ -1493,6 +1493,23 @@ export class CodexPluginController {
     return lines.join("\n");
   }
 
+  private buildEndpointSelectionNotice(
+    endpointId: string,
+    binding?: StoredBinding | null,
+  ): string {
+    return [
+      `Selected endpoint set to ${endpointId}.`,
+      binding && this.getEndpointIdForBinding(binding) !== endpointId
+        ? `This conversation is still bound to a thread on ${this.getEndpointIdForBinding(binding)}. Use /cas_resume to browse/bind on ${endpointId}.`
+        : "",
+      "",
+      this.formatEndpointListText({
+        selectedEndpointId: endpointId,
+        binding,
+      }),
+    ].filter(Boolean).join("\n");
+  }
+
   private getClientForEndpoint(endpointId?: string): CodexAppServerModeClient {
     const resolvedEndpointId =
       endpointId && this.settings.endpoints.some((entry) => entry.id === endpointId)
@@ -6250,6 +6267,7 @@ export class CodexPluginController {
       };
       await this.setSelectedEndpointId(conversation, callback.endpointId);
       const refreshedBinding = this.store.getBinding(callback.conversation);
+      const text = this.buildEndpointSelectionNotice(callback.endpointId, refreshedBinding);
       if (callback.returnToStatus && refreshedBinding) {
         const statusCard = await this.buildStatusCard(
           conversation,
@@ -6261,23 +6279,14 @@ export class CodexPluginController {
             text: statusCard.text,
             buttons: statusCard.buttons,
           });
+          await this.sendText(conversation, text);
         } else {
           await responders.acknowledge?.();
           await this.sendText(conversation, statusCard.text, { buttons: statusCard.buttons });
+          await this.sendText(conversation, text);
         }
         return;
       }
-      const text = [
-        `Selected endpoint set to ${callback.endpointId}.`,
-        refreshedBinding && this.getEndpointIdForBinding(refreshedBinding) !== callback.endpointId
-          ? `This conversation is still bound to a thread on ${this.getEndpointIdForBinding(refreshedBinding)}. Use /cas_resume to browse/bind on ${callback.endpointId}.`
-          : "",
-        "",
-        this.formatEndpointListText({
-          selectedEndpointId: callback.endpointId,
-          binding: refreshedBinding,
-        }),
-      ].filter(Boolean).join("\n");
       if (responders.sourceMessage) {
         const picker = await this.buildEndpointPicker(conversation, refreshedBinding, {
           returnToStatus: false,
