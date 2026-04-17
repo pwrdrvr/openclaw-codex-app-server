@@ -53,6 +53,28 @@
       },
       "defaultServiceTier": {
         "type": "string"
+      },
+      "inboundAudioTranscription": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "command": {
+            "type": "string"
+          },
+          "args": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "timeoutMs": {
+            "type": "number",
+            "minimum": 100
+          }
+        }
       }
     }
   },
@@ -100,6 +122,11 @@
     "defaultServiceTier": {
       "label": "Default Service Tier",
       "advanced": true
+    },
+    "inboundAudioTranscription": {
+      "label": "Inbound Audio Transcription",
+      "advanced": true,
+      "help": "Optional preprocessor for inbound audio/voice attachments. The command should print the transcript to stdout. Use {path}, {mimeType}, and {fileName} placeholders in args when needed."
     }
   }
 }
