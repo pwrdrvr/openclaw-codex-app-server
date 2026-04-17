@@ -29,6 +29,14 @@ export type PluginSettings = {
   defaultWorkspaceDir?: string;
   defaultModel?: string;
   defaultServiceTier?: string;
+  inboundAudioTranscription?: InboundAudioTranscriptionSettings;
+};
+
+export type InboundAudioTranscriptionSettings = {
+  enabled: boolean;
+  command?: string;
+  args: string[];
+  timeoutMs: number;
 };
 
 export type CodexPlanStep = {

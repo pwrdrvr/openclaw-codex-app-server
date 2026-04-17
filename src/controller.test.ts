@@ -313,6 +313,99 @@ async function createControllerHarness(pluginConfigOverrides: Record<string, unk
   };
 }
 
+async function createControllerHarnessWithPluginConfig(pluginConfigOverrides: Record<string, unknown>) {
+  const {
+    api,
+    sendComponentMessage,
+    sendMessageDiscord,
+    sendMessageTelegram,
+    discordTypingStart,
+    renameTopic,
+    resolveTelegramToken,
+    editChannel,
+    discordOutbound,
+    stateDir,
+  } = createApiMock(pluginConfigOverrides);
+  const controller = new CodexPluginController(api);
+  await controller.start();
+  const threadState: any = {
+    threadId: "thread-1",
+    threadName: "Discord Thread",
+    model: "openai/gpt-5.4",
+    cwd: "/repo/openclaw",
+    serviceTier: "default",
+    approvalPolicy: "on-request",
+    sandbox: "workspace-write",
+  };
+  const clientMock = {
+    hasProfile: vi.fn((profile: string) => profile === "default" || profile === "full-access"),
+    listThreads: vi.fn(async () => []),
+    startThread: vi.fn(async () => ({
+      threadId: "thread-new",
+      threadName: "New Thread",
+      model: "openai/gpt-5.4",
+      cwd: "/repo/openclaw",
+      serviceTier: "default",
+    })),
+    listModels: vi.fn(async () => [{ id: "openai/gpt-5.4", current: true }]),
+    listSkills: vi.fn(async () => []),
+    listMcpServers: vi.fn(async () => []),
+    readThreadState: vi.fn(async () => ({ ...threadState })),
+    readThreadContext: vi.fn(async () => ({
+      lastUserMessage: undefined,
+      lastAssistantMessage: undefined,
+    })),
+    setThreadName: vi.fn(async () => ({
+      threadId: "thread-1",
+      threadName: "Discord Thread",
+    })),
+    setThreadModel: vi.fn(async (params: { model: string }) => {
+      threadState.model = params.model;
+      return { ...threadState };
+    }),
+    setThreadServiceTier: vi.fn(async (params: { serviceTier: string | null }) => {
+      threadState.serviceTier = params.serviceTier ?? "default";
+      return { ...threadState };
+    }),
+    setThreadPermissions: vi.fn(async (params: { approvalPolicy: string; sandbox: string }) => {
+      threadState.approvalPolicy = params.approvalPolicy;
+      threadState.sandbox = params.sandbox;
+      return { ...threadState };
+    }),
+    startReview: vi.fn(() => ({
+      result: new Promise(() => {}),
+      getThreadId: () => "thread-1",
+      queueMessage: vi.fn(async () => false),
+      interrupt: vi.fn(async () => {}),
+      isAwaitingInput: () => false,
+      submitPendingInput: vi.fn(async () => false),
+      submitPendingInputPayload: vi.fn(async () => false),
+    })),
+    readAccount: vi.fn(async () => ({
+      email: "test@example.com",
+      planType: "pro",
+      type: "chatgpt",
+    })),
+    readRateLimits: vi.fn(async () => []),
+  };
+  (controller as any).client = clientMock;
+  (controller as any).readThreadHasChanges = vi.fn(async () => false);
+  return {
+    controller,
+    api,
+    clientMock,
+    sendComponentMessage,
+    sendMessageDiscord,
+    sendMessageTelegram,
+    discordTypingStart,
+    renameTopic,
+    resolveTelegramToken,
+    editChannel,
+    discordOutbound,
+    stateDir,
+  };
+}
+
 async function createControllerHarnessWithoutLegacyBindings() {
   const harness = createApiMock();
   delete (harness.api as any).runtime.channel.bindings;
@@ -4230,6 +4323,127 @@ describe("Discord controller flows", () => {
       expect.objectContaining({
         prompt: "",
         input: [{ type: "localImage", path: imagePath }],
+      }),
+    );
+  });
+
+  it("transcribes inbound audio with a configured command before starting the turn", async () => {
+    const { controller, stateDir } = await createControllerHarnessWithPluginConfig({
+      inboundAudioTranscription: {
+        enabled: true,
+        command: process.execPath,
+        args: [
+          "-e",
+          'process.stdout.write(JSON.stringify({text:`Transcript for ${process.argv[1]}`}))',
+          "{path}",
+        ],
+      },
+    });
+    const audioPath = path.join(stateDir, "tmp", "voice.ogg");
+    fs.mkdirSync(path.dirname(audioPath), { recursive: true });
+    fs.writeFileSync(audioPath, "ogg");
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: TEST_TELEGRAM_PEER_ID,
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+    const startTurn = vi.fn(() => ({
+      result: Promise.resolve({
+        threadId: "thread-1",
+        text: "handled",
+      }),
+      getThreadId: () => "thread-1",
+      queueMessage: vi.fn(async () => true),
+      interrupt: vi.fn(async () => {}),
+      isAwaitingInput: () => false,
+      submitPendingInput: vi.fn(async () => false),
+      submitPendingInputPayload: vi.fn(async () => false),
+    }));
+    (controller as any).client.startTurn = startTurn;
+
+    const result = await controller.handleInboundClaim({
+      content: "",
+      channel: "telegram",
+      accountId: "default",
+      conversationId: TEST_TELEGRAM_PEER_ID,
+      isGroup: false,
+      metadata: { mediaPath: audioPath, mediaType: "audio/ogg" },
+    });
+
+    expect(result).toEqual({ handled: true });
+    expect(startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: "",
+        input: [{ type: "text", text: `Transcript for ${audioPath}` }],
+      }),
+    );
+  });
+
+  it("keeps labeled transcript text when audio arrives with a caption", async () => {
+    const { controller, stateDir } = await createControllerHarnessWithPluginConfig({
+      inboundAudioTranscription: {
+        enabled: true,
+        command: process.execPath,
+        args: [
+          "-e",
+          'process.stdout.write("hello from audio")',
+        ],
+      },
+    });
+    const audioPath = path.join(stateDir, "tmp", "voice-note.ogg");
+    fs.mkdirSync(path.dirname(audioPath), { recursive: true });
+    fs.writeFileSync(audioPath, "ogg");
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: TEST_TELEGRAM_PEER_ID,
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+    const startTurn = vi.fn(() => ({
+      result: Promise.resolve({
+        threadId: "thread-1",
+        text: "handled",
+      }),
+      getThreadId: () => "thread-1",
+      queueMessage: vi.fn(async () => true),
+      interrupt: vi.fn(async () => {}),
+      isAwaitingInput: () => false,
+      submitPendingInput: vi.fn(async () => false),
+      submitPendingInputPayload: vi.fn(async () => false),
+    }));
+    (controller as any).client.startTurn = startTurn;
+
+    const result = await controller.handleInboundClaim({
+      content: "Please use this note",
+      channel: "telegram",
+      accountId: "default",
+      conversationId: TEST_TELEGRAM_PEER_ID,
+      isGroup: false,
+      metadata: { mediaPath: audioPath, mediaType: "audio/ogg" },
+    });
+
+    expect(result).toEqual({ handled: true });
+    expect(startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: "Please use this note",
+        input: [
+          { type: "text", text: "Please use this note" },
+          {
+            type: "text",
+            text: "Transcribed audio: voice-note.ogg\n\nhello from audio",
+          },
+        ],
       }),
     );
   });

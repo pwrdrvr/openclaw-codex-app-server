@@ -5,7 +5,8 @@ This document captures the current state of media handling relevant to this plug
 - how Codex app-server accepts image input
 - what this plugin currently sends
 - what OpenClaw currently exposes to plugins
-- the gap for inbound media
+- the remaining gap for richer inbound media
+- the staged-audio transcription bridge this plugin now supports
 - a recommended bridge design for future implementation
 
 This is a spec/notes document only. It does not imply that inbound media support has already been implemented here.
@@ -15,9 +16,11 @@ This is a spec/notes document only. It does not imply that inbound media support
 - Codex app-server already supports multimodal turn input via `UserInput`.
 - The supported image-shaped input items are remote/data URL images and local filesystem images.
 - This plugin now supports mixed text + image turn input and forwards inbound image media into Codex when OpenClaw provides a staged media path or URL.
+- This plugin can also transcribe staged inbound audio/voice attachments into plain text turn input when a local transcription command is configured.
 - OpenClaw’s plugin SDK already supports outbound attachments from a plugin via `mediaUrl` and `mediaUrls`.
 - OpenClaw’s plugin SDK still does not model inbound attachments as a first-class typed field on command or `inbound_claim` events.
 - In practice, current `inbound_claim` hook metadata already carries `mediaPath` / `mediaType`, which is enough for this plugin to forward a staged inbound image.
+- The same staged inbound path is also enough to transcribe audio before Codex sees the turn, as long as the plugin can execute an external transcription command against the staged file.
 - The cleanest future bridge is: OpenClaw stages inbound files locally, then this plugin maps image paths to Codex `localImage` items.
 
 ## Codex App-Server Input Model
@@ -177,8 +180,41 @@ That means:
 - text-only turns still work as before
 - mixed text + image turns can be forwarded into Codex
 - image-only inbound turns can be forwarded into Codex
+- audio-only inbound turns can be converted into transcript text before the turn starts when `inboundAudioTranscription` is configured
+- mixed caption + audio inbound turns can keep the original text and append a labeled transcript block
 - staged text attachments such as `.txt`, `.md`, `.json`, `.yaml`, and `.yml` can be read and forwarded as additional `text` items
-- unsupported binary non-image inbound media is still ignored for now
+- unsupported binary non-image inbound media is still ignored for now unless a future bridge teaches the plugin how to reinterpret it
+
+## Inbound Audio Transcription Bridge
+
+The plugin does not send raw audio into Codex. Instead, it can optionally reinterpret staged audio files as text by invoking a configurable local command.
+
+Configuration shape:
+
+```json
+{
+  "inboundAudioTranscription": {
+    "enabled": true,
+    "command": "/path/to/transcribe",
+    "args": ["{path}"],
+    "timeoutMs": 20000
+  }
+}
+```
+
+Behavior:
+
+- The command receives the staged media path either through an explicit `{path}` placeholder or as an appended trailing argument.
+- Optional placeholders `{mimeType}` and `{fileName}` are available for wrappers that need them.
+- The command should print the transcript to stdout.
+- If stdout is JSON, the plugin uses `.text` first and then `.transcript`.
+- On transcription failure or timeout, the plugin logs the failure and falls back to the previous behavior instead of crashing the inbound turn.
+
+This keeps the bridge generic:
+
+- no hard dependency on a specific speech-to-text engine
+- no plugin-side audio decoding logic
+- no transport-specific behavior baked into the Codex turn layer
 
 ## OpenClaw Plugin SDK: Outbound Media
 
