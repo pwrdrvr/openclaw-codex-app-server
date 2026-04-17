@@ -33,6 +33,7 @@
     "openclaw": ">=2026.3.22"
   },
   "dependencies": {
+    "@sinclair/typebox": "^0.34.41",
     "ws": "^8.18.3"
   },
   "devDependencies": {
