@@ -56,8 +56,10 @@ import type {
   CodexTurnInputItem,
   ConversationPreferences,
   InteractiveMessageRef,
+  PendingInputState,
   PermissionsMode,
   ThreadState,
+  TurnResult,
   TurnTerminalError,
 } from "./types.js";
 import {
@@ -89,7 +91,6 @@ import {
   PLUGIN_ID,
   type CallbackAction,
   type ConversationTarget,
-  type PendingInputState,
   type StoredBinding,
   type StoredPendingBind,
   type StoredPendingRequest,
@@ -1425,6 +1426,262 @@ export class CodexPluginController {
     }
     this.clients.clear();
     this.started = false;
+  }
+
+  async describeAgentEndpoints(): Promise<{
+    defaultEndpoint: string;
+    defaultWorkspaceDir: string | null;
+    defaultModel: string | null;
+    endpoints: Array<{
+      id: string;
+      transport: string;
+      url: string | null;
+      command: string;
+      args: string[];
+      requestTimeoutMs: number;
+      supportsFullAccess: boolean;
+    }>;
+  }> {
+    await this.start();
+    return {
+      defaultEndpoint: this.settings.defaultEndpoint,
+      defaultWorkspaceDir: this.settings.defaultWorkspaceDir ?? null,
+      defaultModel: this.settings.defaultModel ?? null,
+      endpoints: this.settings.endpoints.map((endpoint, index) => ({
+        id: endpoint.id ?? `endpoint-${index + 1}`,
+        transport: endpoint.transport,
+        url: endpoint.url ?? null,
+        command: endpoint.command,
+        args: [...endpoint.args],
+        requestTimeoutMs: endpoint.requestTimeoutMs,
+        supportsFullAccess: this.getClientForEndpoint(endpoint.id).hasProfile("full-access"),
+      })),
+    };
+  }
+
+  async listAgentThreads(params: {
+    sessionKey?: string;
+    endpointId?: string;
+    workspaceDir?: string;
+    includeAllWorkspaces?: boolean;
+    filter?: string;
+    permissionsMode?: PermissionsMode;
+  }): Promise<{
+    endpointId: string;
+    workspaceDir: string | null;
+    filter: string | null;
+    permissionsMode: PermissionsMode;
+    threads: Awaited<ReturnType<CodexAppServerModeClient["listThreads"]>>;
+  }> {
+    await this.start();
+    const endpointId = this.resolveAgentEndpointId(params.endpointId);
+    const permissionsMode = this.resolveAgentPermissionsMode(endpointId, params.permissionsMode);
+    const workspaceDir = params.includeAllWorkspaces
+      ? undefined
+      : resolveWorkspaceDir({
+          requested: params.workspaceDir,
+          configuredWorkspaceDir: this.settings.defaultWorkspaceDir,
+          serviceWorkspaceDir: this.serviceWorkspaceDir,
+        });
+    const threads = await this.getClientForEndpoint(endpointId).listThreads({
+      sessionKey: params.sessionKey,
+      workspaceDir,
+      filter: params.filter?.trim() || undefined,
+      profile: permissionsMode,
+    });
+    return {
+      endpointId,
+      workspaceDir: workspaceDir ?? null,
+      filter: params.filter?.trim() || null,
+      permissionsMode,
+      threads,
+    };
+  }
+
+  async readAgentThreadContext(params: {
+    sessionKey?: string;
+    endpointId?: string;
+    threadId: string;
+    permissionsMode?: PermissionsMode;
+  }): Promise<{
+    endpointId: string;
+    permissionsMode: PermissionsMode;
+    threadId: string;
+    state: ThreadState;
+    context: Awaited<ReturnType<CodexAppServerModeClient["readThreadContext"]>>;
+  }> {
+    await this.start();
+    const endpointId = this.resolveAgentEndpointId(params.endpointId);
+    const permissionsMode = this.resolveAgentPermissionsMode(endpointId, params.permissionsMode);
+    const threadId = params.threadId.trim();
+    const client = this.getClientForEndpoint(endpointId);
+    const [state, context] = await Promise.all([
+      client.readThreadState({
+        sessionKey: params.sessionKey,
+        threadId,
+        profile: permissionsMode,
+      }),
+      client.readThreadContext({
+        sessionKey: params.sessionKey,
+        threadId,
+        profile: permissionsMode,
+      }),
+    ]);
+    return {
+      endpointId,
+      permissionsMode,
+      threadId,
+      state,
+      context,
+    };
+  }
+
+  async runAgentTask(params: {
+    sessionKey?: string;
+    endpointId?: string;
+    prompt: string;
+    workspaceDir?: string;
+    threadId?: string;
+    threadName?: string;
+    reuseThreadByName?: boolean;
+    permissionsMode?: PermissionsMode;
+    model?: string;
+    reasoningEffort?: string;
+    serviceTier?: string;
+    collaborationMode?: CollaborationMode;
+    input?: readonly CodexTurnInputItem[];
+  }): Promise<{
+    endpointId: string;
+    workspaceDir: string;
+    permissionsMode: PermissionsMode;
+    threadId: string;
+    threadName: string | null;
+    reusedThreadByName: boolean;
+    createdThread: boolean;
+    pendingInput: null | Pick<PendingInputState, "requestId" | "options" | "promptText" | "method">;
+    result: TurnResult;
+  }> {
+    await this.start();
+    const endpointId = this.resolveAgentEndpointId(params.endpointId);
+    const permissionsMode = this.resolveAgentPermissionsMode(endpointId, params.permissionsMode);
+    const workspaceDir = resolveWorkspaceDir({
+      requested: params.workspaceDir,
+      configuredWorkspaceDir: this.settings.defaultWorkspaceDir,
+      serviceWorkspaceDir: this.serviceWorkspaceDir,
+    });
+    const threadName = params.threadName?.trim() || "";
+    const client = this.getClientForEndpoint(endpointId);
+    let threadId = params.threadId?.trim() || "";
+    let reusedThreadByName = false;
+    let createdThread = false;
+
+    if (!threadId && params.reuseThreadByName && threadName) {
+      const matches = await client.listThreads({
+        sessionKey: params.sessionKey,
+        workspaceDir,
+        filter: threadName,
+        profile: permissionsMode,
+      });
+      const exactMatch =
+        matches.find((entry) => entry.title?.trim() === threadName) ??
+        matches.find((entry) => entry.threadId.trim() === threadName);
+      if (exactMatch) {
+        threadId = exactMatch.threadId;
+        reusedThreadByName = true;
+      }
+    }
+
+    if (!threadId && threadName) {
+      const created = await client.startThread({
+        sessionKey: params.sessionKey,
+        workspaceDir,
+        model: params.model?.trim() || this.settings.defaultModel,
+        profile: permissionsMode,
+      });
+      threadId = created.threadId;
+      createdThread = true;
+      await client.setThreadName({
+        sessionKey: params.sessionKey,
+        threadId,
+        name: threadName,
+        profile: permissionsMode,
+      });
+      if (params.serviceTier?.trim()) {
+        await client.setThreadServiceTier({
+          sessionKey: params.sessionKey,
+          threadId,
+          serviceTier: params.serviceTier.trim(),
+          profile: permissionsMode,
+        });
+      }
+    }
+
+    let pendingInput: null | Pick<PendingInputState, "requestId" | "options" | "promptText" | "method"> = null;
+    let activeRun: ActiveCodexRun | null = null;
+    activeRun = client.startTurn({
+      sessionKey: params.sessionKey,
+      prompt: params.prompt,
+      input: params.input,
+      workspaceDir,
+      runId: `agent-${crypto.randomUUID()}`,
+      existingThreadId: threadId || undefined,
+      model: params.model?.trim() || this.settings.defaultModel,
+      reasoningEffort: params.reasoningEffort?.trim() || undefined,
+      serviceTier: params.serviceTier?.trim() || this.settings.defaultServiceTier,
+      collaborationMode: params.collaborationMode,
+      onPendingInput: async (state) => {
+        pendingInput = state
+          ? {
+              requestId: state.requestId,
+              options: [...state.options],
+              promptText: state.promptText,
+              method: state.method,
+            }
+          : null;
+        if (state) {
+          await activeRun?.interrupt().catch(() => undefined);
+        }
+      },
+    });
+
+    const rawResult = await activeRun.result;
+    if (!("threadId" in rawResult)) {
+      throw new Error("Codex startTurn returned a non-turn result.");
+    }
+    const result: TurnResult = rawResult;
+    return {
+      endpointId,
+      workspaceDir,
+      permissionsMode,
+      threadId: result.threadId,
+      threadName: threadName || null,
+      reusedThreadByName,
+      createdThread,
+      pendingInput,
+      result,
+    };
+  }
+
+  private resolveAgentEndpointId(endpointId?: string): string {
+    const requested = endpointId?.trim();
+    if (!requested) {
+      return this.settings.defaultEndpoint;
+    }
+    if (!this.settings.endpoints.some((entry) => entry.id === requested)) {
+      throw new Error(`Unknown Codex endpoint: ${requested}`);
+    }
+    return requested;
+  }
+
+  private resolveAgentPermissionsMode(
+    endpointId: string,
+    requested?: PermissionsMode,
+  ): PermissionsMode {
+    const resolved = requested === "full-access" ? "full-access" : "default";
+    if (resolved === "full-access" && !this.getClientForEndpoint(endpointId).hasProfile("full-access")) {
+      throw new Error(`Codex endpoint ${endpointId} does not expose the full-access profile.`);
+    }
+    return resolved;
   }
 
   private getEndpointIdForBinding(binding: StoredBinding | StoredPendingBind | null | undefined): string {

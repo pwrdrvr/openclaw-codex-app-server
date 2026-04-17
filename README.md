@@ -115,6 +115,38 @@ Pre-release packages are published on matching npm dist-tags instead of `latest`
 5. Use `/cas_status` to inspect or adjust the binding in place, including model, reasoning, fast mode, permissions, compact, and stop controls.
 6. If you leave plan mode through the normal `Implement this plan` button, you do not need `/cas_plan off`; use `/cas_plan off` only when you want to exit planning manually instead.
 
+## Autonomous Worker Tools (experimental)
+
+This plugin can also expose **agent-callable tools** so OpenClaw can talk to Codex workers **without manual `/cas_*` control**.
+
+Use this mode when you want OpenClaw to act as an orchestrator over multiple Codex app-server endpoints, for example:
+
+- `windows-main` as a browser/context worker
+- `nestdev` as a development worker
+
+Current tool surface:
+
+- `codex_workers_describe_endpoints`
+- `codex_workers_list_threads`
+- `codex_workers_run_task`
+- `codex_workers_read_thread_context`
+
+Notes:
+
+- These tools talk **directly to Codex app-server endpoints**. They do **not** use an MCP proxy layer.
+- `codex_workers_run_task` can create a named thread, continue an existing `threadId`, or reuse a named thread when `reuseThreadByName=true`.
+- If Codex requests interactive approval/input during an autonomous run, the tool records the pending input and interrupts the run instead of hanging forever.
+- For fully autonomous write actions, you will usually want a worker endpoint that exposes the `full-access` profile.
+
+Suggested pattern:
+
+1. `codex_workers_describe_endpoints`
+2. `codex_workers_run_task(endpointId="windows-main", ...)`
+3. `codex_workers_run_task(endpointId="nestdev", threadName="job/...", ...)`
+4. `codex_workers_read_thread_context(...)` when you need replay/state
+
+The manual `/cas_*` commands still remain useful as the human-facing fallback and debugging surface.
+
 ## Command Reference
 
 | Command | What it does | Notes / examples |
