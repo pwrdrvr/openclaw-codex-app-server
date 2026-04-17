@@ -12,6 +12,7 @@ export const COMMANDS = [
   ["cas_mcp", "List Codex MCP servers."],
   ["cas_fast", "Toggle or inspect fast mode for the current Codex binding."],
   ["cas_model", "List or switch the Codex model for the current binding."],
+  ["cas_endpoint", "Show or switch the active Codex endpoint for this conversation."],
   ["cas_permissions", "Show Codex permissions and account status."],
   ["cas_init", "Forward /init to Codex."],
   ["cas_diff", "Forward /diff to Codex."],
