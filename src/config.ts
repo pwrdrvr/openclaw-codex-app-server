@@ -1,4 +1,8 @@
-import type { EndpointSettings, PluginSettings } from "./types.js";
+import type {
+  EndpointSettings,
+  InboundAudioTranscriptionSettings,
+  PluginSettings,
+} from "./types.js";
 import {
   DEFAULT_REQUEST_TIMEOUT_MS,
 } from "./types.js";
@@ -62,6 +66,23 @@ function readNumber(
     return Math.max(minimum, Math.round(value));
   }
   return fallback;
+}
+
+function resolveInboundAudioTranscription(
+  record: Record<string, unknown>,
+): InboundAudioTranscriptionSettings | undefined {
+  const nested = asRecord(record.inboundAudioTranscription);
+  const legacy = asRecord(record.audioTranscription);
+  const source = Object.keys(nested).length > 0 ? nested : legacy;
+  if (Object.keys(source).length === 0) {
+    return undefined;
+  }
+  return {
+    enabled: source.enabled !== false,
+    command: readString(source, "command"),
+    args: readStringArray(source, "args"),
+    timeoutMs: readNumber(source, "timeoutMs", 20_000, 100),
+  };
 }
 
 export function resolvePluginSettings(rawConfig: unknown): PluginSettings {
@@ -134,6 +155,7 @@ export function resolvePluginSettings(rawConfig: unknown): PluginSettings {
     defaultWorkspaceDir: readString(record, "defaultWorkspaceDir"),
     defaultModel: readString(record, "defaultModel"),
     defaultServiceTier: readString(record, "defaultServiceTier"),
+    inboundAudioTranscription: resolveInboundAudioTranscription(record),
   };
 }
 

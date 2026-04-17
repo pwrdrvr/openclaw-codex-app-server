@@ -245,6 +245,39 @@ The plugin schema in [`openclaw.plugin.json`](./openclaw.plugin.json) supports:
 - `defaultWorkspaceDir`: fallback workspace for unbound actions
 - `defaultModel`: model used when a new thread starts without an explicit selection
 - `defaultServiceTier`: default service tier for new turns
+- `inboundAudioTranscription`: optional preprocessor for inbound audio/voice attachments before they are forwarded into Codex
+
+### Optional inbound audio transcription
+
+If your chat surface provides inbound audio files as local paths or media metadata, this plugin can transcribe them before forwarding the turn to Codex. This keeps the plugin transport-agnostic: Codex still receives normal text input, while transcription is delegated to any local command you choose.
+
+Example config using an existing local script:
+
+```json
+{
+  "inboundAudioTranscription": {
+    "enabled": true,
+    "command": "/root/.openclaw/workspace/scripts/local-stt-transcribe.sh",
+    "args": ["{path}"],
+    "timeoutMs": 20000
+  }
+}
+```
+
+Behavior:
+
+- audio-only inbound messages become transcript text
+- caption + audio keeps the caption and adds a labeled transcript block
+- the command should print the transcript to stdout
+- if stdout is JSON, `.text` or `.transcript` is used automatically
+
+Argument placeholders supported in `args`:
+
+- `{path}`
+- `{mimeType}`
+- `{fileName}`
+
+If `{path}` is omitted from `args`, the plugin appends the media path automatically.
 
 ## Developer Workflow With A Local OpenClaw Checkout
 
