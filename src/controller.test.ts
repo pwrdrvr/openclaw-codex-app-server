@@ -5884,6 +5884,66 @@ describe("Discord controller flows", () => {
     );
   });
 
+  it("clears stale pending prompts on stop command and applies pending permissions", async () => {
+    const { controller, clientMock } = await createControllerHarness();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      permissionsMode: "default",
+      pendingPermissionsMode: "full-access",
+      updatedAt: Date.now(),
+    });
+    await (controller as any).store.upsertPendingRequest({
+      requestId: "pending-1",
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      state: {
+        requestId: "pending-1",
+        options: ["accept", "cancel"],
+        expiresAt: Date.now() + 60_000,
+      },
+      updatedAt: Date.now(),
+    });
+
+    const payload = await (controller as any).handleStopCommand({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+    });
+
+    expect(payload).toEqual({ text: "Cleared the stale Codex prompt." });
+    expect((controller as any).store.getPendingRequestByConversation({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+    })).toBeNull();
+    const binding = (controller as any).store.getBinding({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+    });
+    expect(binding?.permissionsMode).toBe("full-access");
+    expect(binding?.pendingPermissionsMode).toBeUndefined();
+    expect(clientMock.setThreadPermissions).toHaveBeenCalledWith({
+      profile: "full-access",
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+    });
+  });
+
   it("stops the active run from the status card", async () => {
     const { controller, clientMock } = await createControllerHarness();
     await (controller as any).store.upsertBinding({
@@ -5954,6 +6014,87 @@ describe("Discord controller flows", () => {
         buttons: expect.any(Array),
       }),
     );
+  });
+
+  it("clears stale pending approvals when a pending-input callback arrives after the run is gone", async () => {
+    const { controller, clientMock } = await createControllerHarness();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      permissionsMode: "default",
+      pendingPermissionsMode: "full-access",
+      updatedAt: Date.now(),
+    });
+    await (controller as any).store.upsertPendingRequest({
+      requestId: "pending-1",
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      state: {
+        requestId: "pending-1",
+        options: ["accept", "cancel"],
+        expiresAt: Date.now() + 60_000,
+      },
+      updatedAt: Date.now(),
+    });
+    const callback = await (controller as any).store.putCallback({
+      kind: "pending-input",
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      requestId: "pending-1",
+      actionIndex: 0,
+    });
+    const reply = vi.fn(async () => {});
+
+    await controller.handleTelegramInteractive({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+      callback: { payload: callback.token },
+      respond: {
+        clearButtons: vi.fn(async () => {}),
+        reply,
+        editMessage: vi.fn(async () => {}),
+      },
+    } as any);
+
+    expect(reply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "No active Codex run is waiting for input.",
+      }),
+    );
+    expect((controller as any).store.getPendingRequestByConversation({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+    })).toBeNull();
+    const binding = (controller as any).store.getBinding({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+    });
+    expect(binding?.permissionsMode).toBe("full-access");
+    expect(binding?.pendingPermissionsMode).toBeUndefined();
+    expect(clientMock.setThreadPermissions).toHaveBeenCalledWith({
+      profile: "full-access",
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+    });
   });
 
   it("keeps default permissions and explains when Full Access is unavailable", async () => {

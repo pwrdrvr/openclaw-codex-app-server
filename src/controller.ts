@@ -2331,6 +2331,21 @@ export class CodexPluginController {
     return !this.activeRuns.has(key);
   }
 
+  private async clearPendingRequestForConversation(
+    conversation: ConversationTarget,
+    reason: string,
+  ): Promise<boolean> {
+    const pending = this.store.getPendingRequestByConversation(conversation);
+    if (!pending) {
+      return false;
+    }
+    await this.store.removePendingRequest(pending.requestId);
+    this.api.logger.debug?.(
+      `codex cleared pending request ${this.formatConversationForLog(conversation)} requestId=${pending.requestId} reason=${reason}`,
+    );
+    return true;
+  }
+
   private async readEffectiveThreadState(binding: StoredBinding): Promise<{
     state: ThreadState | undefined;
     effectiveState: ThreadState | undefined;
@@ -2939,11 +2954,25 @@ export class CodexPluginController {
     if (!conversation) {
       return { text: "This command needs a Telegram or Discord conversation." };
     }
+    const key = buildConversationKey(conversation);
     const active = this.activeRuns.get(buildConversationKey(conversation));
     if (!active) {
+      const cleared = await this.clearPendingRequestForConversation(
+        conversation,
+        "stop command without active run",
+      );
+      if (cleared) {
+        await this.applyPendingBindingPermissionsModeMigration(conversation);
+        return { text: "Cleared the stale Codex prompt." };
+      }
       return { text: "No active Codex run to stop." };
     }
-    await active.handle.interrupt();
+    await active.handle.interrupt().catch(() => undefined);
+    await this.clearPendingRequestForConversation(conversation, "stop command");
+    await this.waitForActiveRunToClear(conversation);
+    if (!this.activeRuns.has(key)) {
+      await this.applyPendingBindingPermissionsModeMigration(conversation);
+    }
     return { text: "Stopping Codex now." };
   }
 
@@ -5308,11 +5337,16 @@ export class CodexPluginController {
       }
       const active = this.activeRuns.get(buildConversationKey(callback.conversation));
       if (!active) {
+        await this.store.removePendingRequest(pending.requestId);
+        await this.store.removeCallback(callback.token);
+        await this.applyPendingBindingPermissionsModeMigration(callback.conversation);
         await responders.reply("No active Codex run is waiting for input.");
         return;
       }
       const submitted = await active.handle.submitPendingInput(callback.actionIndex);
       if (!submitted) {
+        await this.store.removePendingRequest(pending.requestId);
+        await this.store.removeCallback(callback.token);
         await responders.reply("That Codex action is no longer available.");
         return;
       }
@@ -5331,6 +5365,9 @@ export class CodexPluginController {
       }
       const active = this.activeRuns.get(buildConversationKey(callback.conversation));
       if (!active) {
+        await this.store.removePendingRequest(pending.requestId);
+        await this.store.removeCallback(callback.token);
+        await this.applyPendingBindingPermissionsModeMigration(callback.conversation);
         await responders.reply("No active Codex run is waiting for input.");
         return;
       }
@@ -5408,6 +5445,8 @@ export class CodexPluginController {
           this.buildQuestionnaireSubmissionPayload(pending),
         );
         if (!submitted) {
+          await this.store.removePendingRequest(pending.requestId);
+          await this.store.removeCallback(callback.token);
           await responders.reply("That Codex questionnaire is no longer accepting answers.");
           return;
         }
@@ -5698,8 +5737,16 @@ export class CodexPluginController {
     if (callback.kind === "stop-run") {
       const binding = this.store.getBinding(callback.conversation);
       await this.store.removeCallback(callback.token);
+      const activeKey = buildConversationKey(callback.conversation);
       const active = this.activeRuns.get(buildConversationKey(callback.conversation));
       if (!active) {
+        const cleared = await this.clearPendingRequestForConversation(
+          callback.conversation,
+          "status stop without active run",
+        );
+        if (cleared) {
+          await this.applyPendingBindingPermissionsModeMigration(callback.conversation);
+        }
         const statusCard = await this.buildStatusCard(
           {
             ...callback.conversation,
@@ -5715,7 +5762,11 @@ export class CodexPluginController {
         return;
       }
       await active.handle.interrupt().catch(() => undefined);
+      await this.clearPendingRequestForConversation(callback.conversation, "status stop");
       await this.waitForActiveRunToClear(callback.conversation);
+      if (!this.activeRuns.has(activeKey)) {
+        await this.applyPendingBindingPermissionsModeMigration(callback.conversation);
+      }
       const nextBinding = this.store.getBinding(callback.conversation) ?? binding;
       const statusCard = await this.buildStatusCard(
         {
