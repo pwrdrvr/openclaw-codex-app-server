@@ -6097,6 +6097,168 @@ describe("Discord controller flows", () => {
     });
   });
 
+  it("clears stale pending approvals when the active run rejects a pending-input response", async () => {
+    const { controller, clientMock } = await createControllerHarness();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      permissionsMode: "default",
+      pendingPermissionsMode: "full-access",
+      updatedAt: Date.now(),
+    });
+    await (controller as any).store.upsertPendingRequest({
+      requestId: "pending-1",
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      state: {
+        requestId: "pending-1",
+        options: ["accept", "cancel"],
+        expiresAt: Date.now() + 60_000,
+      },
+      updatedAt: Date.now(),
+    });
+    const callback = await (controller as any).store.putCallback({
+      kind: "pending-input",
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      requestId: "pending-1",
+      actionIndex: 0,
+    });
+    const reply = vi.fn(async () => {});
+    (controller as any).activeRuns.set("telegram::default::123::", {
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      workspaceDir: "/repo/openclaw",
+      mode: "default",
+      profile: "default",
+      handle: {
+        result: Promise.resolve({ threadId: "thread-1", text: "done" }),
+        queueMessage: vi.fn(async () => false),
+        getThreadId: () => "thread-1",
+        interrupt: vi.fn(async () => {}),
+        isAwaitingInput: () => false,
+        submitPendingInput: vi.fn(async () => false),
+        submitPendingInputPayload: vi.fn(async () => false),
+      },
+    });
+
+    await controller.handleTelegramInteractive({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+      callback: { payload: callback.token },
+      respond: {
+        clearButtons: vi.fn(async () => {}),
+        reply,
+        editMessage: vi.fn(async () => {}),
+      },
+    } as any);
+
+    expect(reply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "That Codex action is no longer available.",
+      }),
+    );
+    expect((controller as any).activeRuns.has("telegram::default::123::")).toBe(false);
+    expect((controller as any).store.getPendingRequestByConversation({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+    })).toBeNull();
+    const binding = (controller as any).store.getBinding({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+    });
+    expect(binding?.permissionsMode).toBe("full-access");
+    expect(binding?.pendingPermissionsMode).toBeUndefined();
+    expect(clientMock.setThreadPermissions).toHaveBeenCalledWith({
+      profile: "full-access",
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+    });
+  });
+
+  it("renders the refreshed binding after stale status-stop cleanup", async () => {
+    const { controller } = await createControllerHarness();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      permissionsMode: "default",
+      pendingPermissionsMode: "full-access",
+      updatedAt: Date.now(),
+    });
+    await (controller as any).store.upsertPendingRequest({
+      requestId: "pending-1",
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      state: {
+        requestId: "pending-1",
+        options: ["accept", "cancel"],
+        expiresAt: Date.now() + 60_000,
+      },
+      updatedAt: Date.now(),
+    });
+    const callback = await (controller as any).store.putCallback({
+      kind: "stop-run",
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+    });
+    const editMessage = vi.fn(async (_payload: any) => {});
+
+    await controller.handleTelegramInteractive({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+      callback: { payload: callback.token },
+      respond: {
+        clearButtons: vi.fn(async () => {}),
+        reply: vi.fn(async () => {}),
+        editMessage,
+      },
+    } as any);
+
+    expect(editMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("Permissions: Full Access"),
+        buttons: expect.any(Array),
+      }),
+    );
+  });
+
   it("keeps default permissions and explains when Full Access is unavailable", async () => {
     const { controller, clientMock } = await createControllerHarness();
     clientMock.hasProfile.mockImplementation((profile: string) => profile === "default");

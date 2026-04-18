@@ -2346,6 +2346,20 @@ export class CodexPluginController {
     return true;
   }
 
+  private async clearStaleInteractiveRun(
+    conversation: ConversationTarget,
+    reason: string,
+  ): Promise<void> {
+    const key = buildConversationKey(conversation);
+    if (this.activeRuns.delete(key)) {
+      this.api.logger.warn(
+        `codex dropped stale interactive run ${this.formatConversationForLog(conversation)} reason=${reason}`,
+      );
+    }
+    await this.clearPendingRequestForConversation(conversation, reason);
+    await this.applyPendingBindingPermissionsModeMigration(conversation);
+  }
+
   private async readEffectiveThreadState(binding: StoredBinding): Promise<{
     state: ThreadState | undefined;
     effectiveState: ThreadState | undefined;
@@ -5345,7 +5359,10 @@ export class CodexPluginController {
       }
       const submitted = await active.handle.submitPendingInput(callback.actionIndex);
       if (!submitted) {
-        await this.store.removePendingRequest(pending.requestId);
+        await this.clearStaleInteractiveRun(
+          callback.conversation,
+          "pending-input action no longer available",
+        );
         await this.store.removeCallback(callback.token);
         await responders.reply("That Codex action is no longer available.");
         return;
@@ -5445,7 +5462,10 @@ export class CodexPluginController {
           this.buildQuestionnaireSubmissionPayload(pending),
         );
         if (!submitted) {
-          await this.store.removePendingRequest(pending.requestId);
+          await this.clearStaleInteractiveRun(
+            callback.conversation,
+            "pending-questionnaire submission no longer available",
+          );
           await this.store.removeCallback(callback.token);
           await responders.reply("That Codex questionnaire is no longer accepting answers.");
           return;
@@ -5747,13 +5767,14 @@ export class CodexPluginController {
         if (cleared) {
           await this.applyPendingBindingPermissionsModeMigration(callback.conversation);
         }
+        const nextBinding = this.store.getBinding(callback.conversation) ?? binding;
         const statusCard = await this.buildStatusCard(
           {
             ...callback.conversation,
             threadId: responders.conversation.threadId,
           },
-          binding,
-          Boolean(binding),
+          nextBinding,
+          Boolean(nextBinding),
         );
         await responders.editPicker({
           text: statusCard.text,
