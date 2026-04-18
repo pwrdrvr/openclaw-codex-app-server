@@ -190,6 +190,16 @@ const TEXT_ATTACHMENT_MIME_TYPES = new Set([
   "text/x-markdown",
   "text/yaml",
 ]);
+const AUDIO_FILE_EXTENSIONS = new Set([
+  ".aac",
+  ".flac",
+  ".m4a",
+  ".mp3",
+  ".ogg",
+  ".opus",
+  ".wav",
+  ".webm",
+]);
 const MAX_TEXT_ATTACHMENT_BYTES = 64 * 1024;
 
 type TelegramOutboundAdapter = {
@@ -662,6 +672,19 @@ function isImagePathLike(value: string | undefined): boolean {
   return IMAGE_FILE_EXTENSIONS.has(path.extname(normalized).toLowerCase());
 }
 
+function isAudioMimeType(value: string | undefined): boolean {
+  const normalized = normalizeMimeType(value);
+  return Boolean(normalized?.startsWith("audio/"));
+}
+
+function isAudioPathLike(value: string | undefined): boolean {
+  const normalized = normalizeInboundMediaPath(value);
+  if (!normalized) {
+    return false;
+  }
+  return AUDIO_FILE_EXTENSIONS.has(path.extname(normalized).toLowerCase());
+}
+
 function isTextAttachmentMimeType(value: string | undefined): boolean {
   const normalized = normalizeMimeType(value);
   return Boolean(
@@ -790,18 +813,81 @@ async function toCodexTextAttachmentInputItem(
   return { type: "text", text: lines.join("\n") };
 }
 
+function extractTranscriptText(stdout: string): string {
+  const trimmed = stdout.trim();
+  if (!trimmed) {
+    return "";
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as { text?: unknown; transcript?: unknown };
+    const value =
+      typeof parsed?.text === "string"
+        ? parsed.text
+        : typeof parsed?.transcript === "string"
+          ? parsed.transcript
+          : undefined;
+    return value?.trim() ?? trimmed;
+  } catch {
+    return trimmed;
+  }
+}
+
+function buildAudioTranscriptArgv(params: {
+  args: readonly string[];
+  mediaPath: string;
+  mimeType?: string;
+  fileName?: string;
+}): string[] {
+  const replacements = {
+    path: params.mediaPath,
+    mimeType: params.mimeType ?? "",
+    fileName: params.fileName ?? path.basename(params.mediaPath),
+  };
+  const rendered = params.args.map((entry) =>
+    entry.replace(/\{(path|mimeType|fileName)\}/g, (_match, key: keyof typeof replacements) => {
+      return replacements[key] ?? "";
+    }),
+  );
+  if (!rendered.some((entry) => entry.includes(params.mediaPath))) {
+    rendered.push(params.mediaPath);
+  }
+  return rendered;
+}
+
 async function buildInboundTurnInput(event: {
   content: string;
   media?: PluginInboundMedia[];
   metadata?: Record<string, unknown>;
+  transcribeAudio?: (media: PluginInboundMedia) => Promise<string | null>;
 }): Promise<CodexTurnInputItem[]> {
   const items: CodexTurnInputItem[] = [];
   if (event.content.trim()) {
     items.push({ type: "text", text: event.content });
   }
+  const normalizedMedia = [...(event.media ?? []), ...extractInboundMetadataMedia(event.metadata)];
+  const onlyAudioWithoutPrompt =
+    !event.content.trim() &&
+    normalizedMedia.length === 1 &&
+    (isAudioMimeType(normalizedMedia[0]?.mimeType) ||
+      isAudioPathLike(normalizedMedia[0]?.path) ||
+      isAudioPathLike(normalizedMedia[0]?.url));
   const seen = new Set<string>();
-  for (const media of [...(event.media ?? []), ...extractInboundMetadataMedia(event.metadata)]) {
-    const item = toCodexImageInputItem(media) ?? (await toCodexTextAttachmentInputItem(media));
+  for (const media of normalizedMedia) {
+    let item: CodexTurnInputItem | null = null;
+    if (event.transcribeAudio &&
+      (isAudioMimeType(media.mimeType) || isAudioPathLike(media.path) || isAudioPathLike(media.url))) {
+      const transcript = await event.transcribeAudio(media);
+      if (transcript?.trim()) {
+        const displayName = media.fileName?.trim() || path.basename(media.path ?? media.url ?? "audio");
+        item = {
+          type: "text",
+          text: onlyAudioWithoutPrompt
+            ? transcript.trim()
+            : [`Transcribed audio: ${displayName}`, "", transcript.trim()].join("\n"),
+        };
+      }
+    }
+    item ??= toCodexImageInputItem(media) ?? (await toCodexTextAttachmentInputItem(media));
     if (!item) {
       continue;
     }
@@ -1472,6 +1558,40 @@ export class CodexPluginController {
     ].join(" ");
   }
 
+  private async transcribeInboundAudio(media: PluginInboundMedia): Promise<string | null> {
+    const settings = this.settings.inboundAudioTranscription;
+    if (!settings?.enabled || !settings.command?.trim()) {
+      return null;
+    }
+    const mediaPath = normalizeInboundMediaPath(media.path ?? media.url);
+    if (!mediaPath || !path.isAbsolute(mediaPath)) {
+      return null;
+    }
+    const stats = await fs.stat(mediaPath).catch(() => undefined);
+    if (!stats?.isFile()) {
+      return null;
+    }
+    const argv = buildAudioTranscriptArgv({
+      args: settings.args,
+      mediaPath,
+      mimeType: normalizeMimeType(media.mimeType),
+      fileName: media.fileName,
+    });
+    try {
+      const result = await execFileAsync(settings.command, argv, {
+        timeout: settings.timeoutMs,
+        maxBuffer: 1024 * 1024,
+      });
+      const transcript = extractTranscriptText(result.stdout);
+      return transcript.trim() || null;
+    } catch (error) {
+      this.api.logger.warn(
+        `codex inbound audio transcription failed file=${mediaPath}: ${String(error)}`,
+      );
+      return null;
+    }
+  }
+
   async handleInboundClaim(event: {
     content: string;
     channel: string;
@@ -1492,7 +1612,10 @@ export class CodexPluginController {
       if (!conversation) {
         return { handled: false };
       }
-      const input = await buildInboundTurnInput(event);
+      const input = await buildInboundTurnInput({
+        ...event,
+        transcribeAudio: async (media) => await this.transcribeInboundAudio(media),
+      });
       const requiresStructuredInput = !isQueueCompatibleTurnInput(event.content, input);
       const activeKey = buildConversationKey(conversation);
       const active = this.activeRuns.get(activeKey);
