@@ -2459,6 +2459,53 @@ describe("Discord controller flows", () => {
     expect(text).toContain("Permissions: Full Access");
   });
 
+  it("refreshes stored full-access mode from the live thread state in cas_status", async () => {
+    const { controller, clientMock, sendMessageTelegram } = await createControllerHarness();
+    clientMock.readThreadState.mockResolvedValue({
+      threadId: "thread-1",
+      threadName: "Discord Thread",
+      model: "openai/gpt-5.4",
+      cwd: "/repo/openclaw",
+      serviceTier: "default",
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+    });
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      permissionsMode: "default",
+      updatedAt: Date.now(),
+    });
+
+    const reply = await controller.handleCommand(
+      "cas_status",
+      buildTelegramCommandContext({
+        commandBody: "/cas_status",
+        getCurrentConversationBinding: vi.fn(async () => ({ bindingId: "b1" })),
+      }),
+    );
+
+    expect(reply).toEqual({});
+    const binding = (controller as any).store.getBinding({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+    });
+    expect(binding?.permissionsMode).toBe("full-access");
+    const firstCall = sendMessageTelegram.mock.calls[0] as unknown as [string, string] | undefined;
+    const text = firstCall?.[1] ?? "";
+    expect(text).toContain("Permissions: Full Access");
+    expect(text).toContain(
+      "Permissions note: refreshed the stored mode from the live Full Access thread state.",
+    );
+  });
+
   it("sends the status card directly to Discord with interactive controls", async () => {
     const { controller, sendComponentMessage } = await createControllerHarness();
     await (controller as any).store.upsertBinding({
@@ -4980,6 +5027,74 @@ describe("Discord controller flows", () => {
       sessionKey: "session-1",
       refreshToken: true,
     });
+  });
+
+  it("starts the next turn in full-access after healing a drifted stored binding", async () => {
+    const { controller, clientMock } = await createControllerHarness();
+    clientMock.readThreadState.mockResolvedValue({
+      threadId: "thread-1",
+      threadName: "Discord Thread",
+      model: "openai/gpt-5.4",
+      cwd: "/repo/openclaw",
+      serviceTier: "default",
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+    });
+    (controller as any).client.startTurn = vi.fn(() => ({
+      result: Promise.resolve({
+        threadId: "thread-1",
+        aborted: true,
+      }),
+      getThreadId: () => "thread-1",
+      queueMessage: vi.fn(async () => false),
+      interrupt: vi.fn(async () => {}),
+      isAwaitingInput: () => false,
+      submitPendingInput: vi.fn(async () => false),
+      submitPendingInputPayload: vi.fn(async () => false),
+    }));
+    const binding = {
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: TEST_TELEGRAM_PEER_ID,
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      permissionsMode: "default" as const,
+      updatedAt: Date.now(),
+    };
+    await (controller as any).store.upsertBinding(binding);
+
+    await (controller as any).startTurn({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: TEST_TELEGRAM_PEER_ID,
+      },
+      binding,
+      workspaceDir: "/repo/openclaw",
+      prompt: "status please",
+      reason: "inbound",
+    });
+
+    await flushAsyncWork();
+
+    expect((controller as any).client.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        profile: "full-access",
+        sessionKey: "session-1",
+        existingThreadId: "thread-1",
+        approvalPolicy: "never",
+        sandbox: "danger-full-access",
+      }),
+    );
+    const storedBinding = (controller as any).store.getBinding({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: TEST_TELEGRAM_PEER_ID,
+    });
+    expect(storedBinding?.permissionsMode).toBe("full-access");
   });
 
   it("maps obvious OAuth failures to the same re-login guidance even if account/read also fails", async () => {

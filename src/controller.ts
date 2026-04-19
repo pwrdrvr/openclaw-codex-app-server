@@ -972,6 +972,27 @@ function getBindingPendingPermissionsMode(binding: StoredBinding | null): Permis
   return pending ? normalizePermissionsMode(pending) : null;
 }
 
+function inferPermissionsModeFromThreadState(
+  threadState: ThreadState | undefined,
+): PermissionsMode | null {
+  const approval = threadState?.approvalPolicy?.trim();
+  const sandbox = threadState?.sandbox?.trim();
+  if (!approval && !sandbox) {
+    return null;
+  }
+  if (approval === "never" && sandbox === "danger-full-access") {
+    return "full-access";
+  }
+  if (approval === "on-request" && sandbox === "workspace-write") {
+    return "default";
+  }
+  return null;
+}
+
+function formatPermissionsModeLabel(profile: PermissionsMode): string {
+  return profile === "full-access" ? "Full Access" : "Default";
+}
+
 function applyBindingPreferencesToThreadState(
   threadState: ThreadState | undefined,
   binding: StoredBinding | null,
@@ -2360,6 +2381,39 @@ export class CodexPluginController {
     await this.applyPendingBindingPermissionsModeMigration(conversation);
   }
 
+  private async syncBindingPermissionsModeFromThreadState(
+    binding: StoredBinding,
+    threadState: ThreadState | undefined,
+    context: string,
+  ): Promise<{ binding: StoredBinding; note?: string }> {
+    const liveProfile = inferPermissionsModeFromThreadState(threadState);
+    const storedProfile = getBindingPermissionsMode(binding);
+    const pendingProfile = getBindingPendingPermissionsMode(binding);
+    if (!liveProfile || pendingProfile || liveProfile === storedProfile) {
+      return { binding };
+    }
+    if (storedProfile === "default" && liveProfile === "full-access") {
+      const nextBinding = await this.persistBindingPermissionsMode(binding, liveProfile);
+      const conversation: ConversationTarget = {
+        channel: binding.conversation.channel,
+        accountId: binding.conversation.accountId,
+        conversationId: binding.conversation.conversationId,
+        parentConversationId: binding.conversation.parentConversationId,
+      };
+      this.api.logger.warn(
+        `codex refreshed binding permissions mode from live thread state ${this.formatConversationForLog(conversation)} stored=${storedProfile} live=${liveProfile} context=${context}`,
+      );
+      return {
+        binding: nextBinding,
+        note: "Permissions note: refreshed the stored mode from the live Full Access thread state.",
+      };
+    }
+    return {
+      binding,
+      note: `Permissions note: stored mode is ${formatPermissionsModeLabel(storedProfile)}, but the live thread reports ${formatPermissionsModeLabel(liveProfile)}.`,
+    };
+  }
+
   private async readEffectiveThreadState(binding: StoredBinding): Promise<{
     state: ThreadState | undefined;
     effectiveState: ThreadState | undefined;
@@ -2370,7 +2424,14 @@ export class CodexPluginController {
       sessionKey: binding.sessionKey,
       threadId: binding.threadId,
     }).catch(() => undefined);
-    const desired = buildDesiredThreadConfiguration(state, binding);
+    const syncedBinding = state
+      ? (await this.syncBindingPermissionsModeFromThreadState(
+          binding,
+          state,
+          "read effective thread state",
+        )).binding
+      : binding;
+    const desired = buildDesiredThreadConfiguration(state, syncedBinding);
     return {
       state,
       effectiveState: desired.effectiveState,
@@ -3532,7 +3593,24 @@ export class CodexPluginController {
     collaborationMode?: CollaborationMode;
   }): Promise<void> {
     const key = buildConversationKey(params.conversation);
-    const profile = this.getPermissionsMode(params.binding);
+    let binding = params.binding;
+    if (binding) {
+      const threadState = await this.client.readThreadState({
+        profile: this.getPermissionsMode(binding),
+        sessionKey: binding.sessionKey,
+        threadId: binding.threadId,
+      }).catch(() => undefined);
+      if (threadState) {
+        binding = (
+          await this.syncBindingPermissionsModeFromThreadState(
+            binding,
+            threadState,
+            `start turn (${params.reason})`,
+          )
+        ).binding;
+      }
+    }
+    const profile = this.getPermissionsMode(binding);
     const existing = this.activeRuns.get(key);
     this.api.logger.debug?.(
       `codex turn request reason=${params.reason} ${this.formatConversationForLog(params.conversation)} workspace=${params.workspaceDir} existing=${existing ? existing.mode : "none"} profile=${profile} prompt="${summarizeTextForLog(params.prompt)}"`,
@@ -3573,21 +3651,21 @@ export class CodexPluginController {
     }
     const typing = await this.startTypingLease(params.conversation);
     this.api.logger.debug?.(
-      `codex turn starting app-server run ${this.formatConversationForLog(params.conversation)} typing=${typing ? "yes" : "no"} session=${params.binding?.sessionKey ?? "<none>"} existingThread=${params.binding?.threadId ?? "<none>"} profile=${profile} mode=${params.collaborationMode?.mode ?? "default"}`,
+      `codex turn starting app-server run ${this.formatConversationForLog(params.conversation)} typing=${typing ? "yes" : "no"} session=${binding?.sessionKey ?? "<none>"} existingThread=${binding?.threadId ?? "<none>"} profile=${profile} mode=${params.collaborationMode?.mode ?? "default"}`,
     );
     const desired = buildDesiredThreadConfiguration(
       undefined,
-      params.binding,
+      binding,
       this.settings.defaultModel,
     );
     const run = this.client.startTurn({
       profile,
-      sessionKey: params.binding?.sessionKey,
+      sessionKey: binding?.sessionKey,
       workspaceDir: params.workspaceDir,
       prompt: params.prompt,
       input: params.input,
       runId: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-      existingThreadId: params.binding?.threadId,
+      existingThreadId: binding?.threadId,
       model: desired.model,
       reasoningEffort: desired.reasoningEffort,
       serviceTier: desired.serviceTier ?? undefined,
@@ -3627,7 +3705,7 @@ export class CodexPluginController {
           const state = await this.client
             .readThreadState({
               profile,
-              sessionKey: params.binding?.sessionKey,
+              sessionKey: binding?.sessionKey,
               threadId,
             })
             .catch(() => null);
@@ -3658,7 +3736,7 @@ export class CodexPluginController {
         const completionText =
           result.terminalStatus === "failed"
             ? await this.describeTurnFailure({
-            sessionKey: params.binding?.sessionKey,
+            sessionKey: binding?.sessionKey,
             profile,
             error: result.terminalError?.message ?? "turn failed",
             terminalError: result.terminalError,
@@ -3679,7 +3757,7 @@ export class CodexPluginController {
         await this.sendText(
           params.conversation,
           await this.describeTurnFailure({
-            sessionKey: params.binding?.sessionKey,
+            sessionKey: binding?.sessionKey,
             profile,
             error,
           }),
@@ -6533,20 +6611,27 @@ export class CodexPluginController {
         threadState: initialState,
         context: "restore desired thread settings",
       })) ?? initialState;
+    const syncedBinding = state
+      ? (await this.syncBindingPermissionsModeFromThreadState(
+          binding,
+          state,
+          "build bound conversation messages",
+        )).binding
+      : binding;
 
     const nextBinding =
-      (state?.threadName && state.threadName !== binding.threadTitle) ||
-      (state?.cwd?.trim() && state.cwd.trim() !== binding.workspaceDir)
+      (state?.threadName && state.threadName !== syncedBinding.threadTitle) ||
+      (state?.cwd?.trim() && state.cwd.trim() !== syncedBinding.workspaceDir)
         ? {
-            ...binding,
-            threadTitle: state.threadName?.trim() || binding.threadTitle,
-            workspaceDir: state.cwd?.trim() || binding.workspaceDir,
-            contextUsage: binding.contextUsage,
+            ...syncedBinding,
+            threadTitle: state.threadName?.trim() || syncedBinding.threadTitle,
+            workspaceDir: state.cwd?.trim() || syncedBinding.workspaceDir,
+            contextUsage: syncedBinding.contextUsage,
             updatedAt: Date.now(),
           }
-        : binding;
+        : syncedBinding;
 
-    if (nextBinding !== binding) {
+    if (nextBinding !== syncedBinding) {
       await this.store.upsertBinding(nextBinding);
     }
 
@@ -6650,7 +6735,6 @@ export class CodexPluginController {
         ? this.activeRuns.get(buildConversationKey(conversation))
         : undefined;
     const profile = activeRun?.profile ?? this.getPermissionsMode(binding);
-    const pendingProfile = getBindingPendingPermissionsMode(binding);
     const workspaceDir = resolveWorkspaceDir({
       bindingWorkspaceDir: binding?.workspaceDir,
       configuredWorkspaceDir: this.settings.defaultWorkspaceDir,
@@ -6674,40 +6758,59 @@ export class CodexPluginController {
       }).catch(() => []),
       this.resolveProjectFolder(binding?.workspaceDir || workspaceDir),
     ]);
-    const effectiveThreadState = buildDesiredThreadConfiguration(threadState, binding).effectiveState;
+    let effectiveBinding = binding;
+    let permissionsRefreshNote: string | undefined;
+    if (binding && threadState) {
+      const synced = await this.syncBindingPermissionsModeFromThreadState(
+        binding,
+        threadState,
+        "build status text",
+      );
+      effectiveBinding = synced.binding;
+      permissionsRefreshNote = synced.note;
+    }
+    const pendingProfile = getBindingPendingPermissionsMode(effectiveBinding);
+    const effectiveThreadState =
+      buildDesiredThreadConfiguration(threadState, effectiveBinding).effectiveState;
     const displayThreadState =
       effectiveThreadState ??
-      (binding
+      (effectiveBinding
         ? {
-            threadId: binding.threadId,
-            threadName: binding.threadTitle,
-            cwd: binding.workspaceDir,
+            threadId: effectiveBinding.threadId,
+            threadName: effectiveBinding.threadTitle,
+            cwd: effectiveBinding.workspaceDir,
           }
         : undefined);
     const threadNote =
-      binding && !threadState
+      effectiveBinding && !threadState
         ? "Live thread details are unavailable until Codex materializes the thread, usually after the first user message. Model, reasoning, and fast-mode changes made here are saved as defaults until then."
         : undefined;
     this.api.logger.debug?.(
-      `codex status snapshot bindingActive=${bindingActive ? "yes" : "no"} activeRun=${activeRun?.mode ?? "none"} boundThread=${binding?.threadId ?? "<none>"} raw=${formatThreadStateForLog(threadState)} effective=${formatThreadStateForLog(displayThreadState)} ${formatBindingPreferencesForLog(binding)} threadCwd=${displayThreadState?.cwd?.trim() || "<none>"}`,
+      `codex status snapshot bindingActive=${bindingActive ? "yes" : "no"} activeRun=${activeRun?.mode ?? "none"} boundThread=${effectiveBinding?.threadId ?? "<none>"} raw=${formatThreadStateForLog(threadState)} effective=${formatThreadStateForLog(displayThreadState)} ${formatBindingPreferencesForLog(effectiveBinding)} threadCwd=${displayThreadState?.cwd?.trim() || "<none>"}`,
     );
 
     return formatCodexStatusText({
       pluginVersion: PLUGIN_VERSION,
       threadState: displayThreadState,
-      bindingThreadTitle: binding?.threadTitle,
+      bindingThreadTitle: effectiveBinding?.threadTitle,
       account,
       rateLimits: limits,
       bindingActive,
       projectFolder,
-      worktreeFolder: displayThreadState?.cwd?.trim() || binding?.workspaceDir || workspaceDir,
-      contextUsage: binding?.contextUsage,
+      worktreeFolder:
+        displayThreadState?.cwd?.trim() || effectiveBinding?.workspaceDir || workspaceDir,
+      contextUsage: effectiveBinding?.contextUsage,
       planMode: bindingActive ? activeRun?.mode === "plan" : undefined,
       threadNote,
       permissionNote:
-        pendingProfile && activeRun
-          ? buildPendingPermissionsMigrationNote(pendingProfile)
-          : undefined,
+        [
+          pendingProfile && activeRun
+            ? buildPendingPermissionsMigrationNote(pendingProfile)
+            : undefined,
+          permissionsRefreshNote,
+        ]
+          .filter(Boolean)
+          .join("\n") || undefined,
     });
   }
 
