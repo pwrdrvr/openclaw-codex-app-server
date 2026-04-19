@@ -963,6 +963,23 @@ function normalizePermissionsMode(value?: string | null): PermissionsMode {
   return value === "full-access" ? "full-access" : "default";
 }
 
+function inferPermissionsModeFromThreadState(
+  threadState: ThreadState | undefined,
+): PermissionsMode | undefined {
+  const approval = threadState?.approvalPolicy?.trim();
+  const sandbox = threadState?.sandbox?.trim();
+  if (!approval && !sandbox) {
+    return undefined;
+  }
+  return approval === "never" && sandbox === "danger-full-access"
+    ? "full-access"
+    : "default";
+}
+
+function describePermissionsMode(profile: PermissionsMode): string {
+  return profile === "full-access" ? "Full Access" : "Default";
+}
+
 function getBindingPermissionsMode(binding: StoredBinding | null): PermissionsMode {
   return normalizePermissionsMode(binding?.permissionsMode);
 }
@@ -2401,6 +2418,33 @@ export class CodexPluginController {
       mergeConversationPreferences(existing, this.buildPreferenceUpdatesFromOverrides(overrides)),
       overrides.requestedModel?.trim() || modelHint,
     );
+  }
+
+  private async syncBindingPermissionsModeFromThreadState(
+    binding: StoredBinding,
+    threadState: ThreadState | undefined,
+    context: string,
+  ): Promise<{ binding: StoredBinding; note?: string }> {
+    const liveProfile = inferPermissionsModeFromThreadState(threadState);
+    const storedProfile = this.getPermissionsMode(binding);
+    const pendingProfile = getBindingPendingPermissionsMode(binding);
+    if (!liveProfile || pendingProfile || liveProfile === storedProfile) {
+      return { binding };
+    }
+    const nextBinding = await this.persistBindingPermissionsMode(binding, liveProfile);
+    const conversation: ConversationTarget = {
+      channel: binding.conversation.channel,
+      accountId: binding.conversation.accountId,
+      conversationId: binding.conversation.conversationId,
+      parentConversationId: binding.conversation.parentConversationId,
+    };
+    this.api.logger.warn(
+      `codex refreshed binding permissions mode from live thread state ${this.formatConversationForLog(conversation)} stored=${storedProfile} live=${liveProfile} context=${context}`,
+    );
+    return {
+      binding: nextBinding,
+      note: `Permissions note: refreshed the stored mode from the live ${describePermissionsMode(liveProfile)} thread state.`,
+    };
   }
 
   private async reconcileThreadConfiguration(
@@ -6204,9 +6248,10 @@ export class CodexPluginController {
           threadId: binding.threadId,
         }),
       );
+    const liveProfile = inferPermissionsModeFromThreadState(state) ?? profile;
     const nextBinding: StoredBinding = {
       ...binding,
-      permissionsMode: profile,
+      permissionsMode: liveProfile,
       pendingPermissionsMode: undefined,
       workspaceDir: state.cwd?.trim() || binding.workspaceDir,
       threadTitle: state.threadName?.trim() || binding.threadTitle,
@@ -6602,6 +6647,15 @@ export class CodexPluginController {
       }).catch(() => []),
       this.resolveProjectFolder(binding?.workspaceDir || workspaceDir),
     ]);
+    const syncedBindingResult: { binding: StoredBinding | null; note?: string } =
+      binding && !activeRun
+        ? await this.syncBindingPermissionsModeFromThreadState(
+            binding,
+            threadState,
+            "render status",
+          )
+        : { binding };
+    binding = syncedBindingResult.binding;
     const effectiveThreadState = buildDesiredThreadConfiguration(threadState, binding).effectiveState;
     const displayThreadState =
       effectiveThreadState ??
@@ -6633,9 +6687,10 @@ export class CodexPluginController {
       planMode: bindingActive ? activeRun?.mode === "plan" : undefined,
       threadNote,
       permissionNote:
-        pendingProfile && activeRun
+        syncedBindingResult.note ??
+        (pendingProfile && activeRun
           ? buildPendingPermissionsMigrationNote(pendingProfile)
-          : undefined,
+          : undefined),
     });
   }
 
