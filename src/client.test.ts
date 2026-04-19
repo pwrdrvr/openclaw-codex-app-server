@@ -163,6 +163,53 @@ describe("buildTurnSteerPayloads", () => {
   });
 });
 
+describe("full-access approval bypass", () => {
+  it("builds an accept response for full-access approval requests", () => {
+    expect(
+      __testing.buildAutoApprovedPendingInputResponse({
+        method: "commandExecution/requestApproval",
+        methodLower: "commandexecution/requestapproval",
+        requestParams: {
+          availableDecisions: ["accept", "decline"],
+        },
+        options: [],
+        approvalPolicy: "never",
+        sandbox: "danger-full-access",
+      }),
+    ).toEqual({ decision: "accept" });
+  });
+
+  it("does not bypass approvals outside full-access mode", () => {
+    expect(
+      __testing.buildAutoApprovedPendingInputResponse({
+        method: "commandExecution/requestApproval",
+        methodLower: "commandexecution/requestapproval",
+        requestParams: {
+          availableDecisions: ["accept", "decline"],
+        },
+        options: [],
+        approvalPolicy: "on-request",
+        sandbox: "workspace-write",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("falls back to session approval instead of declining when plain accept is unavailable", () => {
+    expect(
+      __testing.buildAutoApprovedPendingInputResponse({
+        method: "commandExecution/requestApproval",
+        methodLower: "commandexecution/requestapproval",
+        requestParams: {
+          availableDecisions: ["acceptForSession", "decline"],
+        },
+        options: [],
+        approvalPolicy: "never",
+        sandbox: "danger-full-access",
+      }),
+    ).toEqual({ decision: "acceptForSession" });
+  });
+});
+
 describe("buildThreadResumePayloads", () => {
   it("uses the canonical camelCase resume payload", () => {
     expect(
@@ -377,6 +424,148 @@ describe("CodexAppServerClient.startReview", () => {
       },
       1_000,
     );
+  });
+
+  it("auto-accepts approval requests for full-access reviews without pending input", async () => {
+    const request = vi.fn(async (method: string) => {
+      if (method === "review/start") {
+        return {
+          reviewThreadId: "thread-123",
+          runId: "turn-123",
+        };
+      }
+      return {
+        threadId: "thread-123",
+        approvalPolicy: "never",
+        sandbox: "danger-full-access",
+      };
+    });
+    const onPendingInput = vi.fn();
+    const client = new CodexAppServerClient(
+      {
+        enabled: true,
+        transport: "stdio",
+        command: "codex",
+        args: [],
+        requestTimeoutMs: 1_000,
+      },
+      {
+        debug: vi.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      },
+    );
+    (client as any).ensureConnected = vi.fn(async () => ({
+      client: {
+        connect: vi.fn(),
+        close: vi.fn(),
+        notify: vi.fn(),
+        request,
+        setNotificationHandler: vi.fn(),
+        setRequestHandler: vi.fn(),
+      },
+      initializeResult: {},
+    }));
+
+    const active = client.startReview({
+      sessionKey: "session-123",
+      workspaceDir: "/repo/openclaw",
+      threadId: "thread-123",
+      runId: "review-1",
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+      target: { type: "uncommittedChanges" },
+      onPendingInput,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    await expect(
+      (client as any).dispatchRequest("commandExecution/requestApproval", {
+        threadId: "thread-123",
+        runId: "turn-123",
+        requestId: "req-1",
+        availableDecisions: ["accept", "decline"],
+      }),
+    ).resolves.toEqual({ decision: "accept" });
+    expect(onPendingInput).not.toHaveBeenCalled();
+
+    await active.interrupt();
+    await active.result;
+  });
+});
+
+describe("CodexAppServerClient.startTurn", () => {
+  it("keeps default-mode approvals interactive", async () => {
+    const request = vi.fn(async (method: string) => {
+      if (method === "thread/start") {
+        return {
+          threadId: "thread-123",
+        };
+      }
+      if (method === "turn/start") {
+        return {
+          runId: "turn-123",
+        };
+      }
+      return {};
+    });
+    const onPendingInput = vi.fn();
+    const client = new CodexAppServerClient(
+      {
+        enabled: true,
+        transport: "stdio",
+        command: "codex",
+        args: [],
+        requestTimeoutMs: 1_000,
+      },
+      {
+        debug: vi.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      },
+    );
+    (client as any).ensureConnected = vi.fn(async () => ({
+      client: {
+        connect: vi.fn(),
+        close: vi.fn(),
+        notify: vi.fn(),
+        request,
+        setNotificationHandler: vi.fn(),
+        setRequestHandler: vi.fn(),
+      },
+      initializeResult: {},
+    }));
+
+    const active = client.startTurn({
+      sessionKey: "session-123",
+      prompt: "open the PR",
+      workspaceDir: "/repo/openclaw",
+      runId: "turn-1",
+      approvalPolicy: "on-request",
+      sandbox: "workspace-write",
+      onPendingInput,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const responsePromise = (client as any).dispatchRequest("commandExecution/requestApproval", {
+      threadId: "thread-123",
+      runId: "turn-123",
+      requestId: "req-1",
+      availableDecisions: ["accept", "decline"],
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(onPendingInput).toHaveBeenCalledTimes(1);
+
+    await expect(active.submitPendingInput(0)).resolves.toBe(true);
+    await expect(responsePromise).resolves.toEqual({ decision: "accept" });
+
+    await active.interrupt();
+    await active.result;
   });
 });
 
