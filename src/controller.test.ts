@@ -27,6 +27,10 @@ const telegramSdkState = vi.hoisted(() => ({
   resolveTelegramAccount: vi.fn(() => ({ accountId: "default", token: "telegram-token" })),
 }));
 
+const conversationRuntimeState = vi.hoisted(() => ({
+  getCurrentPluginConversationBinding: vi.fn(async () => null),
+}));
+
 vi.mock("openclaw/plugin-sdk/discord", () => ({
   buildDiscordComponentMessage: discordSdkState.buildDiscordComponentMessage,
   editDiscordComponentMessage: discordSdkState.editDiscordComponentMessage,
@@ -36,6 +40,10 @@ vi.mock("openclaw/plugin-sdk/discord", () => ({
 
 vi.mock("openclaw/plugin-sdk/telegram-account", () => ({
   resolveTelegramAccount: telegramSdkState.resolveTelegramAccount,
+}));
+
+vi.mock("openclaw/plugin-sdk/conversation-runtime", () => ({
+  getCurrentPluginConversationBinding: conversationRuntimeState.getCurrentPluginConversationBinding,
 }));
 
 function makeStateDir(): string {
@@ -647,6 +655,8 @@ beforeEach(() => {
   discordSdkState.registerBuiltDiscordComponentMessage.mockClear();
   discordSdkState.resolveDiscordAccount.mockClear();
   telegramSdkState.resolveTelegramAccount.mockClear();
+  conversationRuntimeState.getCurrentPluginConversationBinding.mockClear();
+  conversationRuntimeState.getCurrentPluginConversationBinding.mockResolvedValue(null);
   vi.spyOn(CodexAppServerClient.prototype, "logStartupProbe").mockResolvedValue();
   vi.stubGlobal(
     "fetch",
@@ -4138,8 +4148,45 @@ describe("Discord controller flows", () => {
     expect(startTurn).toHaveBeenCalled();
   });
 
-  it("does not claim inbound Discord messages when only core binding state exists", async () => {
-    const { controller } = await createControllerHarness();
+  it("recovers a missing local Discord binding from the runtime binding state", async () => {
+    const { controller, clientMock } = await createControllerHarness();
+    await (controller as any).store.upsertConversationEndpoint({
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:1481858418548412579",
+      },
+      endpointId: "windows-main",
+      updatedAt: Date.now(),
+    });
+    conversationRuntimeState.getCurrentPluginConversationBinding.mockImplementation(async () => ({
+      bindingId: "b1",
+      pluginId: "openclaw-codex-app-server",
+      pluginRoot: "/root/.openclaw/extensions/openclaw-codex-app-server",
+      channel: "discord",
+      accountId: "default",
+      conversationId: "channel:1481858418548412579",
+      boundAt: Date.now(),
+      summary: "Bind this conversation to Codex thread 019dab3f-09f7-7a42-8d10-1f2949ce6f30.",
+    } as any));
+    clientMock.readThreadState.mockResolvedValue({
+      threadId: "019dab3f-09f7-7a42-8d10-1f2949ce6f30",
+      threadName: "Discord Thread",
+      model: "openai/gpt-5.4",
+      cwd: "/repo/openclaw",
+      serviceTier: "default",
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+    });
+    const startTurn = vi.fn(() => ({
+      result: Promise.resolve({
+        threadId: "019dab3f-09f7-7a42-8d10-1f2949ce6f30",
+        text: "hello",
+      }),
+      getThreadId: () => "019dab3f-09f7-7a42-8d10-1f2949ce6f30",
+      queueMessage: vi.fn(async () => true),
+    }));
+    (controller as any).client.startTurn = startTurn;
 
     const result = await controller.handleInboundClaim({
       content: "who are you?",
@@ -4150,7 +4197,18 @@ describe("Discord controller flows", () => {
       metadata: { guildId: "guild-1" },
     });
 
-    expect(result).toEqual({ handled: false });
+    expect(result).toEqual({ handled: true });
+    expect(startTurn).toHaveBeenCalled();
+    expect((controller as any).store.getBinding({
+      channel: "discord",
+      accountId: "default",
+      conversationId: "channel:1481858418548412579",
+    })).toEqual(expect.objectContaining({
+      threadId: "019dab3f-09f7-7a42-8d10-1f2949ce6f30",
+      endpointId: "windows-main",
+      workspaceDir: "/repo/openclaw",
+      permissionsMode: "full-access",
+    }));
   });
 
   it("uses a raw Discord channel id for the typing lease on inbound claims", async () => {
