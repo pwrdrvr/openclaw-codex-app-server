@@ -135,6 +135,7 @@ Pre-release packages are published on matching npm dist-tags instead of `latest`
 | `/cas_status --fast`, `/cas_status --no-fast` | Change fast mode and refresh the status card. | Fast mode is only available on supported models such as GPT-5.4+. |
 | `/cas_status --yolo`, `/cas_status --no-yolo` | Change permissions mode and refresh the status card. | `--yolo` selects Full Access. |
 | `/cas_detach` | Unbind this conversation from Codex. | Stops routing plain text from this conversation into the bound thread. |
+| `/cas_reset` | Force-clear Codex state for this conversation. | Recovery command for stale binds; clears the binding plus pending bind/request/callback state, then tells you to run `/cas_resume`. |
 | `/cas_stop` | Interrupt the active Codex run. | Only applies when a turn is currently in progress. |
 | `/cas_steer <message>` | Send follow-up steer text to an active run. | Example: `/cas_steer focus on the failing tests first` |
 | `/cas_plan <goal>` | Ask Codex to plan instead of execute. | The plugin relays plan questions and the final plan back into chat. |
