@@ -16,6 +16,7 @@ import type {
   ReplyPayload,
   ConversationRef,
 } from "openclaw/plugin-sdk";
+import { getCurrentPluginConversationBinding } from "openclaw/plugin-sdk/conversation-runtime";
 import { resolvePluginSettings, resolveWorkspaceDir } from "./config.js";
 import { CodexAppServerModeClient, type ActiveCodexRun, isMissingThreadError } from "./client.js";
 import { getThreadDisplayTitle } from "./thread-display.js";
@@ -172,6 +173,7 @@ type ActiveRunRecord = {
 };
 
 const execFileAsync = promisify(execFile);
+const PLUGIN_ROOT_DIR = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const require = createRequire(import.meta.url);
 const TEXT_ATTACHMENT_FILE_EXTENSIONS = new Set([
   ".json",
@@ -2122,6 +2124,78 @@ export class CodexPluginController {
     return this.getClientForEndpoint();
   }
 
+  private toPluginBindingConversation(conversation: ConversationTarget): {
+    channel: string;
+    accountId: string;
+    conversationId: string;
+    parentConversationId?: string;
+    threadId?: string | number;
+  } {
+    return {
+      channel: conversation.channel,
+      accountId: conversation.accountId,
+      conversationId: conversation.conversationId,
+      parentConversationId: conversation.parentConversationId,
+      threadId: conversation.threadId,
+    };
+  }
+
+  private parseCodexThreadIdFromBindingSummary(summary?: string): string | null {
+    const trimmed = summary?.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const match = trimmed.match(/\b([0-9a-f]{8}-[0-9a-f-]{27})\b/i);
+    return match?.[1] ?? null;
+  }
+
+  private async tryRecoverMissingLocalBinding(
+    conversation: ConversationTarget,
+  ): Promise<StoredBinding | null> {
+    const runtimeBinding = await getCurrentPluginConversationBinding({
+      pluginRoot: PLUGIN_ROOT_DIR,
+      conversation: this.toPluginBindingConversation(conversation),
+    }).catch(() => null);
+    if (!runtimeBinding) {
+      return null;
+    }
+    const threadId = this.parseCodexThreadIdFromBindingSummary(runtimeBinding.summary);
+    if (!threadId) {
+      this.api.logger.debug?.(
+        `codex binding recovery skipped, runtime summary missing thread id conversation=${conversation.conversationId}`,
+      );
+      return null;
+    }
+    const threadState = await this.client
+      .readThreadState({
+        profile: "default",
+        sessionKey: buildPluginSessionKey(threadId),
+        threadId,
+      })
+      .catch(() => undefined);
+    const workspaceDir = threadState?.cwd?.trim();
+    if (!workspaceDir) {
+      this.api.logger.warn(
+        `codex binding recovery could not read workspace for conversation=${conversation.conversationId} thread=${threadId}`,
+      );
+      return null;
+    }
+    const permissionsMode =
+      threadState?.approvalPolicy?.trim() === "never" &&
+      threadState?.sandbox?.trim() === "danger-full-access"
+        ? "full-access"
+        : "default";
+    const recovered = await this.bindConversation(conversation, {
+      threadId,
+      workspaceDir,
+      threadTitle: threadState?.threadName?.trim() || undefined,
+      permissionsMode,
+    });
+    this.api.logger.warn(
+      `codex recovered missing local binding conversation=${conversation.conversationId} thread=${threadId}`,
+    );
+    return recovered;
+  }
   async handleConversationBindingResolved(
     event: PluginConversationBindingResolvedEvent,
   ): Promise<void> {
@@ -2144,6 +2218,12 @@ export class CodexPluginController {
     };
     const pending = this.store.getPendingBind(conversation);
     if (!pending) {
+      if (event.status === "approved") {
+        const recovered = await this.tryRecoverMissingLocalBinding(conversation);
+        if (recovered) {
+          return;
+        }
+      }
       this.api.logger.debug?.(
         `codex binding approved without pending local bind conversation=${conversation.conversationId}`,
       );
@@ -2293,7 +2373,11 @@ export class CodexPluginController {
       }
       const existingBinding = this.store.getBinding(conversation);
       const hydratedBinding = existingBinding ? null : await this.hydrateApprovedBinding(conversation);
-      const resolvedBinding = existingBinding ?? hydratedBinding?.binding ?? null;
+      const recoveredBinding =
+        existingBinding || hydratedBinding?.binding
+          ? null
+          : await this.tryRecoverMissingLocalBinding(conversation);
+      const resolvedBinding = existingBinding ?? hydratedBinding?.binding ?? recoveredBinding ?? null;
       this.api.logger.debug?.(
         `codex inbound claim channel=${conversation.channel} account=${conversation.accountId} conversation=${conversation.conversationId} parent=${conversation.parentConversationId ?? "<none>"} local=${resolvedBinding ? "yes" : "no"}`,
       );
@@ -2687,6 +2771,15 @@ export class CodexPluginController {
           text: detachResult?.removed
             ? "Detached this conversation from Codex."
             : "This conversation is not currently bound to Codex.",
+        };
+      case "cas_reset":
+        if (!conversation) {
+          return { text: "This command needs a Telegram or Discord conversation." };
+        }
+        await bindingApi.detachConversationBinding?.().catch(() => undefined);
+        await this.unbindConversation(conversation);
+        return {
+          text: "Reset Codex conversation state for this chat. The binding, pending requests, and stale callbacks were cleared. Run /cas_resume to bind again.",
         };
       case "cas_status":
         return await this.handleStatusCommand(
