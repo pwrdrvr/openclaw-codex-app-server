@@ -1,6 +1,7 @@
 export const COMMANDS = [
   ["cas_resume", "Resume or create a Codex thread, with optional model, fast mode, and permissions overrides."],
   ["cas_detach", "Detach this conversation from the current Codex thread."],
+  ["cas_reset", "Force-clear Codex binding state for this conversation and detach it."],
   ["cas_status", "Show Codex status and controls, or apply model, fast mode, and permissions overrides."],
   ["cas_stop", "Stop the active Codex turn."],
   ["cas_steer", "Send a steer message to the active Codex turn."],
