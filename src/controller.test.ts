@@ -4051,6 +4051,46 @@ describe("Discord controller flows", () => {
     expect(result).toEqual({ handled: false });
   });
 
+  it("claims inbound Telegram topic messages when the event carries chat id plus thread id", async () => {
+    const { controller } = await createControllerHarness();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123:topic:456",
+        parentConversationId: "123",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+    const startTurn = vi.fn(() => ({
+      result: Promise.resolve({
+        threadId: "thread-1",
+        text: "hello",
+      }),
+      getThreadId: () => "thread-1",
+      queueMessage: vi.fn(async () => true),
+      interrupt: vi.fn(async () => {}),
+      isAwaitingInput: () => false,
+      submitPendingInput: vi.fn(async () => false),
+      submitPendingInputPayload: vi.fn(async () => false),
+    }));
+    (controller as any).client.startTurn = startTurn;
+
+    const result = await controller.handleInboundClaim({
+      content: "There?",
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+      threadId: 456,
+    });
+
+    expect(result).toEqual({ handled: true });
+    expect(startTurn).toHaveBeenCalled();
+  });
+
   it("uses a raw Discord channel id for the typing lease on inbound claims", async () => {
     const { controller, discordTypingStart } = await createControllerHarness();
     await (controller as any).store.upsertBinding({
