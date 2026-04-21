@@ -4046,6 +4046,129 @@ describe("Discord controller flows", () => {
     expect(startTurn).toHaveBeenCalled();
   });
 
+  it("routes Discord thread inbound claims to the thread conversation instead of the parent channel", async () => {
+    const { controller } = await createControllerHarness();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:thread-2",
+        parentConversationId: "channel:parent-1",
+        threadId: "thread-2",
+      },
+      sessionKey: "session-2",
+      threadId: "codex-thread-2",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+    const startTurn = vi.fn(() => ({
+      result: Promise.resolve({
+        threadId: "codex-thread-2",
+        text: "hello from thread 2",
+      }),
+      getThreadId: () => "codex-thread-2",
+      queueMessage: vi.fn(async () => true),
+    }));
+    (controller as any).client.startTurn = startTurn;
+
+    const result = await controller.handleInboundClaim({
+      content: "message from second discord thread",
+      channel: "discord",
+      accountId: "default",
+      conversationId: "parent-1",
+      parentConversationId: "parent-1",
+      threadId: "thread-2",
+      isGroup: true,
+      metadata: { guildId: "guild-1" },
+    });
+
+    expect(result).toEqual({ handled: true });
+    expect(startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        binding: expect.objectContaining({
+          threadId: "codex-thread-2",
+          workspaceDir: "/repo/openclaw",
+        }),
+        conversation: expect.objectContaining({
+          conversationId: "channel:thread-2",
+          parentConversationId: "channel:parent-1",
+          threadId: "thread-2",
+        }),
+      }),
+    );
+  });
+
+  it("keeps Discord bindings for sibling threads distinct when inbound events arrive from the same parent channel", async () => {
+    const { controller } = await createControllerHarness();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:thread-a",
+        parentConversationId: "channel:parent-1",
+        threadId: "thread-a",
+      },
+      sessionKey: "session-a",
+      threadId: "codex-thread-a",
+      workspaceDir: "/repo/a",
+      updatedAt: Date.now(),
+    });
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:thread-b",
+        parentConversationId: "channel:parent-1",
+        threadId: "thread-b",
+      },
+      sessionKey: "session-b",
+      threadId: "codex-thread-b",
+      workspaceDir: "/repo/b",
+      updatedAt: Date.now(),
+    });
+    const startTurn = vi.fn((params: any) => ({
+      result: Promise.resolve({
+        threadId: params.binding?.threadId ?? "unknown",
+        text: "ok",
+      }),
+      getThreadId: () => params.binding?.threadId ?? "unknown",
+      queueMessage: vi.fn(async () => true),
+    }));
+    (controller as any).client.startTurn = startTurn;
+
+    const resultA = await controller.handleInboundClaim({
+      content: "from thread A",
+      channel: "discord",
+      accountId: "default",
+      conversationId: "parent-1",
+      parentConversationId: "parent-1",
+      threadId: "thread-a",
+      isGroup: true,
+      metadata: { guildId: "guild-1" },
+    });
+    const resultB = await controller.handleInboundClaim({
+      content: "from thread B",
+      channel: "discord",
+      accountId: "default",
+      conversationId: "parent-1",
+      parentConversationId: "parent-1",
+      threadId: "thread-b",
+      isGroup: true,
+      metadata: { guildId: "guild-1" },
+    });
+
+    expect(resultA).toEqual({ handled: true });
+    expect(resultB).toEqual({ handled: true });
+    expect(startTurn).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ binding: expect.objectContaining({ threadId: "codex-thread-a" }) }),
+    );
+    expect(startTurn).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ binding: expect.objectContaining({ threadId: "codex-thread-b" }) }),
+    );
+  });
+
   it("recovers a missing local Discord binding from the runtime binding state", async () => {
     const { controller, clientMock } = await createControllerHarness();
     await (controller as any).store.upsertConversationEndpoint({
@@ -4106,6 +4229,79 @@ describe("Discord controller flows", () => {
       endpointId: "windows-main",
       workspaceDir: "/repo/openclaw",
       permissionsMode: "full-access",
+    }));
+  });
+
+  it("recovers an approved Discord binding event when no pending local bind exists", async () => {
+    const { controller, clientMock } = await createControllerHarness();
+    const codexThreadId = "019dab3f-09f7-7a42-8d10-1f2949ce6f30";
+    conversationRuntimeState.getCurrentPluginConversationBinding.mockImplementation(async () => ({
+      bindingId: "b1",
+      pluginId: "openclaw-codex-app-server",
+      pluginRoot: "/root/.openclaw/extensions/openclaw-codex-app-server",
+      channel: "discord",
+      accountId: "default",
+      conversationId: "channel:1485612939816996900",
+      parentConversationId: "channel:1485612939816996956",
+      threadId: "1485612939816996900",
+      boundAt: Date.now(),
+      summary: `Bind this conversation to Codex thread ${codexThreadId}.`,
+    } as any));
+    clientMock.readThreadState.mockResolvedValue({
+      threadId: codexThreadId,
+      threadName: "Discord Thread",
+      model: "openai/gpt-5.4",
+      cwd: "/repo/openclaw",
+      serviceTier: "default",
+      approvalPolicy: "on-request",
+      sandbox: "workspace-write",
+    });
+
+    await controller.handleConversationBindingResolved({
+      status: "approved",
+      binding: {
+        bindingId: "binding-1",
+        pluginId: "openclaw-codex-app-server",
+        pluginRoot: "/plugins/codex",
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:1485612939816996900",
+        parentConversationId: "channel:1485612939816996956",
+        threadId: "1485612939816996900",
+        boundAt: Date.now(),
+      },
+      decision: "allow-once",
+      request: {
+        summary: `Bind this conversation to Codex thread ${codexThreadId}.`,
+        conversation: {
+          channel: "discord",
+          accountId: "default",
+          conversationId: "channel:1485612939816996900",
+          parentConversationId: "channel:1485612939816996956",
+          threadId: "1485612939816996900",
+        },
+      },
+    } as any);
+
+    expect(conversationRuntimeState.getCurrentPluginConversationBinding).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversation: expect.objectContaining({
+          channel: "discord",
+          conversationId: "channel:1485612939816996900",
+          parentConversationId: "channel:1485612939816996956",
+          threadId: "1485612939816996900",
+        }),
+      }),
+    );
+    expect((controller as any).store.getBinding({
+      channel: "discord",
+      accountId: "default",
+      conversationId: "channel:1485612939816996900",
+      parentConversationId: "channel:1485612939816996956",
+      threadId: "1485612939816996900",
+    })).toEqual(expect.objectContaining({
+      threadId: codexThreadId,
+      workspaceDir: "/repo/openclaw",
     }));
   });
 
@@ -4679,15 +4875,16 @@ describe("Discord controller flows", () => {
     );
   });
 
-  it("does not forward Discord thread ids into outbound adapter sends", async () => {
+  it("routes Discord thread replies through the parent channel with a thread id", async () => {
     const { controller, discordOutbound } = await createControllerHarnessWithoutLegacyDiscordRuntime();
 
     const sent = await (controller as any).sendReply(
       {
         channel: "discord",
         accountId: "default",
-        conversationId: "channel:1485612939816996956",
-        threadId: 1485612939816996900,
+        conversationId: "channel:1485612939816996900",
+        parentConversationId: "channel:1485612939816996956",
+        threadId: "1485612939816996900",
       },
       {
         text: "hello from a bound discord thread",
@@ -4700,7 +4897,7 @@ describe("Discord controller flows", () => {
       | undefined;
     expect(outboundCall?.to).toBe("channel:1485612939816996956");
     expect(outboundCall?.accountId).toBe("default");
-    expect("threadId" in (outboundCall ?? {})).toBe(false);
+    expect(outboundCall?.threadId).toBe("1485612939816996900");
   });
 
   it("restarts a Discord bound run when the active queue path fails", async () => {

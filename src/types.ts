@@ -569,7 +569,7 @@ export type StoreSnapshot = {
 };
 
 export type ConversationTarget = ConversationRef & {
-  threadId?: number;
+  threadId?: number | string;
 };
 
 export type CommandButtons = PluginInteractiveButtons;
