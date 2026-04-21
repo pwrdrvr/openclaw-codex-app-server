@@ -216,6 +216,54 @@ type PutCallbackInput =
       ttlMs?: number;
     };
 
+function normalizeDiscordConversationAlias(raw: string | number | undefined): string | undefined {
+  if (raw == null) {
+    return undefined;
+  }
+  const trimmed = String(raw).trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  if (trimmed.startsWith("channel:") || trimmed.startsWith("user:")) {
+    return trimmed;
+  }
+  return `channel:${trimmed}`;
+}
+
+function getConversationScopeAliases(target: ConversationTarget): Set<string> {
+  const aliases = new Set<string>();
+  const conversationId = target.conversationId.trim();
+  if (conversationId) {
+    aliases.add(conversationId);
+  }
+  if (target.channel.trim().toLowerCase() !== "discord") {
+    return aliases;
+  }
+  const threadConversationId = normalizeDiscordConversationAlias(target.threadId);
+  if (threadConversationId) {
+    aliases.add(threadConversationId);
+  }
+  return aliases;
+}
+
+function matchesConversationScope(target: ConversationTarget, candidate: ConversationTarget): boolean {
+  const targetChannel = target.channel.trim().toLowerCase();
+  if (targetChannel !== candidate.channel.trim().toLowerCase()) {
+    return false;
+  }
+  if (target.accountId.trim() !== candidate.accountId.trim()) {
+    return false;
+  }
+  if (targetChannel !== "discord") {
+    return toConversationKey(target) === toConversationKey(candidate);
+  }
+  const aliases = getConversationScopeAliases(target);
+  if (aliases.size === 0) {
+    return false;
+  }
+  return aliases.has(candidate.conversationId.trim());
+}
+
 function toConversationKey(target: ConversationTarget): string {
   const channel = target.channel.trim().toLowerCase();
   return [
@@ -388,6 +436,12 @@ export class PluginStateStore {
     return [...this.snapshot.bindings];
   }
 
+  listBindingsForConversationScope(target: ConversationTarget): StoredBinding[] {
+    return this.snapshot.bindings.filter((entry) =>
+      matchesConversationScope(target, entry.conversation as ConversationTarget),
+    );
+  }
+
   getBinding(target: ConversationTarget): StoredBinding | null {
     const key = toConversationKey(target);
     return this.snapshot.bindings.find((entry) => toConversationKey(entry.conversation) === key) ?? null;
@@ -432,18 +486,17 @@ export class PluginStateStore {
   }
 
   async removeBinding(target: ConversationTarget): Promise<void> {
-    const key = toConversationKey(target);
     this.snapshot.bindings = this.snapshot.bindings.filter(
-      (entry) => toConversationKey(entry.conversation) !== key,
+      (entry) => !matchesConversationScope(target, entry.conversation as ConversationTarget),
     );
     this.snapshot.pendingBinds = this.snapshot.pendingBinds.filter(
-      (entry) => toConversationKey(entry.conversation) !== key,
+      (entry) => !matchesConversationScope(target, entry.conversation as ConversationTarget),
     );
     this.snapshot.pendingRequests = this.snapshot.pendingRequests.filter(
-      (entry) => toConversationKey(entry.conversation) !== key,
+      (entry) => !matchesConversationScope(target, entry.conversation as ConversationTarget),
     );
     this.snapshot.callbacks = this.snapshot.callbacks.filter(
-      (entry) => toConversationKey(entry.conversation) !== key,
+      (entry) => !matchesConversationScope(target, entry.conversation as ConversationTarget),
     );
     await this.save();
   }
