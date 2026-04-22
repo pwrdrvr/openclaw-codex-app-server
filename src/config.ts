@@ -83,6 +83,7 @@ export function resolvePluginSettings(rawConfig: unknown): PluginSettings {
     const fallbackId = index === 0 ? "default" : `endpoint-${index + 1}`;
     return {
       id: normalizeEndpointId(readString(entry, "id"), fallbackId),
+      execNodes: readStringArray(entry, "execNodes"),
       transport,
       command: readString(entry, "command") ?? "codex",
       args: readStringArray(entry, "args"),
@@ -107,6 +108,7 @@ export function resolvePluginSettings(rawConfig: unknown): PluginSettings {
       : [
           {
             id: "default",
+            execNodes: readStringArray(record, "execNodes"),
             transport: legacyTransport,
             command: readString(record, "command") ?? "codex",
             args: readStringArray(record, "args"),

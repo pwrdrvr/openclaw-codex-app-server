@@ -19,6 +19,12 @@
       "command": {
         "type": "string"
       },
+      "execNodes": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
       "args": {
         "type": "array",
         "items": {
@@ -62,6 +68,12 @@
             },
             "command": {
               "type": "string"
+            },
+            "execNodes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
             },
             "args": {
               "type": "array",
@@ -113,6 +125,10 @@
     "command": {
       "label": "Codex Command",
       "help": "Used for stdio mode. Defaults to codex."
+    },
+    "execNodes": {
+      "label": "Exec Node Aliases",
+      "advanced": true
     },
     "args": {
       "label": "Codex Args",
