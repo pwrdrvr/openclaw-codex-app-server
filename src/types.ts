@@ -13,6 +13,7 @@ export type PermissionsMode = "default" | "full-access";
 
 export type EndpointSettings = {
   id?: string;
+  execNodes?: string[];
   transport: CodexTransport;
   command: string;
   args: string[];

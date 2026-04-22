@@ -1323,6 +1323,11 @@ type WorkspaceChoice = {
   latestUpdatedAt?: number;
 };
 
+type AgentExecContext = {
+  host?: string;
+  node?: string;
+};
+
 function listWorkspaceChoices(
   threads: Array<{ projectKey?: string; createdAt?: number; updatedAt?: number }>,
   projectName?: string,
@@ -1434,6 +1439,7 @@ export class CodexPluginController {
     defaultModel: string | null;
     endpoints: Array<{
       id: string;
+      execNodes: string[];
       transport: string;
       url: string | null;
       command: string;
@@ -1449,6 +1455,7 @@ export class CodexPluginController {
       defaultModel: this.settings.defaultModel ?? null,
       endpoints: this.settings.endpoints.map((endpoint, index) => ({
         id: endpoint.id ?? `endpoint-${index + 1}`,
+        execNodes: [...(endpoint.execNodes ?? [])],
         transport: endpoint.transport,
         url: endpoint.url ?? null,
         command: endpoint.command,
@@ -1462,6 +1469,7 @@ export class CodexPluginController {
   async listAgentThreads(params: {
     sessionKey?: string;
     endpointId?: string;
+    execContext?: AgentExecContext;
     workspaceDir?: string;
     includeAllWorkspaces?: boolean;
     filter?: string;
@@ -1474,7 +1482,7 @@ export class CodexPluginController {
     threads: Awaited<ReturnType<CodexAppServerModeClient["listThreads"]>>;
   }> {
     await this.start();
-    const endpointId = this.resolveAgentEndpointId(params.endpointId);
+    const endpointId = this.resolveAgentEndpointId(params.endpointId, params.execContext);
     const permissionsMode = this.resolveAgentPermissionsMode(endpointId, params.permissionsMode);
     const workspaceDir = params.includeAllWorkspaces
       ? undefined
@@ -1501,6 +1509,7 @@ export class CodexPluginController {
   async readAgentThreadContext(params: {
     sessionKey?: string;
     endpointId?: string;
+    execContext?: AgentExecContext;
     threadId: string;
     permissionsMode?: PermissionsMode;
   }): Promise<{
@@ -1511,7 +1520,7 @@ export class CodexPluginController {
     context: Awaited<ReturnType<CodexAppServerModeClient["readThreadContext"]>>;
   }> {
     await this.start();
-    const endpointId = this.resolveAgentEndpointId(params.endpointId);
+    const endpointId = this.resolveAgentEndpointId(params.endpointId, params.execContext);
     const permissionsMode = this.resolveAgentPermissionsMode(endpointId, params.permissionsMode);
     const threadId = params.threadId.trim();
     const client = this.getClientForEndpoint(endpointId);
@@ -1539,6 +1548,7 @@ export class CodexPluginController {
   async runAgentTask(params: {
     sessionKey?: string;
     endpointId?: string;
+    execContext?: AgentExecContext;
     prompt: string;
     workspaceDir?: string;
     threadId?: string;
@@ -1562,7 +1572,7 @@ export class CodexPluginController {
     result: TurnResult;
   }> {
     await this.start();
-    const endpointId = this.resolveAgentEndpointId(params.endpointId);
+    const endpointId = this.resolveAgentEndpointId(params.endpointId, params.execContext);
     const permissionsMode = this.resolveAgentPermissionsMode(endpointId, params.permissionsMode);
     const workspaceDir = resolveWorkspaceDir({
       requested: params.workspaceDir,
@@ -1662,15 +1672,39 @@ export class CodexPluginController {
     };
   }
 
-  private resolveAgentEndpointId(endpointId?: string): string {
+  private resolveAgentEndpointId(endpointId?: string, execContext?: AgentExecContext): string {
     const requested = endpointId?.trim();
-    if (!requested) {
-      return this.settings.defaultEndpoint;
+    if (requested) {
+      if (!this.settings.endpoints.some((entry) => entry.id === requested)) {
+        throw new Error(`Unknown Codex endpoint: ${requested}`);
+      }
+      return requested;
     }
-    if (!this.settings.endpoints.some((entry) => entry.id === requested)) {
-      throw new Error(`Unknown Codex endpoint: ${requested}`);
+    const inferred = this.resolveEndpointIdFromExecContext(execContext);
+    if (inferred) {
+      return inferred;
     }
-    return requested;
+    return this.settings.defaultEndpoint;
+  }
+
+  private resolveEndpointIdFromExecContext(execContext?: AgentExecContext): string | undefined {
+    const host = execContext?.host?.trim().toLowerCase();
+    if (host !== "node") {
+      return undefined;
+    }
+    const node = execContext?.node?.trim();
+    if (!node) {
+      return undefined;
+    }
+    const normalizedNode = node.toLowerCase();
+    const exactMatch = this.settings.endpoints.find((entry) => entry.id?.trim().toLowerCase() === normalizedNode);
+    if (exactMatch?.id) {
+      return exactMatch.id;
+    }
+    const aliasMatch = this.settings.endpoints.find((entry) =>
+      (entry.execNodes ?? []).some((alias) => alias.trim().toLowerCase() === normalizedNode),
+    );
+    return aliasMatch?.id;
   }
 
   private resolveAgentPermissionsMode(
