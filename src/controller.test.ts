@@ -2377,6 +2377,99 @@ describe("Discord controller flows", () => {
     expect(buttons[1][1].text).toBe("Permissions: toggle");
   });
 
+  it("clears a dead binding when status reads hit a missing thread", async () => {
+    const { controller, api, clientMock } = await createControllerHarness();
+    const conversation = {
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+    } as const;
+    const binding = {
+      conversation,
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    };
+    clientMock.readThreadState.mockRejectedValue(
+      new Error("codex app server rpc error (-32600): no rollout found for thread id thread-1"),
+    );
+    await (controller as any).store.upsertBinding(binding);
+    await (controller as any).store.upsertPendingRequest({
+      requestId: "pending-1",
+      conversation,
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      state: {
+        requestId: "pending-1",
+        options: ["Approve Once", "Cancel"],
+        expiresAt: Date.now() + 60_000,
+      },
+      updatedAt: Date.now(),
+    });
+    const callback = await (controller as any).store.putCallback({
+      kind: "refresh-status",
+      conversation,
+    });
+
+    const reply = await controller.handleCommand(
+      "cas_status",
+      buildTelegramCommandContext({
+        commandBody: "/cas_status",
+        getCurrentConversationBinding: vi.fn(async () => ({ bindingId: "b1" })),
+      }),
+    );
+
+    expect(reply.text).toContain("Binding: none");
+    expect((controller as any).store.getBinding(conversation)).toBeNull();
+    expect((controller as any).store.getPendingRequestByConversation(conversation)).toBeNull();
+    expect((controller as any).store.getCallback(callback.token)).toBeNull();
+    expect(api.logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("codex clearing stale binding"),
+    );
+  });
+
+  it("does not restore a dead binding when cas_status applies overrides", async () => {
+    const { controller, api, clientMock } = await createControllerHarness();
+    const conversation = {
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+    } as const;
+    const binding = {
+      conversation,
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      preferences: {
+        preferredModel: "openai/gpt-5.4",
+        updatedAt: Date.now(),
+      },
+      updatedAt: Date.now(),
+    };
+    clientMock.readThreadState.mockRejectedValue(
+      new Error("codex app server rpc error (-32600): no rollout found for thread id thread-1"),
+    );
+    await (controller as any).store.upsertBinding(binding);
+
+    const reply = await controller.handleCommand(
+      "cas_status",
+      buildTelegramCommandContext({
+        args: "--model openai/gpt-5.4-mini",
+        commandBody: "/cas_status --model openai/gpt-5.4-mini",
+        getCurrentConversationBinding: vi.fn(async () => ({ bindingId: "b1" })),
+      }),
+    );
+
+    expect(reply).toEqual({
+      text: "Bind this conversation to Codex before changing status settings.",
+    });
+    expect((controller as any).store.getBinding(conversation)).toBeNull();
+    expect(api.logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("codex clearing stale binding"),
+    );
+  });
+
   it("hides the fast button on status controls when the current model does not support it", async () => {
     const { controller, sendMessageTelegram } = await createControllerHarness();
     await (controller as any).store.upsertBinding({
@@ -3725,6 +3818,64 @@ describe("Discord controller flows", () => {
     });
   });
 
+  it("clears sibling resume-thread callbacks once a resume selection enters pending approval", async () => {
+    const { controller } = await createControllerHarness();
+    const conversation = {
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123:topic:456",
+      parentConversationId: "123",
+    } as const;
+    const first = await (controller as any).store.putCallback({
+      kind: "resume-thread",
+      conversation,
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+    });
+    const second = await (controller as any).store.putCallback({
+      kind: "resume-thread",
+      conversation,
+      threadId: "thread-2",
+      workspaceDir: "/repo/openclaw",
+    });
+    const pickerView = await (controller as any).store.putCallback({
+      kind: "picker-view",
+      conversation,
+      view: {
+        mode: "threads",
+        page: 0,
+      },
+    });
+
+    await controller.handleTelegramInteractive({
+      ...conversation,
+      threadId: 456,
+      requestConversationBinding: vi.fn(async () => ({
+        status: "pending" as const,
+        reply: {
+          text: "Plugin bind approval required",
+          channelData: {
+            telegram: {
+              buttons: [[{ text: "Allow once", callback_data: "pluginbind:approval:o" }]],
+            },
+          },
+        },
+      })),
+      callback: {
+        payload: first.token,
+      },
+      respond: {
+        clearButtons: vi.fn(async () => {}),
+        reply: vi.fn(async () => {}),
+        editMessage: vi.fn(async () => {}),
+      },
+    } as any);
+
+    expect((controller as any).store.getCallback(first.token)).toBeNull();
+    expect((controller as any).store.getCallback(second.token)).toBeNull();
+    expect((controller as any).store.getCallback(pickerView.token)?.kind).toBe("picker-view");
+  });
+
   it("renders Telegram bind approval buttons from interactive reply blocks", async () => {
     const { controller } = await createControllerHarness();
     const callback = await (controller as any).store.putCallback({
@@ -4049,6 +4200,46 @@ describe("Discord controller flows", () => {
     });
 
     expect(result).toEqual({ handled: false });
+  });
+
+  it("claims inbound Telegram topic messages when the event carries chat id plus thread id", async () => {
+    const { controller } = await createControllerHarness();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123:topic:456",
+        parentConversationId: "123",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+    const startTurn = vi.fn(() => ({
+      result: Promise.resolve({
+        threadId: "thread-1",
+        text: "hello",
+      }),
+      getThreadId: () => "thread-1",
+      queueMessage: vi.fn(async () => true),
+      interrupt: vi.fn(async () => {}),
+      isAwaitingInput: () => false,
+      submitPendingInput: vi.fn(async () => false),
+      submitPendingInputPayload: vi.fn(async () => false),
+    }));
+    (controller as any).client.startTurn = startTurn;
+
+    const result = await controller.handleInboundClaim({
+      content: "There?",
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+      threadId: 456,
+    });
+
+    expect(result).toEqual({ handled: true });
+    expect(startTurn).toHaveBeenCalled();
   });
 
   it("uses a raw Discord channel id for the typing lease on inbound claims", async () => {
@@ -4841,6 +5032,100 @@ describe("Discord controller flows", () => {
     expect(staleQueueMessage).not.toHaveBeenCalled();
     expect(staleInterrupt).toHaveBeenCalled();
     expect(startTurn).toHaveBeenCalled();
+  });
+
+  it("drops a dead bound thread before starting a new turn", async () => {
+    const { controller, clientMock } = await createControllerHarness();
+    const conversation = {
+      channel: "discord",
+      accountId: "default",
+      conversationId: "channel:chan-1",
+    } as const;
+    const binding = {
+      conversation,
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    };
+    clientMock.readThreadState.mockRejectedValue(
+      new Error("codex app server rpc error (-32600): no rollout found for thread id thread-1"),
+    );
+    await (controller as any).store.upsertBinding(binding);
+    const startTurn = vi.fn(() => ({
+      result: new Promise(() => {}),
+      getThreadId: () => undefined,
+      queueMessage: vi.fn(async () => true),
+      interrupt: vi.fn(async () => {}),
+      isAwaitingInput: () => false,
+      submitPendingInput: vi.fn(async () => false),
+      submitPendingInputPayload: vi.fn(async () => false),
+    }));
+    (controller as any).client.startTurn = startTurn;
+
+    await (controller as any).startTurn({
+      conversation,
+      binding,
+      workspaceDir: "/repo/openclaw",
+      prompt: "who are you?",
+      reason: "command",
+    });
+
+    expect(startTurn).toHaveBeenCalledWith(expect.objectContaining({
+      sessionKey: undefined,
+      existingThreadId: undefined,
+    }));
+    expect((controller as any).store.getBinding(conversation)).toBeNull();
+  });
+
+  it("keeps the saved binding when preflight thread verification fails for a generic error", async () => {
+    const { controller, api, clientMock } = await createControllerHarness();
+    const conversation = {
+      channel: "discord",
+      accountId: "default",
+      conversationId: "channel:chan-1",
+    } as const;
+    const binding = {
+      conversation,
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    };
+    clientMock.readThreadState.mockRejectedValue(new Error("rpc timeout"));
+    await (controller as any).store.upsertBinding(binding);
+    const startTurn = vi.fn(() => ({
+      result: new Promise(() => {}),
+      getThreadId: () => undefined,
+      queueMessage: vi.fn(async () => true),
+      interrupt: vi.fn(async () => {}),
+      isAwaitingInput: () => false,
+      submitPendingInput: vi.fn(async () => false),
+      submitPendingInputPayload: vi.fn(async () => false),
+    }));
+    (controller as any).client.startTurn = startTurn;
+
+    await (controller as any).startTurn({
+      conversation,
+      binding,
+      workspaceDir: "/repo/openclaw",
+      prompt: "who are you?",
+      reason: "command",
+    });
+
+    expect(startTurn).toHaveBeenCalledWith(expect.objectContaining({
+      sessionKey: "session-1",
+      existingThreadId: "thread-1",
+    }));
+    expect((controller as any).store.getBinding(conversation)).toEqual(
+      expect.objectContaining({
+        sessionKey: "session-1",
+        threadId: "thread-1",
+      }),
+    );
+    expect(api.logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("codex could not verify bound thread before start turn (command)"),
+    );
   });
 
   it("does not send the plan keepalive after a questionnaire is already visible", async () => {
