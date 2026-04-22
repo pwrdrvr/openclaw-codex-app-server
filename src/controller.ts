@@ -639,9 +639,11 @@ function toConversationTargetFromInbound(event: {
   const parentConversationId =
     channel === "discord"
       ? normalizeDiscordConversationId(event.parentConversationId)
-      : channel === "telegram" && telegramThreadId != null
-        ? normalizeTelegramChatId(event.parentConversationId) ??
-          normalizeTelegramChatId(conversationIdRaw)?.split(":topic:")[0]
+      : channel === "telegram"
+        ? telegramThreadId != null
+          ? normalizeTelegramChatId(event.parentConversationId) ??
+            normalizeTelegramChatId(conversationIdRaw)?.split(":topic:")[0]
+          : undefined  // DM: no topic, parentConversationId not needed for key matching
       : event.parentConversationId;
   if (!conversationId) {
     return null;
@@ -1590,6 +1592,29 @@ export class CodexPluginController {
         `codex inbound claim channel=${conversation.channel} account=${conversation.accountId} conversation=${conversation.conversationId} parent=${conversation.parentConversationId ?? "<none>"} local=${resolvedBinding ? "yes" : "no"}`,
       );
       if (!resolvedBinding) {
+        // Check if OpenClaw still has us registered as the handler for this conversation.
+        // If so, our internal state was cleared (stale thread) without properly detaching from
+        // OpenClaw. Detach now and notify the user so they can run /cas_resume.
+        const conversationRef = {
+          channel: conversation.channel,
+          accountId: conversation.accountId,
+          conversationId: conversation.conversationId,
+        };
+        const sessionBindingSvc = await this.loadSessionBindingService().catch(() => null);
+        const activeBinding = sessionBindingSvc?.resolveByConversation(conversationRef) ?? null;
+        if (activeBinding) {
+          this.api.logger.warn(
+            `codex inbound claim detaching stale openclaw binding ${this.formatConversationForLog(conversation)}`,
+          );
+          await sessionBindingSvc!
+            .unbind({ bindingId: activeBinding.bindingId, reason: "stale-cleared" })
+            .catch(() => undefined);
+          await this.sendText(
+            conversation,
+            "\u26a0\ufe0f Codex session expired. Run /cas_resume to start a new thread.",
+          ).catch(() => undefined);
+          return { handled: true };
+        }
         return { handled: false };
       }
       if (hydratedBinding?.pendingBind?.syncTopic) {
@@ -5259,6 +5284,26 @@ export class CodexPluginController {
       }
       return undefined;
     }
+  }
+
+
+  private async loadSessionBindingService(): Promise<{
+    resolveByConversation: (ref: { channel: string; accountId: string; conversationId: string }) => { bindingId: string } | null;
+    unbind: (input: { bindingId: string; reason?: string }) => Promise<unknown>;
+  }> {
+    type SessionBindingRuntimeModule = {
+      getSessionBindingService: () => {
+        resolveByConversation: (ref: { channel: string; accountId: string; conversationId: string }) => { bindingId: string } | null;
+        unbind: (input: { bindingId: string; reason?: string }) => Promise<unknown>;
+      };
+    };
+    const mod = await loadOpenClawCompatModule<SessionBindingRuntimeModule>({
+      specifier: "openclaw/plugin-sdk/session-binding-runtime",
+      fallbackRelativePath: "dist/plugin-sdk/session-binding-runtime.js",
+      label: "session-binding-runtime",
+      logger: this.api.logger,
+    });
+    return mod.getSessionBindingService();
   }
 
   private async loadDiscordSdk(): Promise<DiscordSdkModule> {
