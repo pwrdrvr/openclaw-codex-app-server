@@ -240,6 +240,7 @@ The plugin schema in [`openclaw.plugin.json`](./openclaw.plugin.json) supports:
 
 - `transport`: `stdio` or `websocket`
 - `command` and `args`: the Codex executable and CLI args for `stdio`
+- `execNodes`: optional list of `tools.exec.node` aliases that should auto-select a specific endpoint when agent tools run with `tools.exec.host=node`
 - `url`, `authToken`, `headers`: connection settings for `websocket`
 - `defaultWorkspaceDir`: fallback workspace for unbound actions
 - `defaultModel`: model used when a new thread starts without an explicit selection

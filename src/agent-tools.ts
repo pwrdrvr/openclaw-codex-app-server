@@ -34,6 +34,28 @@ function readBoolean(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
 }
 
+function readToolExecContext(ctx: {
+  runtimeConfig?: {
+    tools?: {
+      exec?: {
+        host?: string;
+        node?: string;
+      };
+    };
+  };
+} | undefined): { host?: string; node?: string } | undefined {
+  const exec = ctx?.runtimeConfig?.tools?.exec;
+  const host = readString(exec?.host);
+  const node = readString(exec?.node);
+  if (!host && !node) {
+    return undefined;
+  }
+  return {
+    host,
+    node,
+  };
+}
+
 function readInputItems(value: unknown):
   | Array<{ type: "text"; text: string } | { type: "image"; url: string } | { type: "localImage"; path: string }>
   | undefined {
@@ -68,7 +90,17 @@ function readInputItems(value: unknown):
 }
 
 export function createAgentTools(controller: CodexPluginController) {
-  type ToolCtx = { sessionKey?: string } | undefined;
+  type ToolCtx = {
+    sessionKey?: string;
+    runtimeConfig?: {
+      tools?: {
+        exec?: {
+          host?: string;
+          node?: string;
+        };
+      };
+    };
+  } | undefined;
 
   return [
     {
@@ -113,6 +145,7 @@ export function createAgentTools(controller: CodexPluginController) {
             ...(await controller.listAgentThreads({
               sessionKey: ctx?.sessionKey,
               endpointId: readString(record.endpointId),
+              execContext: readToolExecContext(ctx),
               workspaceDir: readString(record.workspaceDir),
               includeAllWorkspaces: readBoolean(record.includeAllWorkspaces),
               filter: readString(record.filter),
@@ -178,6 +211,7 @@ export function createAgentTools(controller: CodexPluginController) {
             ...(await controller.runAgentTask({
               sessionKey: ctx?.sessionKey,
               endpointId: readString(record.endpointId),
+              execContext: readToolExecContext(ctx),
               prompt,
               workspaceDir: readString(record.workspaceDir),
               threadId: readString(record.threadId),
@@ -243,6 +277,7 @@ export function createAgentTools(controller: CodexPluginController) {
             ...(await controller.readAgentThreadContext({
               sessionKey: ctx?.sessionKey,
               endpointId: readString(record.endpointId),
+              execContext: readToolExecContext(ctx),
               threadId,
               permissionsMode: readString(record.permissionsMode) === "full-access" ? "full-access" : "default",
             })),
