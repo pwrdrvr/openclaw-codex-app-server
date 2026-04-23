@@ -614,9 +614,8 @@ describe("Discord controller flows", () => {
 
     const reply = await controller.handleCommand("cas_resume", buildDiscordCommandContext());
 
-    expect(reply).toEqual({
-      text: "Sent a Codex thread picker to this Discord conversation.",
-    });
+    expect(reply.text).toContain("Sent a Codex thread picker to this Discord conversation.");
+    expect(reply.text).toContain("Resolved endpoint: default (default)");
     expect(sendComponentMessage).toHaveBeenCalledWith(
       "channel:chan-1",
       expect.objectContaining({
@@ -633,9 +632,8 @@ describe("Discord controller flows", () => {
 
     const reply = await controller.handleCommand("cas_resume", buildDiscordCommandContext());
 
-    expect(reply).toEqual({
-      text: "Sent a Codex thread picker to this Discord conversation.",
-    });
+    expect(reply.text).toContain("Sent a Codex thread picker to this Discord conversation.");
+    expect(reply.text).toContain("Resolved endpoint: default (default)");
     expect(discordOutbound.sendPayload).toHaveBeenCalledWith(
       expect.objectContaining({
         to: "channel:chan-1",
@@ -666,9 +664,8 @@ describe("Discord controller flows", () => {
 
     const reply = await controller.handleCommand("cas_resume", buildDiscordCommandContext());
 
-    expect(reply).toEqual({
-      text: "Sent a Codex thread picker to this Discord conversation.",
-    });
+    expect(reply.text).toContain("Sent a Codex thread picker to this Discord conversation.");
+    expect(reply.text).toContain("Resolved endpoint: default (default)");
     expect(sendDiscordComponentMessage).toHaveBeenCalledWith(
       "channel:chan-1",
       expect.objectContaining({
@@ -679,6 +676,16 @@ describe("Discord controller flows", () => {
         accountId: "default",
       }),
     );
+  });
+
+  it("includes the resolved endpoint in cas_resume replies when the command fails", async () => {
+    const { controller } = await createControllerHarness();
+    vi.spyOn(controller as any, "handleJoinCommand").mockRejectedValue(new Error("boom"));
+
+    const reply = await controller.handleCommand("cas_resume", buildDiscordCommandContext());
+
+    expect(reply.text).toContain("cas_resume failed: boom");
+    expect(reply.text).toContain("Resolved endpoint: default (default)");
   });
 
   it("renders structured help text for representative commands via handleCommand", async () => {
@@ -951,7 +958,7 @@ describe("Discord controller flows", () => {
       }),
     );
 
-    expect(reply).toEqual({});
+    expect(reply.text).toContain("Resolved endpoint: default (default)");
     expect(clientMock.startThread).toHaveBeenCalledWith({
       profile: "default",
       sessionKey: undefined,
@@ -1054,7 +1061,7 @@ describe("Discord controller flows", () => {
       }),
     );
 
-    expect(reply).toEqual({});
+    expect(reply.text).toContain("Resolved endpoint: default (default)");
     expect(clientMock.startThread).toHaveBeenCalledWith({
       profile: "default",
       sessionKey: undefined,
@@ -1107,7 +1114,7 @@ describe("Discord controller flows", () => {
       }),
     );
 
-    expect(reply).toEqual({});
+    expect(reply.text).toContain("Resolved endpoint: default (default)");
     const binding = (controller as any).store.getBinding({
       channel: "discord",
       accountId: "default",
@@ -1129,7 +1136,7 @@ describe("Discord controller flows", () => {
       }),
     );
 
-    expect(reply).toEqual({});
+    expect(reply.text).toContain("Resolved endpoint: default (default)");
     const binding = (controller as any).store.getBinding({
       channel: "discord",
       accountId: "default",
@@ -1190,9 +1197,8 @@ describe("Discord controller flows", () => {
       }),
     );
 
-    expect(reply).toEqual({
-      text: "Sent a Codex thread picker to this Discord conversation.",
-    });
+    expect(reply.text).toContain("Sent a Codex thread picker to this Discord conversation.");
+    expect(reply.text).toContain("Resolved endpoint: default (default)");
     expect(sendComponentMessage).toHaveBeenCalledWith(
       "channel:chan-1",
       expect.objectContaining({
@@ -2664,7 +2670,7 @@ describe("Discord controller flows", () => {
       "Discord Thread (openclaw)",
       expect.objectContaining({ accountId: "default" }),
     );
-    expect(reply).toEqual({});
+    expect(reply.text).toContain("Resolved endpoint: default (default)");
     const lastCall = sendMessageTelegram.mock.calls.at(-1) as unknown as
       | [string, string, { buttons?: Array<Array<{ text: string }>>; messageThreadId?: number }]
       | undefined;
@@ -2864,7 +2870,8 @@ describe("Discord controller flows", () => {
       }),
     );
 
-    expect(pendingReply).toEqual({ text: "Plugin bind approval required" });
+    expect(pendingReply.text).toContain("Plugin bind approval required");
+    expect(pendingReply.text).toContain("Resolved endpoint: default (default)");
     expect((controller as any).store.getPendingBind({
       channel: "telegram",
       accountId: "default",
@@ -2896,7 +2903,7 @@ describe("Discord controller flows", () => {
       "Discord Thread (openclaw)",
       expect.objectContaining({ accountId: "default" }),
     );
-    expect(hydratedReply).toEqual({});
+    expect(hydratedReply.text).toContain("Resolved endpoint: default (default)");
     const hydratedLastCall = sendMessageTelegram.mock.calls.at(-1) as unknown as
       | [string, string, { buttons?: Array<Array<{ text: string }>>; messageThreadId?: number }]
       | undefined;
@@ -2950,7 +2957,8 @@ describe("Discord controller flows", () => {
       }),
     );
 
-    expect(reply).toEqual({ text: "Plugin bind approval required" });
+    expect(reply.text).toContain("Plugin bind approval required");
+    expect(reply.text).toContain("Resolved endpoint: default (default)");
     expect(requestConversationBinding).toHaveBeenCalledWith(
       expect.objectContaining({
         summary: "Bind this conversation to Codex thread Discord Thread.",
@@ -2993,7 +3001,7 @@ describe("Discord controller flows", () => {
 
     await flushAsyncWork();
 
-    expect(reply).toEqual({});
+    expect(reply.text).toContain("Resolved endpoint: default (default)");
     expect(renameTopic).toHaveBeenCalledWith(
       "123",
       456,
