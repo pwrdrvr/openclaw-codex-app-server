@@ -2524,16 +2524,36 @@ export class CodexPluginController {
     }
 
     switch (commandName) {
-      case "cas_resume":
-        return await this.handleJoinCommand(
-          conversation,
-          binding,
-          args,
-          ctx.channel,
-          ctx,
-          pendingBind,
-          hydratedBinding?.pendingBind,
-        );
+      case "cas_resume": {
+        const resolvedEndpointText = conversation
+          ? `Resolved endpoint: ${this.formatEndpointResolutionLabel(this.getSelectedEndpointResolution(conversation))}`
+          : undefined;
+        const withResolvedEndpoint = (reply: ReplyPayload): ReplyPayload => {
+          if (!resolvedEndpointText) {
+            return reply;
+          }
+          const text = reply.text?.trim();
+          return {
+            ...reply,
+            text: text ? `${text}\n\n${resolvedEndpointText}` : resolvedEndpointText,
+          };
+        };
+        try {
+          const reply = await this.handleJoinCommand(
+            conversation,
+            binding,
+            args,
+            ctx.channel,
+            ctx,
+            pendingBind,
+            hydratedBinding?.pendingBind,
+          );
+          return withResolvedEndpoint(reply);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          return withResolvedEndpoint({ text: `cas_resume failed: ${message}` });
+        }
+      }
       case "cas_detach":
         if (!conversation) {
           return { text: "This command needs a Telegram or Discord conversation." };
