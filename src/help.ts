@@ -147,16 +147,23 @@ export const COMMAND_HELP: Record<CommandName, CommandHelpEntry> = {
     ],
     notes: "The status card is the main interactive model-control surface, but this command remains available.",
   },
+  cas_endpoints: {
+    summary: COMMAND_SUMMARY.cas_endpoints,
+    usage: "/cas_endpoints",
+    examples: ["/cas_endpoints"],
+    notes: "Shows configured endpoints, the active resolution source for this conversation, and whether a manual endpoint override is currently set.",
+  },
   cas_endpoint: {
     summary: COMMAND_SUMMARY.cas_endpoint,
-    usage: "/cas_endpoint [endpoint_id]",
-    flags: [{ flag: "[endpoint_id]", description: "Show the active endpoint or switch this conversation to a configured endpoint id." }],
+    usage: "/cas_endpoint [endpoint_id|auto|clear]",
+    flags: [{ flag: "[endpoint_id|auto|clear]", description: "Show the active endpoint, switch this conversation to a configured endpoint id, or clear the manual override and return to automatic resolution." }],
     examples: [
       "/cas_endpoint",
       "/cas_endpoint primary",
       "/cas_endpoint backup",
+      "/cas_endpoint auto",
     ],
-    notes: "Changing the selected endpoint affects future /cas_resume and unbound CAS actions. Existing bindings stay attached to their original endpoint until you resume/bind there again.",
+    notes: "Manual endpoint selection affects future /cas_resume and unbound CAS actions for this conversation. Existing bindings stay attached to their original endpoint until you resume/bind there again. Use `auto` or `clear` to remove the manual override.",
   },
   cas_permissions: {
     summary: COMMAND_SUMMARY.cas_permissions,
