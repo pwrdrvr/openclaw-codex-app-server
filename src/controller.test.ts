@@ -6879,6 +6879,78 @@ describe("Discord controller flows", () => {
     expect((controller as any).resolveAgentEndpointId(undefined, { host: "gateway", node: "nestdev" })).toBe("default");
   });
 
+  it("falls back to a derived node endpoint when exec host=node has no configured match", async () => {
+    const { controller } = await createControllerHarness({
+      defaultEndpoint: "default",
+      endpoints: [
+        {
+          id: "default",
+          transport: "websocket",
+          url: "ws://127.0.0.1:8765",
+        },
+      ],
+    });
+    const deriveSpy = vi
+      .spyOn(controller as any, "tryRegisterNodeDerivedEndpoint")
+      .mockResolvedValue("auto-node-nestdev");
+
+    await expect(
+      (controller as any).resolveAgentEndpointIdWithNodeFallback(undefined, {
+        host: "node",
+        node: "nestdev",
+      }),
+    ).resolves.toBe("auto-node-nestdev");
+    expect(deriveSpy).toHaveBeenCalledWith({ host: "node", node: "nestdev" });
+  });
+
+  it("falls back to default endpoint when node-derived probe is unavailable", async () => {
+    const { controller } = await createControllerHarness({
+      defaultEndpoint: "default",
+      endpoints: [
+        {
+          id: "default",
+          transport: "websocket",
+          url: "ws://127.0.0.1:8765",
+        },
+      ],
+    });
+    vi.spyOn(controller as any, "tryRegisterNodeDerivedEndpoint").mockResolvedValue(undefined);
+
+    await expect(
+      (controller as any).resolveAgentEndpointIdWithNodeFallback(undefined, {
+        host: "node",
+        node: "nestdev",
+      }),
+    ).resolves.toBe("default");
+  });
+
+  it("keeps explicit endpoint selection over node-derived fallback", async () => {
+    const { controller } = await createControllerHarness({
+      defaultEndpoint: "default",
+      endpoints: [
+        {
+          id: "default",
+          transport: "websocket",
+          url: "ws://127.0.0.1:8765",
+        },
+        {
+          id: "gateway",
+          transport: "websocket",
+          url: "ws://127.0.0.1:9999",
+        },
+      ],
+    });
+    const deriveSpy = vi.spyOn(controller as any, "tryRegisterNodeDerivedEndpoint");
+
+    await expect(
+      (controller as any).resolveAgentEndpointIdWithNodeFallback("gateway", {
+        host: "node",
+        node: "nestdev",
+      }),
+    ).resolves.toBe("gateway");
+    expect(deriveSpy).not.toHaveBeenCalled();
+  });
+
   it("prefers a manual conversation endpoint over automatic node resolution", async () => {
     const { controller } = await createControllerHarness({
       defaultEndpoint: "default",
