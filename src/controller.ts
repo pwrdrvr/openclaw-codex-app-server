@@ -55,6 +55,7 @@ import type {
   CollaborationMode,
   CodexTurnInputItem,
   ConversationPreferences,
+  EndpointSettings,
   InteractiveMessageRef,
   PendingInputState,
   PermissionsMode,
@@ -87,6 +88,7 @@ import {
   paginateItems,
 } from "./thread-picker.js";
 import {
+  DEFAULT_REQUEST_TIMEOUT_MS,
   INTERACTIVE_NAMESPACE,
   PLUGIN_ID,
   type CallbackAction,
@@ -1488,7 +1490,10 @@ export class CodexPluginController {
     threads: Awaited<ReturnType<CodexAppServerModeClient["listThreads"]>>;
   }> {
     await this.start();
-    const endpointId = this.resolveAgentEndpointId(params.endpointId, params.execContext);
+    const endpointId = await this.resolveAgentEndpointIdWithNodeFallback(
+      params.endpointId,
+      params.execContext,
+    );
     const permissionsMode = this.resolveAgentPermissionsMode(endpointId, params.permissionsMode);
     const workspaceDir = params.includeAllWorkspaces
       ? undefined
@@ -1526,7 +1531,10 @@ export class CodexPluginController {
     context: Awaited<ReturnType<CodexAppServerModeClient["readThreadContext"]>>;
   }> {
     await this.start();
-    const endpointId = this.resolveAgentEndpointId(params.endpointId, params.execContext);
+    const endpointId = await this.resolveAgentEndpointIdWithNodeFallback(
+      params.endpointId,
+      params.execContext,
+    );
     const permissionsMode = this.resolveAgentPermissionsMode(endpointId, params.permissionsMode);
     const threadId = params.threadId.trim();
     const client = this.getClientForEndpoint(endpointId);
@@ -1578,7 +1586,10 @@ export class CodexPluginController {
     result: TurnResult;
   }> {
     await this.start();
-    const endpointId = this.resolveAgentEndpointId(params.endpointId, params.execContext);
+    const endpointId = await this.resolveAgentEndpointIdWithNodeFallback(
+      params.endpointId,
+      params.execContext,
+    );
     const permissionsMode = this.resolveAgentPermissionsMode(endpointId, params.permissionsMode);
     const workspaceDir = resolveWorkspaceDir({
       requested: params.workspaceDir,
@@ -1691,6 +1702,120 @@ export class CodexPluginController {
       return inferred;
     }
     return this.settings.defaultEndpoint;
+  }
+
+  private async resolveAgentEndpointIdWithNodeFallback(
+    endpointId?: string,
+    execContext?: AgentExecContext,
+  ): Promise<string> {
+    const requested = endpointId?.trim();
+    if (requested) {
+      return this.resolveAgentEndpointId(requested, execContext);
+    }
+    const inferred = this.resolveEndpointIdFromExecContext(execContext);
+    if (inferred) {
+      return inferred;
+    }
+    const derived = await this.tryRegisterNodeDerivedEndpoint(execContext);
+    if (derived) {
+      return derived;
+    }
+    return this.settings.defaultEndpoint;
+  }
+
+  private async tryRegisterNodeDerivedEndpoint(
+    execContext?: AgentExecContext,
+  ): Promise<string | undefined> {
+    const host = execContext?.host?.trim().toLowerCase();
+    const node = execContext?.node?.trim();
+    if (host !== "node" || !node) {
+      return undefined;
+    }
+    const normalizedNode = node.toLowerCase();
+    const existingAliasMatch = this.settings.endpoints.find((entry) =>
+      (entry.execNodes ?? []).some((alias) => alias.trim().toLowerCase() === normalizedNode),
+    );
+    if (existingAliasMatch?.id) {
+      return existingAliasMatch.id;
+    }
+    const derivedEndpointId = this.buildNodeDerivedEndpointId(node);
+    const existingById = this.settings.endpoints.find((entry) => entry.id === derivedEndpointId);
+    if (existingById?.id) {
+      return existingById.id;
+    }
+
+    const derivedUrl = this.buildNodeDerivedEndpointUrl(node);
+    const probeEndpoint: EndpointSettings = {
+      id: `${derivedEndpointId}__probe`,
+      execNodes: [node],
+      transport: "websocket",
+      command: "codex",
+      args: [],
+      url: derivedUrl,
+      requestTimeoutMs: 3_000,
+    };
+    const probeClient = new CodexAppServerModeClient(probeEndpoint, this.api.logger);
+    let available = false;
+    try {
+      await probeClient.readAccount({ profile: "default" });
+      available = true;
+    } catch (error) {
+      this.api.logger.debug?.(
+        `codex auto-node endpoint probe failed node=${node} url=${derivedUrl}: ${String(error)}`,
+      );
+    } finally {
+      await probeClient.close().catch(() => undefined);
+    }
+    if (!available) {
+      return undefined;
+    }
+
+    const derivedEndpoint: EndpointSettings = {
+      id: derivedEndpointId,
+      execNodes: [node],
+      transport: "websocket",
+      command: "codex",
+      args: [],
+      url: derivedUrl,
+      requestTimeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
+    };
+    this.settings.endpoints.push(derivedEndpoint);
+    this.api.logger.info(
+      `codex auto-node endpoint registered id=${derivedEndpoint.id} node=${node} url=${derivedUrl}`,
+    );
+    return derivedEndpoint.id;
+  }
+
+  private buildNodeDerivedEndpointId(node: string): string {
+    const normalized = node
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9.-]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    return `auto-node-${normalized || "default"}`;
+  }
+
+  private buildNodeDerivedEndpointUrl(node: string): string {
+    const trimmed = node.trim();
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) {
+      try {
+        const parsed = new URL(trimmed);
+        parsed.protocol = "ws:";
+        if (!parsed.port) {
+          parsed.port = "8765";
+        }
+        return parsed.toString().replace(/\/$/, "");
+      } catch {
+        // fall through and try host-based parsing
+      }
+    }
+    if (/^\[[^\]]+\](?::\d+)?$/.test(trimmed)) {
+      return /:\d+$/.test(trimmed) ? `ws://${trimmed}` : `ws://${trimmed}:8765`;
+    }
+    if (/^[^:]+:\d+$/.test(trimmed)) {
+      return `ws://${trimmed}`;
+    }
+    return `ws://${trimmed}:8765`;
   }
 
   private resolveEndpointIdFromExecContext(execContext?: AgentExecContext): string | undefined {
