@@ -4272,7 +4272,7 @@ describe("Discord controller flows", () => {
           { type: "text", text: "Read this file" },
           {
             type: "text",
-            text: "Attached file: note.txt\nContent-Type: text/plain\n\nhello",
+            text: `Attached file: note.txt\nLocal path: ${filePath}\nContent-Type: text/plain\n\nhello`,
           },
         ],
       }),
@@ -4325,14 +4325,90 @@ describe("Discord controller flows", () => {
         input: [
           {
             type: "text",
-            text: "Attached file: README.md\n\n# Heading\n\nBody text.\n",
+            text: `Attached file: README.md\nLocal path: ${filePath}\n\n# Heading\n\nBody text.\n`,
           },
         ],
       }),
     );
   });
 
-  it("still ignores unsupported binary document attachments", async () => {
+  it("starts a turn when a message:transcribed event arrives for a bound session", async () => {
+    const { controller } = await createControllerHarness();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: TEST_TELEGRAM_PEER_ID,
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+    const startTurn = vi.fn(async () => undefined);
+    (controller as any).startTurn = startTurn;
+
+    await controller.handleMessageTranscribed({
+      type: "message",
+      action: "transcribed",
+      sessionKey: "session-1",
+      context: {
+        transcript: "Hello from voice",
+        mediaType: "audio/ogg",
+      },
+    });
+
+    expect(startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversation: expect.objectContaining({ conversationId: TEST_TELEGRAM_PEER_ID }),
+        prompt: "Hello from voice",
+        reason: "inbound",
+      }),
+    );
+  });
+
+  it("falls back to runtime transcription on message:preprocessed when transcript is missing", async () => {
+    const { controller } = await createControllerHarness();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: TEST_TELEGRAM_PEER_ID,
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+    const startTurn = vi.fn(async () => undefined);
+    (controller as any).startTurn = startTurn;
+    (controller as any).api.runtime = {
+      mediaUnderstanding: {
+        transcribeAudioFile: vi.fn(async () => ({ text: "Fallback transcript" })),
+      },
+    };
+    (controller as any).api.config = {};
+
+    await controller.handleMessagePreprocessed({
+      type: "message",
+      action: "preprocessed",
+      sessionKey: "session-1",
+      context: {
+        mediaPath: "/tmp/test.ogg",
+        mediaType: "audio/ogg",
+      },
+    });
+
+    expect(startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversation: expect.objectContaining({ conversationId: TEST_TELEGRAM_PEER_ID }),
+        prompt: "Fallback transcript",
+        reason: "inbound",
+      }),
+    );
+  });
+
+  it("passes unsupported binary documents through as local file references", async () => {
     const { controller, stateDir } = await createControllerHarness();
     const filePath = path.join(stateDir, "tmp", "manual.pdf");
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -4375,7 +4451,14 @@ describe("Discord controller flows", () => {
     expect(startTurn).toHaveBeenCalledWith(
       expect.objectContaining({
         prompt: "Read this document",
-        input: [{ type: "text", text: "Read this document" }],
+        input: [
+          { type: "text", text: "Read this document" },
+          {
+            type: "text",
+            text:
+              `Attached file: manual.pdf\nLocal path: ${filePath}\nContent-Type: application/pdf\n\nUse this local file path directly from the server workspace. Do not ask the user to re-upload it unless the path is unreadable.`,
+          },
+        ],
       }),
     );
   });
