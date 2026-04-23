@@ -195,6 +195,14 @@ type PutCallbackInput =
       ttlMs?: number;
     }
   | {
+      kind: "clear-endpoint";
+      conversation: ConversationTarget;
+      returnToStatus?: boolean;
+      statusMessage?: Extract<CallbackAction, { kind: "clear-endpoint" }>["statusMessage"];
+      token?: string;
+      ttlMs?: number;
+    }
+  | {
       kind: "reply-text";
       conversation: ConversationTarget;
       text: string;
@@ -400,6 +408,14 @@ export class PluginStateStore {
       (current) => toConversationKey(current.conversation as ConversationTarget) !== key,
     );
     this.snapshot.conversationEndpoints.push(entry);
+    await this.save();
+  }
+
+  async removeConversationEndpoint(target: ConversationTarget): Promise<void> {
+    const key = toConversationKey(target);
+    this.snapshot.conversationEndpoints = this.snapshot.conversationEndpoints.filter(
+      (current) => toConversationKey(current.conversation as ConversationTarget) !== key,
+    );
     await this.save();
   }
 
@@ -715,6 +731,16 @@ export class PluginStateStore {
                           kind: "set-endpoint",
                           conversation: callback.conversation,
                           endpointId: callback.endpointId,
+                          returnToStatus: callback.returnToStatus,
+                          statusMessage: callback.statusMessage,
+                          token: callback.token ?? this.createCallbackToken(),
+                          createdAt: now,
+                          expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
+                        }
+                    : callback.kind === "clear-endpoint"
+                      ? {
+                          kind: "clear-endpoint",
+                          conversation: callback.conversation,
                           returnToStatus: callback.returnToStatus,
                           statusMessage: callback.statusMessage,
                           token: callback.token ?? this.createCallbackToken(),

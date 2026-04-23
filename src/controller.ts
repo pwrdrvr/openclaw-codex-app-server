@@ -1328,6 +1328,12 @@ type AgentExecContext = {
   node?: string;
 };
 
+type EndpointResolution = {
+  endpointId: string;
+  source: "manual" | "auto-node" | "default";
+  nodeId?: string;
+};
+
 function listWorkspaceChoices(
   threads: Array<{ projectKey?: string; createdAt?: number; updatedAt?: number }>,
   projectName?: string,
@@ -1726,17 +1732,71 @@ export class CodexPluginController {
     return this.settings.defaultEndpoint;
   }
 
+  private readExecContextFromConfig(config: unknown): AgentExecContext | undefined {
+    if (!config || typeof config !== "object" || Array.isArray(config)) {
+      return undefined;
+    }
+    const tools = (config as { tools?: unknown }).tools;
+    if (!tools || typeof tools !== "object" || Array.isArray(tools)) {
+      return undefined;
+    }
+    const exec = (tools as { exec?: unknown }).exec;
+    if (!exec || typeof exec !== "object" || Array.isArray(exec)) {
+      return undefined;
+    }
+    const host = typeof (exec as { host?: unknown }).host === "string"
+      ? (exec as { host?: string }).host?.trim()
+      : undefined;
+    const node = typeof (exec as { node?: unknown }).node === "string"
+      ? (exec as { node?: string }).node?.trim()
+      : undefined;
+    if (!host && !node) {
+      return undefined;
+    }
+    return { host, node };
+  }
+
+  private getManualEndpointId(conversation: ConversationTarget | null | undefined): string | undefined {
+    if (!conversation) {
+      return undefined;
+    }
+    const stored = this.store.getConversationEndpoint(conversation)?.endpointId?.trim();
+    if (stored && this.settings.endpoints.some((entry) => entry.id === stored)) {
+      return stored;
+    }
+    return undefined;
+  }
+
   private getSelectedEndpointId(
     conversation: ConversationTarget | null | undefined,
-    binding?: StoredBinding | StoredPendingBind | null,
+    _binding?: StoredBinding | StoredPendingBind | null,
   ): string {
-    if (conversation) {
-      const stored = this.store.getConversationEndpoint(conversation)?.endpointId?.trim();
-      if (stored && this.settings.endpoints.some((entry) => entry.id === stored)) {
-        return stored;
-      }
+    return this.getSelectedEndpointResolution(conversation).endpointId;
+  }
+
+  private getSelectedEndpointResolution(
+    conversation: ConversationTarget | null | undefined,
+  ): EndpointResolution {
+    const manualEndpointId = this.getManualEndpointId(conversation);
+    if (manualEndpointId) {
+      return {
+        endpointId: manualEndpointId,
+        source: "manual",
+      };
     }
-    return this.getEndpointIdForBinding(binding);
+    const execContext = this.readExecContextFromConfig(this.getOpenClawConfig());
+    const autoEndpointId = this.resolveEndpointIdFromExecContext(execContext);
+    if (autoEndpointId) {
+      return {
+        endpointId: autoEndpointId,
+        source: "auto-node",
+        nodeId: execContext?.node?.trim() || undefined,
+      };
+    }
+    return {
+      endpointId: this.settings.defaultEndpoint,
+      source: "default",
+    };
   }
 
   private async setSelectedEndpointId(conversation: ConversationTarget, endpointId: string): Promise<void> {
@@ -1752,12 +1812,29 @@ export class CodexPluginController {
     });
   }
 
+  private async clearSelectedEndpointId(conversation: ConversationTarget): Promise<void> {
+    await this.store.removeConversationEndpoint(conversation);
+  }
+
+  private formatEndpointResolutionLabel(selection: EndpointResolution): string {
+    if (selection.source === "manual") {
+      return `${selection.endpointId} (manual override)`;
+    }
+    if (selection.source === "auto-node") {
+      return `${selection.endpointId} (auto from node${selection.nodeId ? `: ${selection.nodeId}` : ""})`;
+    }
+    return `${selection.endpointId} (default)`;
+  }
+
   private formatEndpointListText(params: {
-    selectedEndpointId: string;
+    conversation?: ConversationTarget | null;
+    selection: EndpointResolution;
     binding?: StoredBinding | null;
   }): string {
+    const manualEndpointId = this.getManualEndpointId(params.conversation ?? params.binding?.conversation ?? null);
     const lines = [
-      `Selected endpoint: ${params.selectedEndpointId}`,
+      `Active endpoint: ${this.formatEndpointResolutionLabel(params.selection)}`,
+      `Manual override: ${manualEndpointId ?? "none"}`,
       params.binding
         ? `Bound endpoint: ${this.getEndpointIdForBinding(params.binding)}`
         : "Bound endpoint: none",
@@ -1765,7 +1842,8 @@ export class CodexPluginController {
       "Configured endpoints:",
       ...this.settings.endpoints.map((endpoint) => {
         const markers = [
-          endpoint.id === params.selectedEndpointId ? "selected" : "",
+          endpoint.id === params.selection.endpointId ? "active" : "",
+          endpoint.id === manualEndpointId ? "manual" : "",
           params.binding && endpoint.id === this.getEndpointIdForBinding(params.binding) ? "bound" : "",
           endpoint.id === this.settings.defaultEndpoint ? "default" : "",
         ].filter(Boolean);
@@ -1774,28 +1852,32 @@ export class CodexPluginController {
     ];
     if (
       params.binding &&
-      this.getEndpointIdForBinding(params.binding) !== params.selectedEndpointId
+      this.getEndpointIdForBinding(params.binding) !== params.selection.endpointId
     ) {
       lines.push(
         "",
-        "Note: this conversation is still bound to a thread on a different endpoint. Use /cas_resume after detaching if you want to bind on the selected endpoint.",
+        "Note: this conversation is still bound to a thread on a different endpoint. Use /cas_resume after detaching if you want to bind on the active endpoint.",
       );
     }
     return lines.join("\n");
   }
 
   private buildEndpointSelectionNotice(
-    endpointId: string,
+    selection: EndpointResolution,
     binding?: StoredBinding | null,
+    conversation?: ConversationTarget | null,
   ): string {
     return [
-      `Selected endpoint set to ${endpointId}.`,
-      binding && this.getEndpointIdForBinding(binding) !== endpointId
-        ? `This conversation is still bound to a thread on ${this.getEndpointIdForBinding(binding)}. Use /cas_resume to browse/bind on ${endpointId}.`
+      selection.source === "manual"
+        ? `Manual endpoint override set to ${selection.endpointId}.`
+        : `Manual endpoint override cleared. Active endpoint is now ${this.formatEndpointResolutionLabel(selection)}.`,
+      binding && this.getEndpointIdForBinding(binding) !== selection.endpointId
+        ? `This conversation is still bound to a thread on ${this.getEndpointIdForBinding(binding)}. Use /cas_resume to browse/bind on ${selection.endpointId}.`
         : "",
       "",
       this.formatEndpointListText({
-        selectedEndpointId: endpointId,
+        conversation,
+        selection,
         binding,
       }),
     ].filter(Boolean).join("\n");
@@ -2365,6 +2447,7 @@ export class CodexPluginController {
         return await this.handleFastCommand(binding, args);
       case "cas_model":
         return await this.handleModelCommand(conversation, binding, args);
+      case "cas_endpoints":
       case "cas_endpoint":
         return await this.handleEndpointCommand(conversation, binding, args);
       case "cas_permissions":
@@ -3198,8 +3281,23 @@ export class CodexPluginController {
       statusMessage?: InteractiveMessageRef;
     },
   ): Promise<PickerRender> {
-    const selectedEndpointId = this.getSelectedEndpointId(conversation, binding);
+    const selection = this.getSelectedEndpointResolution(conversation);
+    const manualEndpointId = this.getManualEndpointId(conversation);
     const buttons: PluginInteractiveButtons = [];
+    if (manualEndpointId) {
+      const clearCallback = await this.store.putCallback({
+        kind: "clear-endpoint",
+        conversation,
+        returnToStatus: opts?.returnToStatus,
+        statusMessage: opts?.statusMessage,
+      });
+      buttons.push([
+        {
+          text: "Use auto/default",
+          callback_data: `${INTERACTIVE_NAMESPACE}:${clearCallback.token}`,
+        },
+      ]);
+    }
     for (const endpoint of this.settings.endpoints) {
       const endpointId = endpoint.id ?? this.settings.defaultEndpoint;
       const callback = await this.store.putCallback({
@@ -3210,7 +3308,8 @@ export class CodexPluginController {
         statusMessage: opts?.statusMessage,
       });
       const flags = [
-        endpointId === selectedEndpointId ? "selected" : "",
+        endpointId === selection.endpointId ? "active" : "",
+        endpointId === manualEndpointId ? "manual" : "",
         binding && endpointId === this.getEndpointIdForBinding(binding) ? "bound" : "",
         endpointId === this.settings.defaultEndpoint ? "default" : "",
       ].filter(Boolean);
@@ -3235,7 +3334,8 @@ export class CodexPluginController {
     }
     return {
       text: this.formatEndpointListText({
-        selectedEndpointId,
+        conversation,
+        selection,
         binding,
       }),
       buttons,
@@ -3843,12 +3943,17 @@ export class CodexPluginController {
     if (parsed.error) {
       return { text: parsed.error };
     }
-    const currentSelected = this.getSelectedEndpointId(conversation, binding);
+    const currentSelection = this.getSelectedEndpointResolution(conversation);
     if (!parsed.endpointId) {
       const picker = await this.buildEndpointPicker(conversation, binding);
       return buildReplyWithButtons(picker.text, picker.buttons);
     }
     const requested = parsed.endpointId.trim();
+    if (["auto", "clear"].includes(requested.toLowerCase())) {
+      await this.clearSelectedEndpointId(conversation);
+      const nextSelection = this.getSelectedEndpointResolution(conversation);
+      return { text: this.buildEndpointSelectionNotice(nextSelection, binding, conversation) };
+    }
     const endpoint = this.settings.endpoints.find((entry) => entry.id === requested);
     if (!endpoint) {
       return {
@@ -3856,24 +3961,16 @@ export class CodexPluginController {
           `Unknown endpoint: ${requested}`,
           "",
           this.formatEndpointListText({
-            selectedEndpointId: currentSelected,
+            conversation,
+            selection: currentSelection,
             binding,
           }),
         ].join("\n"),
       };
     }
     await this.setSelectedEndpointId(conversation, endpoint.id || requested);
-    const nextSelected = endpoint.id || requested;
-    const lines = [
-      `Selected endpoint set to ${nextSelected}.`,
-    ];
-    if (binding && this.getEndpointIdForBinding(binding) !== nextSelected) {
-      lines.push(
-        `This conversation is still bound to a thread on ${this.getEndpointIdForBinding(binding)}. Use /cas_resume to browse/bind on ${nextSelected}.`,
-      );
-    }
-    lines.push("", this.formatEndpointListText({ selectedEndpointId: nextSelected, binding }));
-    return { text: lines.join("\n") };
+    const nextSelection = this.getSelectedEndpointResolution(conversation);
+    return { text: this.buildEndpointSelectionNotice(nextSelection, binding, conversation) };
   }
 
   private async handlePermissionsCommand(
@@ -6485,7 +6582,14 @@ export class CodexPluginController {
                 binding,
                 true,
               )
-            : Promise.resolve({ text: this.formatEndpointListText({ selectedEndpointId: this.getSelectedEndpointId(conversation, binding), binding }), buttons: undefined }),
+            : Promise.resolve({
+                text: this.formatEndpointListText({
+                  conversation,
+                  selection: this.getSelectedEndpointResolution(conversation),
+                  binding,
+                }),
+                buttons: undefined,
+              }),
         ]);
         await responders.editPicker({
           text: statusCard.text,
@@ -6558,7 +6662,11 @@ export class CodexPluginController {
       };
       await this.setSelectedEndpointId(conversation, callback.endpointId);
       const refreshedBinding = this.store.getBinding(callback.conversation);
-      const text = this.buildEndpointSelectionNotice(callback.endpointId, refreshedBinding);
+      const text = this.buildEndpointSelectionNotice(
+        this.getSelectedEndpointResolution(conversation),
+        refreshedBinding,
+        conversation,
+      );
       if (callback.returnToStatus && refreshedBinding) {
         const statusCard = await this.buildStatusCard(
           conversation,
@@ -6592,6 +6700,50 @@ export class CodexPluginController {
           returnToStatus: false,
         });
         await this.sendText(conversation, text, { buttons: picker.buttons });
+      }
+      return;
+    }
+    if (callback.kind === "clear-endpoint") {
+      const binding = this.store.getBinding(callback.conversation);
+      await this.store.removeCallback(callback.token);
+      const conversation = {
+        ...callback.conversation,
+        threadId: responders.conversation.threadId,
+      };
+      await this.clearSelectedEndpointId(conversation);
+      const refreshedBinding = this.store.getBinding(callback.conversation);
+      const text = this.buildEndpointSelectionNotice(
+        this.getSelectedEndpointResolution(conversation),
+        refreshedBinding,
+        conversation,
+      );
+      if (callback.returnToStatus && refreshedBinding) {
+        const statusCard = await this.buildStatusCard(
+          conversation,
+          refreshedBinding,
+          true,
+        );
+        if (responders.sourceMessage) {
+          await responders.editPicker({
+            text: statusCard.text,
+            buttons: statusCard.buttons,
+          });
+          await this.sendText(conversation, text);
+        } else {
+          await responders.acknowledge?.();
+          await this.sendText(conversation, statusCard.text, { buttons: statusCard.buttons });
+          await this.sendText(conversation, text);
+        }
+        return;
+      }
+      if (responders.sourceMessage) {
+        await responders.editPicker({
+          text,
+          buttons: undefined,
+        });
+      } else {
+        await responders.acknowledge?.();
+        await this.sendText(conversation, text);
       }
       return;
     }
@@ -7275,7 +7427,8 @@ export class CodexPluginController {
     binding: StoredBinding | null,
     bindingActive: boolean,
   ): Promise<string> {
-    const selectedEndpointId = this.getSelectedEndpointId(conversation, binding);
+    const selection = this.getSelectedEndpointResolution(conversation);
+    const selectedEndpointId = selection.endpointId;
     const activeRun =
       bindingActive && conversation
         ? this.activeRuns.get(buildConversationKey(conversation))
@@ -7322,7 +7475,7 @@ export class CodexPluginController {
         : undefined;
     const endpointNote =
       binding && this.getEndpointIdForBinding(binding) !== selectedEndpointId
-        ? `Selected endpoint ${selectedEndpointId} differs from the bound endpoint ${this.getEndpointIdForBinding(binding)}.`
+        ? `Active endpoint ${selectedEndpointId} differs from the bound endpoint ${this.getEndpointIdForBinding(binding)}.`
         : undefined;
     this.api.logger.debug?.(
       `codex status snapshot bindingActive=${bindingActive ? "yes" : "no"} activeRun=${activeRun?.mode ?? "none"} boundThread=${binding?.threadId ?? "<none>"} raw=${formatThreadStateForLog(threadState)} effective=${formatThreadStateForLog(displayThreadState)} ${formatBindingPreferencesForLog(binding)} threadCwd=${displayThreadState?.cwd?.trim() || "<none>"}`,
@@ -7331,6 +7484,7 @@ export class CodexPluginController {
     return formatCodexStatusText({
       pluginVersion: PLUGIN_VERSION,
       endpointId: selectedEndpointId,
+      endpointLabel: this.formatEndpointResolutionLabel(selection),
       threadState: displayThreadState,
       bindingThreadTitle: binding?.threadTitle,
       account,
