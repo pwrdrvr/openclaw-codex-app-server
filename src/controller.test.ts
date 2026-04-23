@@ -6878,4 +6878,137 @@ describe("Discord controller flows", () => {
 
     expect((controller as any).resolveAgentEndpointId(undefined, { host: "gateway", node: "nestdev" })).toBe("default");
   });
+
+  it("prefers a manual conversation endpoint over automatic node resolution", async () => {
+    const { controller } = await createControllerHarness({
+      defaultEndpoint: "default",
+      endpoints: [
+        {
+          id: "default",
+          transport: "websocket",
+          url: "ws://127.0.0.1:8765",
+        },
+        {
+          id: "nestdev",
+          execNodes: ["nestdev"],
+          transport: "websocket",
+          url: "ws://172.23.100.26:8765",
+        },
+      ],
+    });
+    (controller as any).lastRuntimeConfig = {
+      tools: {
+        exec: {
+          host: "node",
+          node: "nestdev",
+        },
+      },
+    };
+    await (controller as any).store.upsertConversationEndpoint({
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:chan-1",
+      },
+      endpointId: "default",
+      updatedAt: Date.now(),
+    });
+
+    expect(
+      (controller as any).getSelectedEndpointResolution({
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:chan-1",
+      }),
+    ).toMatchObject({ endpointId: "default", source: "manual" });
+  });
+
+  it("clears the manual endpoint override and falls back to automatic node resolution", async () => {
+    const { controller } = await createControllerHarness({
+      defaultEndpoint: "default",
+      endpoints: [
+        {
+          id: "default",
+          transport: "websocket",
+          url: "ws://127.0.0.1:8765",
+        },
+        {
+          id: "nestdev",
+          execNodes: ["nestdev"],
+          transport: "websocket",
+          url: "ws://172.23.100.26:8765",
+        },
+      ],
+    });
+    await (controller as any).store.upsertConversationEndpoint({
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:chan-1",
+      },
+      endpointId: "default",
+      updatedAt: Date.now(),
+    });
+
+    const reply = await controller.handleCommand(
+      "cas_endpoint",
+      buildDiscordCommandContext({
+        args: "auto",
+        commandBody: "/cas_endpoint auto",
+        config: {
+          tools: {
+            exec: {
+              host: "node",
+              node: "nestdev",
+            },
+          },
+        },
+      }),
+    );
+
+    expect((controller as any).store.getConversationEndpoint({
+      channel: "discord",
+      accountId: "default",
+      conversationId: "channel:chan-1",
+    })).toBeNull();
+    expect(reply.text).toContain("Manual endpoint override cleared");
+    expect(reply.text).toContain("Active endpoint: nestdev (auto from node: nestdev)");
+  });
+
+  it("supports cas_endpoints as a direct endpoint inspection alias", async () => {
+    const { controller } = await createControllerHarness({
+      defaultEndpoint: "default",
+      endpoints: [
+        {
+          id: "default",
+          transport: "websocket",
+          url: "ws://127.0.0.1:8765",
+        },
+        {
+          id: "nestdev",
+          execNodes: ["nestdev"],
+          transport: "websocket",
+          url: "ws://172.23.100.26:8765",
+        },
+      ],
+    });
+
+    const reply = await controller.handleCommand(
+      "cas_endpoints",
+      buildDiscordCommandContext({
+        commandBody: "/cas_endpoints",
+        config: {
+          tools: {
+            exec: {
+              host: "node",
+              node: "nestdev",
+            },
+          },
+        },
+      }),
+    );
+
+    expect(reply.text).toContain("Active endpoint: nestdev (auto from node: nestdev)");
+    expect(reply.text).toContain("Configured endpoints:");
+  });
 });
