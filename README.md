@@ -115,6 +115,38 @@ Pre-release packages are published on matching npm dist-tags instead of `latest`
 5. Use `/cas_status` to inspect or adjust the binding in place, including model, reasoning, fast mode, permissions, compact, and stop controls.
 6. If you leave plan mode through the normal `Implement this plan` button, you do not need `/cas_plan off`; use `/cas_plan off` only when you want to exit planning manually instead.
 
+## Autonomous Worker Tools (experimental)
+
+This plugin can also expose **agent-callable tools** so OpenClaw can talk to Codex workers **without manual `/cas_*` control**.
+
+Use this mode when you want OpenClaw to act as an orchestrator over multiple Codex app-server endpoints, for example:
+
+- `context-worker` as a browser or context worker
+- `implementation-worker` as a development worker
+
+Current tool surface:
+
+- `codex_workers_describe_endpoints`
+- `codex_workers_list_threads`
+- `codex_workers_run_task`
+- `codex_workers_read_thread_context`
+
+Notes:
+
+- These tools talk **directly to Codex app-server endpoints**. They do **not** use an MCP proxy layer.
+- `codex_workers_run_task` can create a named thread, continue an existing `threadId`, or reuse a named thread when `reuseThreadByName=true`.
+- If Codex requests interactive approval/input during an autonomous run, the tool records the pending input and interrupts the run instead of hanging forever.
+- For fully autonomous write actions, you will usually want a worker endpoint that exposes the `full-access` profile.
+
+Suggested pattern:
+
+1. `codex_workers_describe_endpoints`
+2. `codex_workers_run_task(endpointId="context-worker", ...)`
+3. `codex_workers_run_task(endpointId="implementation-worker", threadName="job/...", ...)`
+4. `codex_workers_read_thread_context(...)` when you need replay/state
+
+The manual `/cas_*` commands still remain useful as the human-facing fallback and debugging surface.
+
 ## Command Reference
 
 | Command | What it does | Notes / examples |
@@ -135,6 +167,7 @@ Pre-release packages are published on matching npm dist-tags instead of `latest`
 | `/cas_status --fast`, `/cas_status --no-fast` | Change fast mode and refresh the status card. | Fast mode is only available on supported models such as GPT-5.4+. |
 | `/cas_status --yolo`, `/cas_status --no-yolo` | Change permissions mode and refresh the status card. | `--yolo` selects Full Access. |
 | `/cas_detach` | Unbind this conversation from Codex. | Stops routing plain text from this conversation into the bound thread. |
+| `/cas_reset` | Force-clear Codex state for this conversation. | Recovery command for stale binds; clears the binding plus pending bind/request/callback state, then tells you to run `/cas_resume`. |
 | `/cas_stop` | Interrupt the active Codex run. | Only applies when a turn is currently in progress. |
 | `/cas_steer <message>` | Send follow-up steer text to an active run. | Example: `/cas_steer focus on the failing tests first` |
 | `/cas_plan <goal>` | Ask Codex to plan instead of execute. | The plugin relays plan questions and the final plan back into chat. |
@@ -208,10 +241,44 @@ The plugin schema in [`openclaw.plugin.json`](./openclaw.plugin.json) supports:
 
 - `transport`: `stdio` or `websocket`
 - `command` and `args`: the Codex executable and CLI args for `stdio`
+- `execNodes`: optional list of `tools.exec.node` aliases that should auto-select a specific endpoint when agent tools run with `tools.exec.host=node`
 - `url`, `authToken`, `headers`: connection settings for `websocket`
 - `defaultWorkspaceDir`: fallback workspace for unbound actions
 - `defaultModel`: model used when a new thread starts without an explicit selection
 - `defaultServiceTier`: default service tier for new turns
+- `inboundAudioTranscription`: optional preprocessor for inbound audio/voice attachments before they are forwarded into Codex
+
+### Optional inbound audio transcription
+
+If your chat surface provides inbound audio files as local paths or media metadata, this plugin can transcribe them before forwarding the turn to Codex. This keeps the plugin transport-agnostic: Codex still receives normal text input, while transcription is delegated to any local command you choose.
+
+Example config using an existing local script:
+
+```json
+{
+  "inboundAudioTranscription": {
+    "enabled": true,
+    "command": "/root/.openclaw/workspace/scripts/local-stt-transcribe.sh",
+    "args": ["{path}"],
+    "timeoutMs": 20000
+  }
+}
+```
+
+Behavior:
+
+- audio-only inbound messages become transcript text
+- caption + audio keeps the caption and adds a labeled transcript block
+- the command should print the transcript to stdout
+- if stdout is JSON, `.text` or `.transcript` is used automatically
+
+Argument placeholders supported in `args`:
+
+- `{path}`
+- `{mimeType}`
+- `{fileName}`
+
+If `{path}` is omitted from `args`, the plugin appends the media path automatically.
 
 ## Developer Workflow With A Local OpenClaw Checkout
 
