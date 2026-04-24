@@ -42,7 +42,7 @@ function makeStateDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-app-server-test-"));
 }
 
-function createApiMock() {
+function createApiMock(pluginConfigOverrides: Record<string, unknown> = {}) {
   const stateDir = makeStateDir();
   const sendComponentMessage = vi.fn(async (..._args: unknown[]) => ({ messageId: "discord-component-1", channelId: "channel:chan-1" }));
   const sendMessageDiscord = vi.fn(async (..._args: unknown[]) => ({ messageId: "discord-msg-1", channelId: "channel:chan-1" }));
@@ -131,6 +131,7 @@ function createApiMock() {
     pluginConfig: {
       enabled: true,
       defaultWorkspaceDir: "/repo/openclaw",
+      ...pluginConfigOverrides,
     },
     logger: {
       debug: vi.fn(),
@@ -205,7 +206,7 @@ function createApiMock() {
   };
 }
 
-async function createControllerHarness() {
+async function createControllerHarness(pluginConfigOverrides: Record<string, unknown> = {}) {
   const {
     api,
     sendComponentMessage,
@@ -217,7 +218,7 @@ async function createControllerHarness() {
     editChannel,
     discordOutbound,
     stateDir,
-  } = createApiMock();
+  } = createApiMock(pluginConfigOverrides);
   const controller = new CodexPluginController(api);
   await controller.start();
   const threadState: any = {
@@ -613,9 +614,8 @@ describe("Discord controller flows", () => {
 
     const reply = await controller.handleCommand("cas_resume", buildDiscordCommandContext());
 
-    expect(reply).toEqual({
-      text: "Sent a Codex thread picker to this Discord conversation.",
-    });
+    expect(reply.text).toContain("Sent a Codex thread picker to this Discord conversation.");
+    expect(reply.text).toContain("Resolved endpoint: default (default)");
     expect(sendComponentMessage).toHaveBeenCalledWith(
       "channel:chan-1",
       expect.objectContaining({
@@ -632,9 +632,8 @@ describe("Discord controller flows", () => {
 
     const reply = await controller.handleCommand("cas_resume", buildDiscordCommandContext());
 
-    expect(reply).toEqual({
-      text: "Sent a Codex thread picker to this Discord conversation.",
-    });
+    expect(reply.text).toContain("Sent a Codex thread picker to this Discord conversation.");
+    expect(reply.text).toContain("Resolved endpoint: default (default)");
     expect(discordOutbound.sendPayload).toHaveBeenCalledWith(
       expect.objectContaining({
         to: "channel:chan-1",
@@ -665,9 +664,8 @@ describe("Discord controller flows", () => {
 
     const reply = await controller.handleCommand("cas_resume", buildDiscordCommandContext());
 
-    expect(reply).toEqual({
-      text: "Sent a Codex thread picker to this Discord conversation.",
-    });
+    expect(reply.text).toContain("Sent a Codex thread picker to this Discord conversation.");
+    expect(reply.text).toContain("Resolved endpoint: default (default)");
     expect(sendDiscordComponentMessage).toHaveBeenCalledWith(
       "channel:chan-1",
       expect.objectContaining({
@@ -678,6 +676,16 @@ describe("Discord controller flows", () => {
         accountId: "default",
       }),
     );
+  });
+
+  it("includes the resolved endpoint in cas_resume replies when the command fails", async () => {
+    const { controller } = await createControllerHarness();
+    vi.spyOn(controller as any, "handleJoinCommand").mockRejectedValue(new Error("boom"));
+
+    const reply = await controller.handleCommand("cas_resume", buildDiscordCommandContext());
+
+    expect(reply.text).toContain("cas_resume failed: boom");
+    expect(reply.text).toContain("Resolved endpoint: default (default)");
   });
 
   it("renders structured help text for representative commands via handleCommand", async () => {
@@ -950,7 +958,7 @@ describe("Discord controller flows", () => {
       }),
     );
 
-    expect(reply).toEqual({});
+    expect(reply.text).toContain("Resolved endpoint: default (default)");
     expect(clientMock.startThread).toHaveBeenCalledWith({
       profile: "default",
       sessionKey: undefined,
@@ -1053,7 +1061,7 @@ describe("Discord controller flows", () => {
       }),
     );
 
-    expect(reply).toEqual({});
+    expect(reply.text).toContain("Resolved endpoint: default (default)");
     expect(clientMock.startThread).toHaveBeenCalledWith({
       profile: "default",
       sessionKey: undefined,
@@ -1106,7 +1114,7 @@ describe("Discord controller flows", () => {
       }),
     );
 
-    expect(reply).toEqual({});
+    expect(reply.text).toContain("Resolved endpoint: default (default)");
     const binding = (controller as any).store.getBinding({
       channel: "discord",
       accountId: "default",
@@ -1128,7 +1136,7 @@ describe("Discord controller flows", () => {
       }),
     );
 
-    expect(reply).toEqual({});
+    expect(reply.text).toContain("Resolved endpoint: default (default)");
     const binding = (controller as any).store.getBinding({
       channel: "discord",
       accountId: "default",
@@ -1189,9 +1197,8 @@ describe("Discord controller flows", () => {
       }),
     );
 
-    expect(reply).toEqual({
-      text: "Sent a Codex thread picker to this Discord conversation.",
-    });
+    expect(reply.text).toContain("Sent a Codex thread picker to this Discord conversation.");
+    expect(reply.text).toContain("Resolved endpoint: default (default)");
     expect(sendComponentMessage).toHaveBeenCalledWith(
       "channel:chan-1",
       expect.objectContaining({
@@ -2663,7 +2670,7 @@ describe("Discord controller flows", () => {
       "Discord Thread (openclaw)",
       expect.objectContaining({ accountId: "default" }),
     );
-    expect(reply).toEqual({});
+    expect(reply.text).toContain("Resolved endpoint: default (default)");
     const lastCall = sendMessageTelegram.mock.calls.at(-1) as unknown as
       | [string, string, { buttons?: Array<Array<{ text: string }>>; messageThreadId?: number }]
       | undefined;
@@ -2863,7 +2870,8 @@ describe("Discord controller flows", () => {
       }),
     );
 
-    expect(pendingReply).toEqual({ text: "Plugin bind approval required" });
+    expect(pendingReply.text).toContain("Plugin bind approval required");
+    expect(pendingReply.text).toContain("Resolved endpoint: default (default)");
     expect((controller as any).store.getPendingBind({
       channel: "telegram",
       accountId: "default",
@@ -2895,7 +2903,7 @@ describe("Discord controller flows", () => {
       "Discord Thread (openclaw)",
       expect.objectContaining({ accountId: "default" }),
     );
-    expect(hydratedReply).toEqual({});
+    expect(hydratedReply.text).toContain("Resolved endpoint: default (default)");
     const hydratedLastCall = sendMessageTelegram.mock.calls.at(-1) as unknown as
       | [string, string, { buttons?: Array<Array<{ text: string }>>; messageThreadId?: number }]
       | undefined;
@@ -2949,7 +2957,8 @@ describe("Discord controller flows", () => {
       }),
     );
 
-    expect(reply).toEqual({ text: "Plugin bind approval required" });
+    expect(reply.text).toContain("Plugin bind approval required");
+    expect(reply.text).toContain("Resolved endpoint: default (default)");
     expect(requestConversationBinding).toHaveBeenCalledWith(
       expect.objectContaining({
         summary: "Bind this conversation to Codex thread Discord Thread.",
@@ -2992,7 +3001,7 @@ describe("Discord controller flows", () => {
 
     await flushAsyncWork();
 
-    expect(reply).toEqual({});
+    expect(reply.text).toContain("Resolved endpoint: default (default)");
     expect(renameTopic).toHaveBeenCalledWith(
       "123",
       456,
@@ -6814,5 +6823,272 @@ describe("Discord controller flows", () => {
     });
     // The callback should be removed from the store
     expect((controller as any).store.getCallback(callback.token)).toBeNull();
+  });
+
+  it("auto-selects the matching endpoint when exec host=node and node matches endpoint id", async () => {
+    const { controller } = await createControllerHarness({
+      defaultEndpoint: "default",
+      endpoints: [
+        {
+          id: "default",
+          transport: "websocket",
+          url: "ws://127.0.0.1:8765",
+        },
+        {
+          id: "nestdev",
+          transport: "websocket",
+          url: "ws://172.23.100.26:8765",
+        },
+      ],
+    });
+
+    expect((controller as any).resolveAgentEndpointId(undefined, { host: "node", node: "nestdev" })).toBe("nestdev");
+  });
+
+  it("auto-selects the matching endpoint when exec node matches an endpoint alias", async () => {
+    const { controller } = await createControllerHarness({
+      defaultEndpoint: "default",
+      endpoints: [
+        {
+          id: "default",
+          transport: "websocket",
+          url: "ws://127.0.0.1:8765",
+        },
+        {
+          id: "nestdev-cas",
+          execNodes: ["nestdev", "node-123"],
+          transport: "websocket",
+          url: "ws://172.23.100.26:8765",
+        },
+      ],
+    });
+
+    expect((controller as any).resolveAgentEndpointId(undefined, { host: "node", node: "node-123" })).toBe("nestdev-cas");
+  });
+
+  it("keeps the configured default endpoint when exec host is not node", async () => {
+    const { controller } = await createControllerHarness({
+      defaultEndpoint: "default",
+      endpoints: [
+        {
+          id: "default",
+          transport: "websocket",
+          url: "ws://127.0.0.1:8765",
+        },
+        {
+          id: "nestdev",
+          execNodes: ["nestdev"],
+          transport: "websocket",
+          url: "ws://172.23.100.26:8765",
+        },
+      ],
+    });
+
+    expect((controller as any).resolveAgentEndpointId(undefined, { host: "gateway", node: "nestdev" })).toBe("default");
+  });
+
+  it("falls back to a derived node endpoint when exec host=node has no configured match", async () => {
+    const { controller } = await createControllerHarness({
+      defaultEndpoint: "default",
+      endpoints: [
+        {
+          id: "default",
+          transport: "websocket",
+          url: "ws://127.0.0.1:8765",
+        },
+      ],
+    });
+    const deriveSpy = vi
+      .spyOn(controller as any, "tryRegisterNodeDerivedEndpoint")
+      .mockResolvedValue("auto-node-nestdev");
+
+    await expect(
+      (controller as any).resolveAgentEndpointIdWithNodeFallback(undefined, {
+        host: "node",
+        node: "nestdev",
+      }),
+    ).resolves.toBe("auto-node-nestdev");
+    expect(deriveSpy).toHaveBeenCalledWith({ host: "node", node: "nestdev" });
+  });
+
+  it("falls back to default endpoint when node-derived probe is unavailable", async () => {
+    const { controller } = await createControllerHarness({
+      defaultEndpoint: "default",
+      endpoints: [
+        {
+          id: "default",
+          transport: "websocket",
+          url: "ws://127.0.0.1:8765",
+        },
+      ],
+    });
+    vi.spyOn(controller as any, "tryRegisterNodeDerivedEndpoint").mockResolvedValue(undefined);
+
+    await expect(
+      (controller as any).resolveAgentEndpointIdWithNodeFallback(undefined, {
+        host: "node",
+        node: "nestdev",
+      }),
+    ).resolves.toBe("default");
+  });
+
+  it("keeps explicit endpoint selection over node-derived fallback", async () => {
+    const { controller } = await createControllerHarness({
+      defaultEndpoint: "default",
+      endpoints: [
+        {
+          id: "default",
+          transport: "websocket",
+          url: "ws://127.0.0.1:8765",
+        },
+        {
+          id: "gateway",
+          transport: "websocket",
+          url: "ws://127.0.0.1:9999",
+        },
+      ],
+    });
+    const deriveSpy = vi.spyOn(controller as any, "tryRegisterNodeDerivedEndpoint");
+
+    await expect(
+      (controller as any).resolveAgentEndpointIdWithNodeFallback("gateway", {
+        host: "node",
+        node: "nestdev",
+      }),
+    ).resolves.toBe("gateway");
+    expect(deriveSpy).not.toHaveBeenCalled();
+  });
+
+  it("prefers a manual conversation endpoint over automatic node resolution", async () => {
+    const { controller } = await createControllerHarness({
+      defaultEndpoint: "default",
+      endpoints: [
+        {
+          id: "default",
+          transport: "websocket",
+          url: "ws://127.0.0.1:8765",
+        },
+        {
+          id: "nestdev",
+          execNodes: ["nestdev"],
+          transport: "websocket",
+          url: "ws://172.23.100.26:8765",
+        },
+      ],
+    });
+    (controller as any).lastRuntimeConfig = {
+      tools: {
+        exec: {
+          host: "node",
+          node: "nestdev",
+        },
+      },
+    };
+    await (controller as any).store.upsertConversationEndpoint({
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:chan-1",
+      },
+      endpointId: "default",
+      updatedAt: Date.now(),
+    });
+
+    expect(
+      (controller as any).getSelectedEndpointResolution({
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:chan-1",
+      }),
+    ).toMatchObject({ endpointId: "default", source: "manual" });
+  });
+
+  it("clears the manual endpoint override and falls back to automatic node resolution", async () => {
+    const { controller } = await createControllerHarness({
+      defaultEndpoint: "default",
+      endpoints: [
+        {
+          id: "default",
+          transport: "websocket",
+          url: "ws://127.0.0.1:8765",
+        },
+        {
+          id: "nestdev",
+          execNodes: ["nestdev"],
+          transport: "websocket",
+          url: "ws://172.23.100.26:8765",
+        },
+      ],
+    });
+    await (controller as any).store.upsertConversationEndpoint({
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:chan-1",
+      },
+      endpointId: "default",
+      updatedAt: Date.now(),
+    });
+
+    const reply = await controller.handleCommand(
+      "cas_endpoint",
+      buildDiscordCommandContext({
+        args: "auto",
+        commandBody: "/cas_endpoint auto",
+        config: {
+          tools: {
+            exec: {
+              host: "node",
+              node: "nestdev",
+            },
+          },
+        },
+      }),
+    );
+
+    expect((controller as any).store.getConversationEndpoint({
+      channel: "discord",
+      accountId: "default",
+      conversationId: "channel:chan-1",
+    })).toBeNull();
+    expect(reply.text).toContain("Manual endpoint override cleared");
+    expect(reply.text).toContain("Active endpoint: nestdev (auto from node: nestdev)");
+  });
+
+  it("supports cas_endpoints as a direct endpoint inspection alias", async () => {
+    const { controller } = await createControllerHarness({
+      defaultEndpoint: "default",
+      endpoints: [
+        {
+          id: "default",
+          transport: "websocket",
+          url: "ws://127.0.0.1:8765",
+        },
+        {
+          id: "nestdev",
+          execNodes: ["nestdev"],
+          transport: "websocket",
+          url: "ws://172.23.100.26:8765",
+        },
+      ],
+    });
+
+    const reply = await controller.handleCommand(
+      "cas_endpoints",
+      buildDiscordCommandContext({
+        commandBody: "/cas_endpoints",
+        config: {
+          tools: {
+            exec: {
+              host: "node",
+              node: "nestdev",
+            },
+          },
+        },
+      }),
+    );
+
+    expect(reply.text).toContain("Active endpoint: nestdev (auto from node: nestdev)");
+    expect(reply.text).toContain("Configured endpoints:");
   });
 });

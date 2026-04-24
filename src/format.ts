@@ -525,6 +525,8 @@ export function formatCodexContextUsageSnapshot(
 
 export function formatCodexStatusText(params: {
   pluginVersion?: string;
+  endpointId?: string;
+  endpointLabel?: string;
   threadState?: ThreadState;
   bindingThreadTitle?: string;
   account?: AccountSummary | null;
@@ -549,6 +551,10 @@ export function formatCodexStatusText(params: {
   );
   if (params.pluginVersion?.trim()) {
     lines.push(`Plugin version: ${params.pluginVersion.trim()}`);
+  }
+  const endpointLabel = params.endpointLabel?.trim() || params.endpointId?.trim();
+  if (endpointLabel) {
+    lines.push(`Endpoint: ${endpointLabel}`);
   }
   if (params.threadState) {
     lines.push(`Model: ${formatCodexModelText(params.threadState)}`);
@@ -616,6 +622,7 @@ export function formatBoundThreadSummary(params: {
     params.binding.threadTitle?.trim();
   const parts = [
     "Codex thread bound.",
+    params.binding.endpointId ? `Endpoint: ${params.binding.endpointId}` : "",
     `Project: ${projectName}`,
     threadName ? `Thread Name: ${threadName}` : "",
     `Thread ID: ${params.binding.threadId}`,

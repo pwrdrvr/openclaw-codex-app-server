@@ -1,4 +1,4 @@
-import type { PluginSettings } from "./types.js";
+import type { EndpointSettings, PluginSettings } from "./types.js";
 import {
   DEFAULT_REQUEST_TIMEOUT_MS,
 } from "./types.js";
@@ -43,6 +43,14 @@ function readHeaders(record: Record<string, unknown>): Record<string, string> | 
   return Object.keys(headers).length > 0 ? headers : undefined;
 }
 
+function normalizeEndpointId(value: string | undefined, fallback: string): string {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return fallback;
+  }
+  return trimmed.replace(/\s+/g, "-");
+}
+
 function readNumber(
   record: Record<string, unknown>,
   key: string,
@@ -58,27 +66,71 @@ function readNumber(
 
 export function resolvePluginSettings(rawConfig: unknown): PluginSettings {
   const record = asRecord(rawConfig);
-  const transport = record.transport === "websocket" ? "websocket" : "stdio";
-  const authToken = readString(record, "authToken");
-  const configuredHeaders = readHeaders(record);
-  const headers = {
-    ...(configuredHeaders ?? {}),
-    ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+  const endpointRecords = Array.isArray(record.endpoints)
+    ? record.endpoints
+        .map((entry) => asRecord(entry))
+        .filter((entry): entry is Record<string, unknown> => Boolean(entry))
+    : [];
+
+  const parseEndpoint = (entry: Record<string, unknown>, index: number): EndpointSettings => {
+    const transport = entry.transport === "websocket" ? "websocket" : "stdio";
+    const authToken = readString(entry, "authToken");
+    const configuredHeaders = readHeaders(entry);
+    const headers = {
+      ...(configuredHeaders ?? {}),
+      ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+    };
+    const fallbackId = index === 0 ? "default" : `endpoint-${index + 1}`;
+    return {
+      id: normalizeEndpointId(readString(entry, "id"), fallbackId),
+      execNodes: readStringArray(entry, "execNodes"),
+      transport,
+      command: readString(entry, "command") ?? "codex",
+      args: readStringArray(entry, "args"),
+      url: readString(entry, "url"),
+      headers: Object.keys(headers).length > 0 ? headers : undefined,
+      requestTimeoutMs: readNumber(entry, "requestTimeoutMs", DEFAULT_REQUEST_TIMEOUT_MS, 100),
+    };
   };
+
+  const legacyTransport: EndpointSettings["transport"] =
+    record.transport === "websocket" ? "websocket" : "stdio";
+  const legacyAuthToken = readString(record, "authToken");
+  const legacyConfiguredHeaders = readHeaders(record);
+  const legacyHeaders = {
+    ...(legacyConfiguredHeaders ?? {}),
+    ...(legacyAuthToken ? { Authorization: `Bearer ${legacyAuthToken}` } : {}),
+  };
+
+  const endpoints =
+    endpointRecords.length > 0
+      ? endpointRecords.map(parseEndpoint)
+      : [
+          {
+            id: "default",
+            execNodes: readStringArray(record, "execNodes"),
+            transport: legacyTransport,
+            command: readString(record, "command") ?? "codex",
+            args: readStringArray(record, "args"),
+            url: readString(record, "url"),
+            headers: Object.keys(legacyHeaders).length > 0 ? legacyHeaders : undefined,
+            requestTimeoutMs: readNumber(
+              record,
+              "requestTimeoutMs",
+              DEFAULT_REQUEST_TIMEOUT_MS,
+              100,
+            ),
+          },
+        ];
+
+  const requestedDefaultEndpoint = readString(record, "defaultEndpoint");
+  const defaultEndpoint =
+    endpoints.find((entry) => entry.id === requestedDefaultEndpoint)?.id ?? endpoints[0]?.id ?? "default";
 
   return {
     enabled: record.enabled !== false,
-    transport,
-    command: readString(record, "command") ?? "codex",
-    args: readStringArray(record, "args"),
-    url: readString(record, "url"),
-    headers: Object.keys(headers).length > 0 ? headers : undefined,
-    requestTimeoutMs: readNumber(
-      record,
-      "requestTimeoutMs",
-      DEFAULT_REQUEST_TIMEOUT_MS,
-      100,
-    ),
+    defaultEndpoint,
+    endpoints,
     defaultWorkspaceDir: readString(record, "defaultWorkspaceDir"),
     defaultModel: readString(record, "defaultModel"),
     defaultServiceTier: readString(record, "defaultServiceTier"),

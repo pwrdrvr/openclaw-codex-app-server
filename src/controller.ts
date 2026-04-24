@@ -55,9 +55,12 @@ import type {
   CollaborationMode,
   CodexTurnInputItem,
   ConversationPreferences,
+  EndpointSettings,
   InteractiveMessageRef,
+  PendingInputState,
   PermissionsMode,
   ThreadState,
+  TurnResult,
   TurnTerminalError,
 } from "./types.js";
 import {
@@ -85,11 +88,11 @@ import {
   paginateItems,
 } from "./thread-picker.js";
 import {
+  DEFAULT_REQUEST_TIMEOUT_MS,
   INTERACTIVE_NAMESPACE,
   PLUGIN_ID,
   type CallbackAction,
   type ConversationTarget,
-  type PendingInputState,
   type StoredBinding,
   type StoredPendingBind,
   type StoredPendingRequest,
@@ -1210,6 +1213,21 @@ function hasCommandPreferenceOverrides(overrides: CommandPreferenceOverrides): b
   );
 }
 
+function parseEndpointArgs(args: string): { endpointId?: string; error?: string } {
+  const trimmed = args.trim();
+  if (!trimmed) {
+    return {};
+  }
+  const tokens = normalizeOptionDashes(trimmed)
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
+  if (tokens.length !== 1) {
+    return { error: formatCommandUsage("cas_endpoint") };
+  }
+  return { endpointId: tokens[0] };
+}
+
 function mergeConversationPreferences(
   existing: ConversationPreferences | undefined,
   updates: Partial<ConversationPreferences>,
@@ -1307,6 +1325,17 @@ type WorkspaceChoice = {
   latestUpdatedAt?: number;
 };
 
+type AgentExecContext = {
+  host?: string;
+  node?: string;
+};
+
+type EndpointResolution = {
+  endpointId: string;
+  source: "manual" | "auto-node" | "default";
+  nodeId?: string;
+};
+
 function listWorkspaceChoices(
   threads: Array<{ projectKey?: string; createdAt?: number; updatedAt?: number }>,
   projectName?: string,
@@ -1360,7 +1389,7 @@ function summarizeTextForLog(text: string, maxChars = 120): string {
 
 export class CodexPluginController {
   private readonly settings;
-  private readonly client;
+  private readonly clients = new Map<string, CodexAppServerModeClient>();
   private readonly activeRuns = new Map<string, ActiveRunRecord>();
   private readonly threadChangesCache = new Map<string, Promise<boolean | undefined>>();
   private readonly store;
@@ -1370,7 +1399,6 @@ export class CodexPluginController {
 
   constructor(private readonly api: OpenClawPluginApi) {
     this.settings = resolvePluginSettings(this.api.pluginConfig);
-    this.client = new CodexAppServerModeClient(this.settings, this.api.logger);
     this.store = new PluginStateStore(this.api.runtime.state.resolveStateDir());
   }
 
@@ -1392,7 +1420,9 @@ export class CodexPluginController {
       return;
     }
     await this.store.load();
-    await this.client.logStartupProbe().catch(() => undefined);
+    for (const endpoint of this.settings.endpoints) {
+      await this.getClientForEndpoint(endpoint.id).logStartupProbe().catch(() => undefined);
+    }
     this.started = true;
   }
 
@@ -1404,8 +1434,606 @@ export class CodexPluginController {
       await active.handle.interrupt().catch(() => undefined);
     }
     this.activeRuns.clear();
-    await this.client.close().catch(() => undefined);
+    for (const client of this.clients.values()) {
+      await client.close().catch(() => undefined);
+    }
+    this.clients.clear();
     this.started = false;
+  }
+
+  async describeAgentEndpoints(): Promise<{
+    defaultEndpoint: string;
+    defaultWorkspaceDir: string | null;
+    defaultModel: string | null;
+    endpoints: Array<{
+      id: string;
+      execNodes: string[];
+      transport: string;
+      url: string | null;
+      command: string;
+      args: string[];
+      requestTimeoutMs: number;
+      supportsFullAccess: boolean;
+    }>;
+  }> {
+    await this.start();
+    return {
+      defaultEndpoint: this.settings.defaultEndpoint,
+      defaultWorkspaceDir: this.settings.defaultWorkspaceDir ?? null,
+      defaultModel: this.settings.defaultModel ?? null,
+      endpoints: this.settings.endpoints.map((endpoint, index) => ({
+        id: endpoint.id ?? `endpoint-${index + 1}`,
+        execNodes: [...(endpoint.execNodes ?? [])],
+        transport: endpoint.transport,
+        url: endpoint.url ?? null,
+        command: endpoint.command,
+        args: [...endpoint.args],
+        requestTimeoutMs: endpoint.requestTimeoutMs,
+        supportsFullAccess: this.getClientForEndpoint(endpoint.id).hasProfile("full-access"),
+      })),
+    };
+  }
+
+  async listAgentThreads(params: {
+    sessionKey?: string;
+    endpointId?: string;
+    execContext?: AgentExecContext;
+    workspaceDir?: string;
+    includeAllWorkspaces?: boolean;
+    filter?: string;
+    permissionsMode?: PermissionsMode;
+  }): Promise<{
+    endpointId: string;
+    workspaceDir: string | null;
+    filter: string | null;
+    permissionsMode: PermissionsMode;
+    threads: Awaited<ReturnType<CodexAppServerModeClient["listThreads"]>>;
+  }> {
+    await this.start();
+    const endpointId = await this.resolveAgentEndpointIdWithNodeFallback(
+      params.endpointId,
+      params.execContext,
+    );
+    const permissionsMode = this.resolveAgentPermissionsMode(endpointId, params.permissionsMode);
+    const workspaceDir = params.includeAllWorkspaces
+      ? undefined
+      : resolveWorkspaceDir({
+          requested: params.workspaceDir,
+          configuredWorkspaceDir: this.settings.defaultWorkspaceDir,
+          serviceWorkspaceDir: this.serviceWorkspaceDir,
+        });
+    const threads = await this.getClientForEndpoint(endpointId).listThreads({
+      sessionKey: params.sessionKey,
+      workspaceDir,
+      filter: params.filter?.trim() || undefined,
+      profile: permissionsMode,
+    });
+    return {
+      endpointId,
+      workspaceDir: workspaceDir ?? null,
+      filter: params.filter?.trim() || null,
+      permissionsMode,
+      threads,
+    };
+  }
+
+  async readAgentThreadContext(params: {
+    sessionKey?: string;
+    endpointId?: string;
+    execContext?: AgentExecContext;
+    threadId: string;
+    permissionsMode?: PermissionsMode;
+  }): Promise<{
+    endpointId: string;
+    permissionsMode: PermissionsMode;
+    threadId: string;
+    state: ThreadState;
+    context: Awaited<ReturnType<CodexAppServerModeClient["readThreadContext"]>>;
+  }> {
+    await this.start();
+    const endpointId = await this.resolveAgentEndpointIdWithNodeFallback(
+      params.endpointId,
+      params.execContext,
+    );
+    const permissionsMode = this.resolveAgentPermissionsMode(endpointId, params.permissionsMode);
+    const threadId = params.threadId.trim();
+    const client = this.getClientForEndpoint(endpointId);
+    const [state, context] = await Promise.all([
+      client.readThreadState({
+        sessionKey: params.sessionKey,
+        threadId,
+        profile: permissionsMode,
+      }),
+      client.readThreadContext({
+        sessionKey: params.sessionKey,
+        threadId,
+        profile: permissionsMode,
+      }),
+    ]);
+    return {
+      endpointId,
+      permissionsMode,
+      threadId,
+      state,
+      context,
+    };
+  }
+
+  async runAgentTask(params: {
+    sessionKey?: string;
+    endpointId?: string;
+    execContext?: AgentExecContext;
+    prompt: string;
+    workspaceDir?: string;
+    threadId?: string;
+    threadName?: string;
+    reuseThreadByName?: boolean;
+    permissionsMode?: PermissionsMode;
+    model?: string;
+    reasoningEffort?: string;
+    serviceTier?: string;
+    collaborationMode?: CollaborationMode;
+    input?: readonly CodexTurnInputItem[];
+  }): Promise<{
+    endpointId: string;
+    workspaceDir: string;
+    permissionsMode: PermissionsMode;
+    threadId: string;
+    threadName: string | null;
+    reusedThreadByName: boolean;
+    createdThread: boolean;
+    pendingInput: null | Pick<PendingInputState, "requestId" | "options" | "promptText" | "method">;
+    result: TurnResult;
+  }> {
+    await this.start();
+    const endpointId = await this.resolveAgentEndpointIdWithNodeFallback(
+      params.endpointId,
+      params.execContext,
+    );
+    const permissionsMode = this.resolveAgentPermissionsMode(endpointId, params.permissionsMode);
+    const workspaceDir = resolveWorkspaceDir({
+      requested: params.workspaceDir,
+      configuredWorkspaceDir: this.settings.defaultWorkspaceDir,
+      serviceWorkspaceDir: this.serviceWorkspaceDir,
+    });
+    const threadName = params.threadName?.trim() || "";
+    const client = this.getClientForEndpoint(endpointId);
+    let threadId = params.threadId?.trim() || "";
+    let reusedThreadByName = false;
+    let createdThread = false;
+
+    if (!threadId && params.reuseThreadByName && threadName) {
+      const matches = await client.listThreads({
+        sessionKey: params.sessionKey,
+        workspaceDir,
+        filter: threadName,
+        profile: permissionsMode,
+      });
+      const exactMatch =
+        matches.find((entry) => entry.title?.trim() === threadName) ??
+        matches.find((entry) => entry.threadId.trim() === threadName);
+      if (exactMatch) {
+        threadId = exactMatch.threadId;
+        reusedThreadByName = true;
+      }
+    }
+
+    if (!threadId && threadName) {
+      const created = await client.startThread({
+        sessionKey: params.sessionKey,
+        workspaceDir,
+        model: params.model?.trim() || this.settings.defaultModel,
+        profile: permissionsMode,
+      });
+      threadId = created.threadId;
+      createdThread = true;
+      await client.setThreadName({
+        sessionKey: params.sessionKey,
+        threadId,
+        name: threadName,
+        profile: permissionsMode,
+      });
+      if (params.serviceTier?.trim()) {
+        await client.setThreadServiceTier({
+          sessionKey: params.sessionKey,
+          threadId,
+          serviceTier: params.serviceTier.trim(),
+          profile: permissionsMode,
+        });
+      }
+    }
+
+    let pendingInput: null | Pick<PendingInputState, "requestId" | "options" | "promptText" | "method"> = null;
+    let activeRun: ActiveCodexRun | null = null;
+    activeRun = client.startTurn({
+      sessionKey: params.sessionKey,
+      prompt: params.prompt,
+      input: params.input,
+      workspaceDir,
+      runId: `agent-${crypto.randomUUID()}`,
+      existingThreadId: threadId || undefined,
+      model: params.model?.trim() || this.settings.defaultModel,
+      reasoningEffort: params.reasoningEffort?.trim() || undefined,
+      serviceTier: params.serviceTier?.trim() || this.settings.defaultServiceTier,
+      collaborationMode: params.collaborationMode,
+      onPendingInput: async (state) => {
+        pendingInput = state
+          ? {
+              requestId: state.requestId,
+              options: [...state.options],
+              promptText: state.promptText,
+              method: state.method,
+            }
+          : null;
+        if (state) {
+          await activeRun?.interrupt().catch(() => undefined);
+        }
+      },
+    });
+
+    const rawResult = await activeRun.result;
+    if (!("threadId" in rawResult)) {
+      throw new Error("Codex startTurn returned a non-turn result.");
+    }
+    const result: TurnResult = rawResult;
+    return {
+      endpointId,
+      workspaceDir,
+      permissionsMode,
+      threadId: result.threadId,
+      threadName: threadName || null,
+      reusedThreadByName,
+      createdThread,
+      pendingInput,
+      result,
+    };
+  }
+
+  private resolveAgentEndpointId(endpointId?: string, execContext?: AgentExecContext): string {
+    const requested = endpointId?.trim();
+    if (requested) {
+      if (!this.settings.endpoints.some((entry) => entry.id === requested)) {
+        throw new Error(`Unknown Codex endpoint: ${requested}`);
+      }
+      return requested;
+    }
+    const inferred = this.resolveEndpointIdFromExecContext(execContext);
+    if (inferred) {
+      return inferred;
+    }
+    return this.settings.defaultEndpoint;
+  }
+
+  private async resolveAgentEndpointIdWithNodeFallback(
+    endpointId?: string,
+    execContext?: AgentExecContext,
+  ): Promise<string> {
+    const requested = endpointId?.trim();
+    if (requested) {
+      return this.resolveAgentEndpointId(requested, execContext);
+    }
+    const inferred = this.resolveEndpointIdFromExecContext(execContext);
+    if (inferred) {
+      return inferred;
+    }
+    const derived = await this.tryRegisterNodeDerivedEndpoint(execContext);
+    if (derived) {
+      return derived;
+    }
+    return this.settings.defaultEndpoint;
+  }
+
+  private async tryRegisterNodeDerivedEndpoint(
+    execContext?: AgentExecContext,
+  ): Promise<string | undefined> {
+    const host = execContext?.host?.trim().toLowerCase();
+    const node = execContext?.node?.trim();
+    if (host !== "node" || !node) {
+      return undefined;
+    }
+    const normalizedNode = node.toLowerCase();
+    const existingAliasMatch = this.settings.endpoints.find((entry) =>
+      (entry.execNodes ?? []).some((alias) => alias.trim().toLowerCase() === normalizedNode),
+    );
+    if (existingAliasMatch?.id) {
+      return existingAliasMatch.id;
+    }
+    const derivedEndpointId = this.buildNodeDerivedEndpointId(node);
+    const existingById = this.settings.endpoints.find((entry) => entry.id === derivedEndpointId);
+    if (existingById?.id) {
+      return existingById.id;
+    }
+
+    const derivedUrl = this.buildNodeDerivedEndpointUrl(node);
+    const probeEndpoint: EndpointSettings = {
+      id: `${derivedEndpointId}__probe`,
+      execNodes: [node],
+      transport: "websocket",
+      command: "codex",
+      args: [],
+      url: derivedUrl,
+      requestTimeoutMs: 3_000,
+    };
+    const probeClient = new CodexAppServerModeClient(probeEndpoint, this.api.logger);
+    let available = false;
+    try {
+      await probeClient.readAccount({ profile: "default" });
+      available = true;
+    } catch (error) {
+      this.api.logger.debug?.(
+        `codex auto-node endpoint probe failed node=${node} url=${derivedUrl}: ${String(error)}`,
+      );
+    } finally {
+      await probeClient.close().catch(() => undefined);
+    }
+    if (!available) {
+      return undefined;
+    }
+
+    const derivedEndpoint: EndpointSettings = {
+      id: derivedEndpointId,
+      execNodes: [node],
+      transport: "websocket",
+      command: "codex",
+      args: [],
+      url: derivedUrl,
+      requestTimeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
+    };
+    this.settings.endpoints.push(derivedEndpoint);
+    this.api.logger.info(
+      `codex auto-node endpoint registered id=${derivedEndpoint.id} node=${node} url=${derivedUrl}`,
+    );
+    return derivedEndpoint.id;
+  }
+
+  private buildNodeDerivedEndpointId(node: string): string {
+    const normalized = node
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9.-]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    return `auto-node-${normalized || "default"}`;
+  }
+
+  private buildNodeDerivedEndpointUrl(node: string): string {
+    const trimmed = node.trim();
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) {
+      try {
+        const parsed = new URL(trimmed);
+        parsed.protocol = "ws:";
+        if (!parsed.port) {
+          parsed.port = "8765";
+        }
+        return parsed.toString().replace(/\/$/, "");
+      } catch {
+        // fall through and try host-based parsing
+      }
+    }
+    if (/^\[[^\]]+\](?::\d+)?$/.test(trimmed)) {
+      return /:\d+$/.test(trimmed) ? `ws://${trimmed}` : `ws://${trimmed}:8765`;
+    }
+    if (/^[^:]+:\d+$/.test(trimmed)) {
+      return `ws://${trimmed}`;
+    }
+    return `ws://${trimmed}:8765`;
+  }
+
+  private resolveEndpointIdFromExecContext(execContext?: AgentExecContext): string | undefined {
+    const host = execContext?.host?.trim().toLowerCase();
+    if (host !== "node") {
+      return undefined;
+    }
+    const node = execContext?.node?.trim();
+    if (!node) {
+      return undefined;
+    }
+    const normalizedNode = node.toLowerCase();
+    const exactMatch = this.settings.endpoints.find((entry) => entry.id?.trim().toLowerCase() === normalizedNode);
+    if (exactMatch?.id) {
+      return exactMatch.id;
+    }
+    const aliasMatch = this.settings.endpoints.find((entry) =>
+      (entry.execNodes ?? []).some((alias) => alias.trim().toLowerCase() === normalizedNode),
+    );
+    return aliasMatch?.id;
+  }
+
+  private resolveAgentPermissionsMode(
+    endpointId: string,
+    requested?: PermissionsMode,
+  ): PermissionsMode {
+    const resolved = requested === "full-access" ? "full-access" : "default";
+    if (resolved === "full-access" && !this.getClientForEndpoint(endpointId).hasProfile("full-access")) {
+      throw new Error(`Codex endpoint ${endpointId} does not expose the full-access profile.`);
+    }
+    return resolved;
+  }
+
+  private getEndpointIdForBinding(binding: StoredBinding | StoredPendingBind | null | undefined): string {
+    const requested = binding?.endpointId?.trim();
+    if (requested && this.settings.endpoints.some((entry) => entry.id === requested)) {
+      return requested;
+    }
+    return this.settings.defaultEndpoint;
+  }
+
+  private readExecContextFromConfig(config: unknown): AgentExecContext | undefined {
+    if (!config || typeof config !== "object" || Array.isArray(config)) {
+      return undefined;
+    }
+    const tools = (config as { tools?: unknown }).tools;
+    if (!tools || typeof tools !== "object" || Array.isArray(tools)) {
+      return undefined;
+    }
+    const exec = (tools as { exec?: unknown }).exec;
+    if (!exec || typeof exec !== "object" || Array.isArray(exec)) {
+      return undefined;
+    }
+    const host = typeof (exec as { host?: unknown }).host === "string"
+      ? (exec as { host?: string }).host?.trim()
+      : undefined;
+    const node = typeof (exec as { node?: unknown }).node === "string"
+      ? (exec as { node?: string }).node?.trim()
+      : undefined;
+    if (!host && !node) {
+      return undefined;
+    }
+    return { host, node };
+  }
+
+  private getManualEndpointId(conversation: ConversationTarget | null | undefined): string | undefined {
+    if (!conversation) {
+      return undefined;
+    }
+    const stored = this.store.getConversationEndpoint(conversation)?.endpointId?.trim();
+    if (stored && this.settings.endpoints.some((entry) => entry.id === stored)) {
+      return stored;
+    }
+    return undefined;
+  }
+
+  private getSelectedEndpointId(
+    conversation: ConversationTarget | null | undefined,
+    _binding?: StoredBinding | StoredPendingBind | null,
+  ): string {
+    return this.getSelectedEndpointResolution(conversation).endpointId;
+  }
+
+  private getSelectedEndpointResolution(
+    conversation: ConversationTarget | null | undefined,
+  ): EndpointResolution {
+    const manualEndpointId = this.getManualEndpointId(conversation);
+    if (manualEndpointId) {
+      return {
+        endpointId: manualEndpointId,
+        source: "manual",
+      };
+    }
+    const execContext = this.readExecContextFromConfig(this.getOpenClawConfig());
+    const autoEndpointId = this.resolveEndpointIdFromExecContext(execContext);
+    if (autoEndpointId) {
+      return {
+        endpointId: autoEndpointId,
+        source: "auto-node",
+        nodeId: execContext?.node?.trim() || undefined,
+      };
+    }
+    return {
+      endpointId: this.settings.defaultEndpoint,
+      source: "default",
+    };
+  }
+
+  private async setSelectedEndpointId(conversation: ConversationTarget, endpointId: string): Promise<void> {
+    await this.store.upsertConversationEndpoint({
+      conversation: {
+        channel: conversation.channel,
+        accountId: conversation.accountId,
+        conversationId: conversation.conversationId,
+        parentConversationId: conversation.parentConversationId,
+      },
+      endpointId,
+      updatedAt: Date.now(),
+    });
+  }
+
+  private async clearSelectedEndpointId(conversation: ConversationTarget): Promise<void> {
+    await this.store.removeConversationEndpoint(conversation);
+  }
+
+  private formatEndpointResolutionLabel(selection: EndpointResolution): string {
+    if (selection.source === "manual") {
+      return `${selection.endpointId} (manual override)`;
+    }
+    if (selection.source === "auto-node") {
+      return `${selection.endpointId} (auto from node${selection.nodeId ? `: ${selection.nodeId}` : ""})`;
+    }
+    return `${selection.endpointId} (default)`;
+  }
+
+  private formatEndpointListText(params: {
+    conversation?: ConversationTarget | null;
+    selection: EndpointResolution;
+    binding?: StoredBinding | null;
+  }): string {
+    const manualEndpointId = this.getManualEndpointId(params.conversation ?? params.binding?.conversation ?? null);
+    const lines = [
+      `Active endpoint: ${this.formatEndpointResolutionLabel(params.selection)}`,
+      `Manual override: ${manualEndpointId ?? "none"}`,
+      params.binding
+        ? `Bound endpoint: ${this.getEndpointIdForBinding(params.binding)}`
+        : "Bound endpoint: none",
+      "",
+      "Configured endpoints:",
+      ...this.settings.endpoints.map((endpoint) => {
+        const markers = [
+          endpoint.id === params.selection.endpointId ? "active" : "",
+          endpoint.id === manualEndpointId ? "manual" : "",
+          params.binding && endpoint.id === this.getEndpointIdForBinding(params.binding) ? "bound" : "",
+          endpoint.id === this.settings.defaultEndpoint ? "default" : "",
+        ].filter(Boolean);
+        return `- ${endpoint.id} (${endpoint.transport})${markers.length ? ` [${markers.join(", ")}]` : ""}`;
+      }),
+    ];
+    if (
+      params.binding &&
+      this.getEndpointIdForBinding(params.binding) !== params.selection.endpointId
+    ) {
+      lines.push(
+        "",
+        "Note: this conversation is still bound to a thread on a different endpoint. Use /cas_resume after detaching if you want to bind on the active endpoint.",
+      );
+    }
+    return lines.join("\n");
+  }
+
+  private buildEndpointSelectionNotice(
+    selection: EndpointResolution,
+    binding?: StoredBinding | null,
+    conversation?: ConversationTarget | null,
+  ): string {
+    return [
+      selection.source === "manual"
+        ? `Manual endpoint override set to ${selection.endpointId}.`
+        : `Manual endpoint override cleared. Active endpoint is now ${this.formatEndpointResolutionLabel(selection)}.`,
+      binding && this.getEndpointIdForBinding(binding) !== selection.endpointId
+        ? `This conversation is still bound to a thread on ${this.getEndpointIdForBinding(binding)}. Use /cas_resume to browse/bind on ${selection.endpointId}.`
+        : "",
+      "",
+      this.formatEndpointListText({
+        conversation,
+        selection,
+        binding,
+      }),
+    ].filter(Boolean).join("\n");
+  }
+
+  private getClientForEndpoint(endpointId?: string): CodexAppServerModeClient {
+    const resolvedEndpointId =
+      endpointId && this.settings.endpoints.some((entry) => entry.id === endpointId)
+        ? endpointId
+        : this.settings.defaultEndpoint;
+    const existing = this.clients.get(resolvedEndpointId);
+    if (existing) {
+      return existing;
+    }
+    const endpoint =
+      this.settings.endpoints.find((entry) => entry.id === resolvedEndpointId) ??
+      this.settings.endpoints[0];
+    if (!endpoint) {
+      throw new Error("Codex endpoint configuration is missing.");
+    }
+    const client = new CodexAppServerModeClient(endpoint, this.api.logger);
+    this.clients.set(resolvedEndpointId, client);
+    return client;
+  }
+
+  private getClientForBinding(binding: StoredBinding | StoredPendingBind | null | undefined): CodexAppServerModeClient {
+    return this.getClientForEndpoint(this.getEndpointIdForBinding(binding));
+  }
+
+  private get client(): CodexAppServerModeClient {
+    return this.getClientForEndpoint();
   }
 
   async handleConversationBindingResolved(
@@ -1441,6 +2069,7 @@ export class CodexPluginController {
     }
     await this.bindConversation(conversation, {
       threadId: pending.threadId,
+      endpointId: pending.endpointId,
       workspaceDir: pending.workspaceDir,
       threadTitle: pending.threadTitle,
       permissionsMode: normalizePermissionsMode(pending.permissionsMode),
@@ -1895,16 +2524,36 @@ export class CodexPluginController {
     }
 
     switch (commandName) {
-      case "cas_resume":
-        return await this.handleJoinCommand(
-          conversation,
-          binding,
-          args,
-          ctx.channel,
-          ctx,
-          pendingBind,
-          hydratedBinding?.pendingBind,
-        );
+      case "cas_resume": {
+        const resolvedEndpointText = conversation
+          ? `Resolved endpoint: ${this.formatEndpointResolutionLabel(this.getSelectedEndpointResolution(conversation))}`
+          : undefined;
+        const withResolvedEndpoint = (reply: ReplyPayload): ReplyPayload => {
+          if (!resolvedEndpointText) {
+            return reply;
+          }
+          const text = reply.text?.trim();
+          return {
+            ...reply,
+            text: text ? `${text}\n\n${resolvedEndpointText}` : resolvedEndpointText,
+          };
+        };
+        try {
+          const reply = await this.handleJoinCommand(
+            conversation,
+            binding,
+            args,
+            ctx.channel,
+            ctx,
+            pendingBind,
+            hydratedBinding?.pendingBind,
+          );
+          return withResolvedEndpoint(reply);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          return withResolvedEndpoint({ text: `cas_resume failed: ${message}` });
+        }
+      }
       case "cas_detach":
         if (!conversation) {
           return { text: "This command needs a Telegram or Discord conversation." };
@@ -1943,6 +2592,9 @@ export class CodexPluginController {
         return await this.handleFastCommand(binding, args);
       case "cas_model":
         return await this.handleModelCommand(conversation, binding, args);
+      case "cas_endpoints":
+      case "cas_endpoint":
+        return await this.handleEndpointCommand(conversation, binding, args);
       case "cas_permissions":
         return await this.handlePermissionsCommand(
           conversation,
@@ -1967,6 +2619,7 @@ export class CodexPluginController {
   private async handleStartNewThreadSelection(
     conversation: ConversationTarget | null,
     binding: StoredBinding | null,
+    endpointId: string | undefined,
     parsed: ReturnType<typeof parseThreadSelectionArgs>,
     channel: string,
     requestConversationBinding?: PickerResponders["requestConversationBinding"],
@@ -1975,7 +2628,7 @@ export class CodexPluginController {
       return { text: "This command needs a Telegram or Discord conversation." };
     }
     if (parsed.listProjects || !parsed.query) {
-      const picker = await this.renderProjectPicker(conversation, binding, parsed, 0, "start-new-thread");
+      const picker = await this.renderProjectPicker(conversation, binding, parsed, 0, "start-new-thread", endpointId);
       if (isDiscordChannel(channel) && picker.buttons) {
         try {
           await this.sendDiscordPicker(conversation, picker);
@@ -1990,7 +2643,7 @@ export class CodexPluginController {
 
     const workspaceDir = await this.resolveNewThreadWorkspaceDir(binding, parsed);
     if (!workspaceDir) {
-      const picker = await this.renderProjectPicker(conversation, binding, parsed, 0, "start-new-thread");
+      const picker = await this.renderProjectPicker(conversation, binding, parsed, 0, "start-new-thread", endpointId);
       if (isDiscordChannel(channel) && picker.buttons) {
         try {
           await this.sendDiscordPicker(conversation, picker);
@@ -2008,6 +2661,7 @@ export class CodexPluginController {
     const result = await this.startNewThreadAndBindConversation(
       conversation,
       binding,
+      endpointId,
       workspaceDir,
       parsed.syncTopic,
       {
@@ -2029,6 +2683,7 @@ export class CodexPluginController {
   private async handleListCommand(
     conversation: ConversationTarget | null,
     binding: StoredBinding | null,
+    endpointId: string | undefined,
     filter: string,
     channel: string,
   ): Promise<ReplyPayload> {
@@ -2037,8 +2692,8 @@ export class CodexPluginController {
       return { text: "This command needs a Telegram or Discord conversation." };
     }
     const picker = parsed.listProjects
-      ? await this.renderProjectPicker(conversation, binding, parsed, 0)
-      : await this.renderThreadPicker(conversation, binding, parsed, 0);
+      ? await this.renderProjectPicker(conversation, binding, parsed, 0, "resume-thread", endpointId)
+      : await this.renderThreadPicker(conversation, binding, parsed, 0, undefined, endpointId);
     if (isDiscordChannel(channel) && picker.buttons) {
       try {
         await this.sendDiscordPicker(conversation, picker);
@@ -2068,7 +2723,16 @@ export class CodexPluginController {
     if (parsed.error) {
       return { text: parsed.error };
     }
-    if (parsed.requestedYolo && !this.hasFullAccessProfile()) {
+    const selectedEndpointId = this.getSelectedEndpointId(conversation, binding);
+    const resumeBinding =
+      binding && this.getEndpointIdForBinding(binding) === selectedEndpointId ? binding : null;
+    const resumePendingBind =
+      pendingBind && this.getEndpointIdForBinding(pendingBind) === selectedEndpointId ? pendingBind : null;
+    const resumeHydratedPendingBind =
+      hydratedPendingBind && this.getEndpointIdForBinding(hydratedPendingBind) === selectedEndpointId
+        ? hydratedPendingBind
+        : undefined;
+    if (parsed.requestedYolo && !this.hasFullAccessProfile(selectedEndpointId)) {
       return { text: "Full Access is unavailable in the current Codex Desktop session." };
     }
     if (parsed.requestedFast && parsed.requestedModel && !modelSupportsFast(parsed.requestedModel)) {
@@ -2084,22 +2748,23 @@ export class CodexPluginController {
     if (parsed.startNew) {
       return await this.handleStartNewThreadSelection(
         conversation,
-        binding,
+        resumeBinding,
+        selectedEndpointId,
         parsed,
         channel,
         bindingApi.requestConversationBinding,
       );
     }
     if (
-      hydratedPendingBind?.notifyBound &&
+      resumeHydratedPendingBind?.notifyBound &&
       !parsed.listProjects &&
       !parsed.query
     ) {
-      if (hydratedPendingBind.syncTopic) {
+      if (resumeHydratedPendingBind.syncTopic) {
         const syncedName = buildResumeTopicName({
-          title: hydratedPendingBind.threadTitle,
-          projectKey: hydratedPendingBind.workspaceDir,
-          threadId: hydratedPendingBind.threadId,
+          title: resumeHydratedPendingBind.threadTitle,
+          projectKey: resumeHydratedPendingBind.workspaceDir,
+          threadId: resumeHydratedPendingBind.threadId,
         });
         if (syncedName) {
           await this.renameConversationIfSupported(conversation, syncedName);
@@ -2108,24 +2773,25 @@ export class CodexPluginController {
       await this.sendBoundConversationNotifications(conversation);
       return {};
     }
-    if (pendingBind && !binding && !parsed.listProjects && !parsed.query) {
-      const syncTopic = parsed.syncTopic || Boolean(pendingBind.syncTopic);
+    if (resumePendingBind && !resumeBinding && !parsed.listProjects && !parsed.query) {
+      const syncTopic = parsed.syncTopic || Boolean(resumePendingBind.syncTopic);
       const targetPermissionsMode = this.resolveRequestedPermissionsMode(
-        normalizePermissionsMode(pendingBind.permissionsMode),
+        normalizePermissionsMode(resumePendingBind.permissionsMode),
         parsed.requestedYolo,
       );
       const preferences = this.buildBindingPreferencesWithOverrides(
-        pendingBind.preferences,
+        resumePendingBind.preferences,
         overrides,
         parsed.requestedModel,
       );
       const bindResult = await this.requestConversationBinding(
         conversation,
         {
-          threadId: pendingBind.threadId,
-          workspaceDir: pendingBind.workspaceDir,
+          threadId: resumePendingBind.threadId,
+          endpointId: resumePendingBind.endpointId,
+          workspaceDir: resumePendingBind.workspaceDir,
           permissionsMode: targetPermissionsMode,
-          threadTitle: pendingBind.threadTitle,
+          threadTitle: resumePendingBind.threadTitle,
           syncTopic,
           preferences,
           notifyBound: true,
@@ -2140,9 +2806,9 @@ export class CodexPluginController {
       }
       if (syncTopic) {
         const syncedName = buildResumeTopicName({
-          title: pendingBind.threadTitle,
-          projectKey: pendingBind.workspaceDir,
-          threadId: pendingBind.threadId,
+          title: resumePendingBind.threadTitle,
+          projectKey: resumePendingBind.workspaceDir,
+          threadId: resumePendingBind.threadId,
         });
         if (syncedName) {
           await this.renameConversationIfSupported(conversation, syncedName);
@@ -2153,11 +2819,18 @@ export class CodexPluginController {
     }
     if (parsed.listProjects || !parsed.query) {
       const passthroughArgs = formatThreadSelectionFlags(parsed);
-      return await this.handleListCommand(conversation, binding, passthroughArgs, channel);
+      return await this.handleListCommand(
+        conversation,
+        resumeBinding,
+        selectedEndpointId,
+        passthroughArgs,
+        channel,
+      );
     }
-    const workspaceDir = this.resolveThreadWorkspaceDir(parsed, binding, false);
+    const workspaceDir = this.resolveThreadWorkspaceDir(parsed, resumeBinding, false);
     const selection = await this.resolveSingleThread(
-      binding?.sessionKey,
+      selectedEndpointId,
+      resumeBinding?.sessionKey,
       workspaceDir,
       parsed.query,
     );
@@ -2165,7 +2838,14 @@ export class CodexPluginController {
       return { text: `No Codex thread matched "${parsed.query}".` };
     }
     if (selection.kind === "ambiguous") {
-      const picker = await this.renderThreadPicker(conversation, binding, parsed, 0);
+      const picker = await this.renderThreadPicker(
+        conversation,
+        resumeBinding,
+        parsed,
+        0,
+        undefined,
+        selectedEndpointId,
+      );
       if (isDiscordChannel(channel) && picker.buttons) {
         try {
           await this.sendDiscordPicker(conversation, picker);
@@ -2180,21 +2860,22 @@ export class CodexPluginController {
       return buildReplyWithButtons(picker.text, picker.buttons);
     }
     const targetPermissionsMode = this.resolveRequestedPermissionsMode(
-      this.getPermissionsMode(binding),
+      this.getPermissionsMode(resumeBinding),
       parsed.requestedYolo,
     );
     const preferences = this.buildBindingPreferencesWithOverrides(
-      binding?.preferences,
+      resumeBinding?.preferences,
       overrides,
       parsed.requestedModel,
     );
     const bindResult = await this.requestConversationBinding(conversation, {
       threadId: selection.thread.threadId,
+      endpointId: selectedEndpointId,
       workspaceDir:
         selection.thread.projectKey ||
         workspaceDir ||
         resolveWorkspaceDir({
-          bindingWorkspaceDir: binding?.workspaceDir,
+          bindingWorkspaceDir: resumeBinding?.workspaceDir,
           configuredWorkspaceDir: this.settings.defaultWorkspaceDir,
           serviceWorkspaceDir: this.serviceWorkspaceDir,
       }),
@@ -2258,7 +2939,7 @@ export class CodexPluginController {
         currentPermissionsMode,
         parsed.requestedYolo,
       );
-      if (targetPermissionsMode === "full-access" && !this.hasFullAccessProfile()) {
+      if (targetPermissionsMode === "full-access" && !this.hasFullAccessProfile(binding)) {
         note = buildPermissionsUnavailableNote();
         const card = await this.buildStatusCard(conversation, binding, bindingActive);
         const text = `${card.text}\n\n${note}`;
@@ -2308,8 +2989,13 @@ export class CodexPluginController {
     return await this.sendStatusCardCommandReply(conversation, text, card.buttons);
   }
 
-  private hasFullAccessProfile(): boolean {
-    return this.client.hasProfile("full-access");
+  private hasFullAccessProfile(
+    bindingOrEndpoint?: StoredBinding | StoredPendingBind | string | null,
+  ): boolean {
+    if (typeof bindingOrEndpoint === "string") {
+      return this.getClientForEndpoint(bindingOrEndpoint).hasProfile("full-access");
+    }
+    return this.getClientForBinding(bindingOrEndpoint).hasProfile("full-access");
   }
 
   private getPermissionsMode(binding: StoredBinding | null | undefined): PermissionsMode {
@@ -2336,7 +3022,8 @@ export class CodexPluginController {
     effectiveState: ThreadState | undefined;
   }> {
     const profile = this.getPermissionsMode(binding);
-    const state = await this.client.readThreadState({
+    const client = this.getClientForBinding(binding);
+    const state = await client.readThreadState({
       profile,
       sessionKey: binding.sessionKey,
       threadId: binding.threadId,
@@ -2359,7 +3046,7 @@ export class CodexPluginController {
     }
     const configuredDefault = this.settings.defaultModel?.trim() || undefined;
     try {
-      const models = await this.client.listModels({
+      const models = await this.getClientForBinding(binding).listModels({
         profile: this.getPermissionsMode(binding),
         sessionKey: binding.sessionKey,
       });
@@ -2413,9 +3100,10 @@ export class CodexPluginController {
     },
   ): Promise<ThreadState | undefined> {
     const profile = this.getPermissionsMode(binding);
+    const client = this.getClientForBinding(binding);
     let state =
       opts?.threadState ??
-      (await this.client.readThreadState({
+      (await client.readThreadState({
         profile,
         sessionKey: binding.sessionKey,
         threadId: binding.threadId,
@@ -2423,7 +3111,7 @@ export class CodexPluginController {
     let desired = buildDesiredThreadConfiguration(state, binding, opts?.modelFallback);
     if (desired.model && desired.model !== state?.model?.trim()) {
       try {
-        state = await this.client.setThreadModel({
+        state = await client.setThreadModel({
           profile,
           sessionKey: binding.sessionKey,
           threadId: binding.threadId,
@@ -2440,7 +3128,7 @@ export class CodexPluginController {
     const desiredServiceTier = normalizePreferenceServiceTier(desired.effectiveState?.serviceTier);
     if (desiredServiceTier !== currentServiceTier) {
       try {
-        state = await this.client.setThreadServiceTier({
+        state = await client.setThreadServiceTier({
           profile,
           sessionKey: binding.sessionKey,
           threadId: binding.threadId,
@@ -2463,7 +3151,7 @@ export class CodexPluginController {
       )
     ) {
       try {
-        state = await this.client.setThreadPermissions({
+        state = await client.setThreadPermissions({
           profile,
           sessionKey: binding.sessionKey,
           threadId: binding.threadId,
@@ -2488,9 +3176,13 @@ export class CodexPluginController {
     const currentReasoning = normalizeReasoningEffort(
       effectiveState?.reasoningEffort ?? binding.preferences?.preferredReasoningEffort,
     );
-    const [showModelPicker, showReasoningPicker, togglePermissions, compactThread, stopRun, refreshStatus, detachThread, showSkills, showMcp] = await Promise.all([
+    const [showModelPicker, showEndpointPicker, showReasoningPicker, togglePermissions, compactThread, stopRun, refreshStatus, detachThread, showSkills, showMcp] = await Promise.all([
       this.store.putCallback({
         kind: "show-model-picker",
+        conversation,
+      }),
+      this.store.putCallback({
+        kind: "show-endpoint-picker",
         conversation,
       }),
       this.store.putCallback({
@@ -2530,6 +3222,10 @@ export class CodexPluginController {
       {
         text: "Select Model",
         callback_data: `${INTERACTIVE_NAMESPACE}:${showModelPicker.token}`,
+      },
+      {
+        text: "Endpoint",
+        callback_data: `${INTERACTIVE_NAMESPACE}:${showEndpointPicker.token}`,
       },
     ];
     if (currentModel) {
@@ -2674,8 +3370,9 @@ export class CodexPluginController {
     },
   ): Promise<PickerRender> {
     const profile = this.getPermissionsMode(binding);
+    const client = this.getClientForBinding(binding);
     const [models, threadState] = await Promise.all([
-      this.client.listModels({ profile, sessionKey: binding.sessionKey }),
+      client.listModels({ profile, sessionKey: binding.sessionKey }),
       this.readEffectiveThreadState(binding),
     ]);
     const { state, effectiveState } = threadState;
@@ -2717,6 +3414,75 @@ export class CodexPluginController {
     }
     return {
       text: formatModels(models, effectiveState),
+      buttons,
+    };
+  }
+
+  private async buildEndpointPicker(
+    conversation: ConversationTarget,
+    binding: StoredBinding | null,
+    opts?: {
+      returnToStatus?: boolean;
+      statusMessage?: InteractiveMessageRef;
+    },
+  ): Promise<PickerRender> {
+    const selection = this.getSelectedEndpointResolution(conversation);
+    const manualEndpointId = this.getManualEndpointId(conversation);
+    const buttons: PluginInteractiveButtons = [];
+    if (manualEndpointId) {
+      const clearCallback = await this.store.putCallback({
+        kind: "clear-endpoint",
+        conversation,
+        returnToStatus: opts?.returnToStatus,
+        statusMessage: opts?.statusMessage,
+      });
+      buttons.push([
+        {
+          text: "Use auto/default",
+          callback_data: `${INTERACTIVE_NAMESPACE}:${clearCallback.token}`,
+        },
+      ]);
+    }
+    for (const endpoint of this.settings.endpoints) {
+      const endpointId = endpoint.id ?? this.settings.defaultEndpoint;
+      const callback = await this.store.putCallback({
+        kind: "set-endpoint",
+        conversation,
+        endpointId,
+        returnToStatus: opts?.returnToStatus,
+        statusMessage: opts?.statusMessage,
+      });
+      const flags = [
+        endpointId === selection.endpointId ? "active" : "",
+        endpointId === manualEndpointId ? "manual" : "",
+        binding && endpointId === this.getEndpointIdForBinding(binding) ? "bound" : "",
+        endpointId === this.settings.defaultEndpoint ? "default" : "",
+      ].filter(Boolean);
+      buttons.push([
+        {
+          text: `${endpointId}${flags.length ? ` (${flags.join(", ")})` : ""}`,
+          callback_data: `${INTERACTIVE_NAMESPACE}:${callback.token}`,
+        },
+      ]);
+    }
+    if (opts?.returnToStatus) {
+      const cancel = await this.store.putCallback({
+        kind: "refresh-status",
+        conversation,
+      });
+      buttons.push([
+        {
+          text: "Cancel",
+          callback_data: `${INTERACTIVE_NAMESPACE}:${cancel.token}`,
+        },
+      ]);
+    }
+    return {
+      text: this.formatEndpointListText({
+        conversation,
+        selection,
+        binding,
+      }),
       buttons,
     };
   }
@@ -2822,7 +3588,7 @@ export class CodexPluginController {
       configuredWorkspaceDir: this.settings.defaultWorkspaceDir,
       serviceWorkspaceDir: this.serviceWorkspaceDir,
     });
-    const skills = dedupeSkillsByName(await this.client.listSkills({
+    const skills = dedupeSkillsByName(await this.getClientForBinding(binding).listSkills({
       profile: this.getPermissionsMode(binding),
       sessionKey: binding?.sessionKey,
       workspaceDir,
@@ -3077,7 +3843,7 @@ export class CodexPluginController {
           void this.sendText(conversation, "Codex is still compacting.");
         }, COMPACT_PROGRESS_INTERVAL_MS);
       }, COMPACT_PROGRESS_DELAY_MS);
-      const result = await this.client.compactThread({
+      const result = await this.getClientForBinding(binding).compactThread({
         profile,
         sessionKey: binding.sessionKey,
         threadId: binding.threadId,
@@ -3133,7 +3899,7 @@ export class CodexPluginController {
       configuredWorkspaceDir: this.settings.defaultWorkspaceDir,
       serviceWorkspaceDir: this.serviceWorkspaceDir,
     });
-    const skills = dedupeSkillsByName(await this.client.listSkills({
+    const skills = dedupeSkillsByName(await this.getClientForBinding(binding).listSkills({
       profile: this.getPermissionsMode(binding),
       sessionKey: binding?.sessionKey,
       workspaceDir,
@@ -3168,7 +3934,7 @@ export class CodexPluginController {
   }
 
   private async handleExperimentalCommand(binding: StoredBinding | null): Promise<ReplyPayload> {
-    const features = await this.client.listExperimentalFeatures({
+    const features = await this.getClientForBinding(binding).listExperimentalFeatures({
       profile: this.getPermissionsMode(binding),
       sessionKey: binding?.sessionKey,
     });
@@ -3176,7 +3942,7 @@ export class CodexPluginController {
   }
 
   private async handleMcpCommand(binding: StoredBinding | null, args: string): Promise<ReplyPayload> {
-    const servers = await this.client.listMcpServers({
+    const servers = await this.getClientForBinding(binding).listMcpServers({
       profile: this.getPermissionsMode(binding),
       sessionKey: binding?.sessionKey,
     });
@@ -3213,7 +3979,7 @@ export class CodexPluginController {
       action === "toggle" ? (currentTier === "fast" ? null : "fast")
       : action === "on" ? "fast"
       : null;
-    const updatedState = await this.client.setThreadServiceTier({
+    const updatedState = await this.getClientForBinding(binding).setThreadServiceTier({
       profile,
       sessionKey: binding.sessionKey,
       threadId: binding.threadId,
@@ -3245,13 +4011,15 @@ export class CodexPluginController {
     const trimmedArgs = args.trim();
     const profile = this.getPermissionsMode(binding);
     if (!binding) {
-      const models = await this.client.listModels({ profile });
+      const models = await this.getClientForEndpoint(
+        this.getSelectedEndpointId(conversation, binding),
+      ).listModels({ profile });
       return { text: formatModels(models) };
     }
     if (!trimmedArgs) {
       if (!conversation) {
         const [models, { effectiveState }] = await Promise.all([
-          this.client.listModels({ profile, sessionKey: binding.sessionKey }),
+          this.getClientForBinding(binding).listModels({ profile, sessionKey: binding.sessionKey }),
           this.readEffectiveThreadState(binding),
         ]);
         return { text: formatModels(models, effectiveState) };
@@ -3271,7 +4039,7 @@ export class CodexPluginController {
       }
       return buildReplyWithButtons(picker.text, picker.buttons);
     }
-    const state = await this.client.setThreadModel({
+    const state = await this.getClientForBinding(binding).setThreadModel({
       profile,
       sessionKey: binding.sessionKey,
       threadId: binding.threadId,
@@ -3282,7 +4050,7 @@ export class CodexPluginController {
       : "default";
     const nextState =
       !modelSupportsFast(trimmedArgs) && normalizeServiceTier(state.serviceTier) === "fast"
-        ? await this.client
+        ? await this.getClientForBinding(binding)
             .setThreadServiceTier({
               profile,
               sessionKey: binding.sessionKey,
@@ -3306,6 +4074,48 @@ export class CodexPluginController {
     };
     await this.store.upsertBinding(updatedBinding);
     return { text: `Codex model set to ${nextState.model || trimmedArgs}.` };
+  }
+
+  private async handleEndpointCommand(
+    conversation: ConversationTarget | null,
+    binding: StoredBinding | null,
+    args: string,
+  ): Promise<ReplyPayload> {
+    if (!conversation) {
+      return { text: "This command needs a Telegram or Discord conversation." };
+    }
+    const parsed = parseEndpointArgs(args);
+    if (parsed.error) {
+      return { text: parsed.error };
+    }
+    const currentSelection = this.getSelectedEndpointResolution(conversation);
+    if (!parsed.endpointId) {
+      const picker = await this.buildEndpointPicker(conversation, binding);
+      return buildReplyWithButtons(picker.text, picker.buttons);
+    }
+    const requested = parsed.endpointId.trim();
+    if (["auto", "clear"].includes(requested.toLowerCase())) {
+      await this.clearSelectedEndpointId(conversation);
+      const nextSelection = this.getSelectedEndpointResolution(conversation);
+      return { text: this.buildEndpointSelectionNotice(nextSelection, binding, conversation) };
+    }
+    const endpoint = this.settings.endpoints.find((entry) => entry.id === requested);
+    if (!endpoint) {
+      return {
+        text: [
+          `Unknown endpoint: ${requested}`,
+          "",
+          this.formatEndpointListText({
+            conversation,
+            selection: currentSelection,
+            binding,
+          }),
+        ].join("\n"),
+      };
+    }
+    await this.setSelectedEndpointId(conversation, endpoint.id || requested);
+    const nextSelection = this.getSelectedEndpointResolution(conversation);
+    return { text: this.buildEndpointSelectionNotice(nextSelection, binding, conversation) };
   }
 
   private async handlePermissionsCommand(
@@ -3354,7 +4164,7 @@ export class CodexPluginController {
       const picker = await this.buildRenameStylePicker(conversation, binding, Boolean(parsed?.syncTopic));
       return buildReplyWithButtons(picker.text, picker.buttons);
     }
-    await this.client.setThreadName({
+    await this.getClientForBinding(binding).setThreadName({
       profile,
       sessionKey: binding.sessionKey,
       threadId: binding.threadId,
@@ -3462,7 +4272,7 @@ export class CodexPluginController {
     if (!name) {
       throw new Error("Unable to derive a Codex thread name.");
     }
-    await this.client.setThreadName({
+    await this.getClientForBinding(binding).setThreadName({
       profile,
       sessionKey: binding.sessionKey,
       threadId: binding.threadId,
@@ -3537,7 +4347,7 @@ export class CodexPluginController {
       params.binding,
       this.settings.defaultModel,
     );
-    const run = this.client.startTurn({
+    const run = this.getClientForBinding(params.binding).startTurn({
       profile,
       sessionKey: params.binding?.sessionKey,
       workspaceDir: params.workspaceDir,
@@ -3581,7 +4391,7 @@ export class CodexPluginController {
       .then(async (result) => {
         const threadId = result.threadId || run.getThreadId();
         if (threadId) {
-          const state = await this.client
+          const state = await this.getClientForBinding(params.binding)
             .readThreadState({
               profile,
               sessionKey: params.binding?.sessionKey,
@@ -3590,6 +4400,7 @@ export class CodexPluginController {
             .catch(() => null);
           const nextBinding = await this.bindConversation(params.conversation, {
             threadId,
+            endpointId: this.getEndpointIdForBinding(params.binding),
             workspaceDir: state?.cwd || params.workspaceDir,
             threadTitle: state?.threadName,
             permissionsMode: profile,
@@ -3789,7 +4600,7 @@ export class CodexPluginController {
       this.settings.defaultModel,
     );
     const effectiveThreadState = desired.effectiveState;
-    const run = this.client.startTurn({
+    const run = this.getClientForBinding(params.binding).startTurn({
       profile,
       sessionKey: params.binding?.sessionKey,
       workspaceDir: params.workspaceDir,
@@ -3833,7 +4644,7 @@ export class CodexPluginController {
       .then(async (result) => {
         const threadId = result.threadId || run.getThreadId();
         if (threadId) {
-          const state = await this.client
+          const state = await this.getClientForBinding(params.binding)
             .readThreadState({
               profile,
               sessionKey: params.binding?.sessionKey,
@@ -3842,6 +4653,7 @@ export class CodexPluginController {
             .catch(() => null);
           const nextBinding = await this.bindConversation(params.conversation, {
             threadId,
+            endpointId: this.getEndpointIdForBinding(params.binding),
             workspaceDir: state?.cwd || params.workspaceDir,
             threadTitle: state?.threadName,
             permissionsMode: profile,
@@ -3965,7 +4777,7 @@ export class CodexPluginController {
       clearTimeout(progressTimer);
       progressTimer = null;
     };
-    const threadState = await this.client
+    const threadState = await this.getClientForBinding(params.binding)
       .readThreadState({
         profile,
         sessionKey: params.binding.sessionKey,
@@ -3977,7 +4789,7 @@ export class CodexPluginController {
       params.binding,
       this.settings.defaultModel,
     );
-    const run = this.client.startReview({
+    const run = this.getClientForBinding(params.binding).startReview({
       profile,
       sessionKey: params.binding.sessionKey,
       workspaceDir: params.workspaceDir,
@@ -4104,10 +4916,12 @@ export class CodexPluginController {
     }
     if (state.questionnaire) {
       const existing = this.store.getPendingRequestById(state.requestId);
+      const binding = this.store.getBinding(conversation);
       await this.store.upsertPendingRequest({
         requestId: state.requestId,
         conversation,
-        threadId: run.getThreadId() ?? this.store.getBinding(conversation)?.threadId ?? "",
+        threadId: run.getThreadId() ?? binding?.threadId ?? "",
+        endpointId: this.getEndpointIdForBinding(binding),
         workspaceDir,
         state,
         createdAt: existing?.createdAt ?? Date.now(),
@@ -4129,10 +4943,12 @@ export class CodexPluginController {
     );
     const buttons = this.buildPendingButtons(state, callbacks);
     const existing = this.store.getPendingRequestById(state.requestId);
+    const binding = this.store.getBinding(conversation);
     await this.store.upsertPendingRequest({
       requestId: state.requestId,
       conversation,
-      threadId: run.getThreadId() ?? this.store.getBinding(conversation)?.threadId ?? "",
+      threadId: run.getThreadId() ?? binding?.threadId ?? "",
+      endpointId: this.getEndpointIdForBinding(binding),
       workspaceDir,
       state,
       createdAt: existing?.createdAt ?? Date.now(),
@@ -4392,6 +5208,7 @@ export class CodexPluginController {
       parsed: ReturnType<typeof parseThreadSelectionArgs>;
       projectName?: string;
       filterProjectsOnly?: boolean;
+      endpointId?: string;
     },
   ) {
     const workspaceDir = this.resolveThreadWorkspaceDir(
@@ -4400,7 +5217,7 @@ export class CodexPluginController {
       params.filterProjectsOnly || Boolean(params.projectName),
     );
     const profile = this.getPermissionsMode(binding);
-    const threads = await this.client.listThreads({
+    const threads = await this.getClientForEndpoint(params.endpointId ?? this.getEndpointIdForBinding(binding)).listThreads({
       profile,
       sessionKey: binding?.sessionKey,
       workspaceDir,
@@ -4471,6 +5288,7 @@ export class CodexPluginController {
     parsed: ReturnType<typeof parseThreadSelectionArgs>;
     threads: Array<{ threadId: string; title?: string; projectKey?: string }>;
     showProjectName: boolean;
+    endpointId?: string;
   }): Promise<PluginInteractiveButtons | undefined> {
     if (params.threads.length === 0) {
       return undefined;
@@ -4482,6 +5300,7 @@ export class CodexPluginController {
       const callback = await this.store.putCallback({
         kind: "resume-thread",
         conversation: params.conversation,
+        endpointId: params.endpointId,
         threadId: thread.threadId,
         threadTitle: getThreadDisplayTitle(thread),
         workspaceDir: thread.projectKey?.trim() || this.settings.defaultWorkspaceDir || process.cwd(),
@@ -4512,6 +5331,7 @@ export class CodexPluginController {
     projectName?: string;
     page: number;
     totalPages: number;
+    endpointId?: string;
   }): Promise<PluginInteractiveButtons> {
     if (params.totalPages > 1) {
       const navRow: PluginInteractiveButtons[number] = [];
@@ -4523,6 +5343,7 @@ export class CodexPluginController {
             mode: "threads",
             includeAll: params.parsed.includeAll,
             syncTopic: params.parsed.syncTopic,
+            endpointId: params.endpointId,
             workspaceDir: params.parsed.cwd,
             query: params.parsed.query || undefined,
             projectName: params.projectName,
@@ -4545,6 +5366,7 @@ export class CodexPluginController {
             mode: "threads",
             includeAll: params.parsed.includeAll,
             syncTopic: params.parsed.syncTopic,
+            endpointId: params.endpointId,
             workspaceDir: params.parsed.cwd,
             query: params.parsed.query || undefined,
             projectName: params.projectName,
@@ -4572,6 +5394,7 @@ export class CodexPluginController {
         action: "resume-thread",
         includeAll: true,
         syncTopic: params.parsed.syncTopic,
+        endpointId: params.endpointId,
         workspaceDir: params.parsed.cwd,
         requestedModel: params.parsed.requestedModel,
         requestedFast: params.parsed.requestedFast,
@@ -4588,6 +5411,7 @@ export class CodexPluginController {
             action: "start-new-thread",
             includeAll: true,
             syncTopic: params.parsed.syncTopic,
+            endpointId: params.endpointId,
             workspaceDir: params.parsed.cwd,
             query: params.parsed.query || undefined,
             requestedModel: params.parsed.requestedModel,
@@ -4628,15 +5452,17 @@ export class CodexPluginController {
     parsed: ReturnType<typeof parseThreadSelectionArgs>,
     page: number,
     projectName?: string,
+    endpointId?: string,
   ): Promise<PickerRender> {
     const profile = this.getPermissionsMode(binding);
     let { workspaceDir, threads } = await this.listPickerThreads(binding, {
       parsed,
       projectName,
+      endpointId,
     });
     let fallbackToGlobal = false;
     if (threads.length === 0 && workspaceDir != null && !projectName) {
-      const globalResult = await this.client.listThreads({
+      const globalResult = await this.getClientForEndpoint(endpointId ?? this.getEndpointIdForBinding(binding)).listThreads({
         profile,
         sessionKey: binding?.sessionKey,
         workspaceDir: undefined,
@@ -4657,6 +5483,7 @@ export class CodexPluginController {
       parsed,
       threads: pageResult.items,
       showProjectName: !projectName && (fallbackToGlobal || distinctProjects.size > 1),
+      endpointId,
       })) ?? [];
     return {
       text: formatThreadPickerIntro({
@@ -4674,6 +5501,7 @@ export class CodexPluginController {
             buttons: threadButtons,
             parsed,
             projectName,
+            endpointId,
             page: pageResult.page,
             totalPages: pageResult.totalPages,
           }),
@@ -4686,10 +5514,12 @@ export class CodexPluginController {
     parsed: ReturnType<typeof parseThreadSelectionArgs>,
     page: number,
     action: "resume-thread" | "start-new-thread" = "resume-thread",
+    endpointId?: string,
   ): Promise<PickerRender> {
     const { workspaceDir, threads } = await this.listPickerThreads(binding, {
       parsed,
       filterProjectsOnly: true,
+      endpointId,
     });
     const normalizedThreads =
       action === "start-new-thread" ? await this.normalizeNewThreadProjectThreads(threads) : threads;
@@ -4704,6 +5534,7 @@ export class CodexPluginController {
                 return this.store.putCallback({
                   kind: "start-new-thread",
                   conversation,
+                  endpointId,
                   workspaceDir: workspaces[0]?.workspaceDir ?? option.name,
                   syncTopic: parsed.syncTopic,
                   requestedModel: parsed.requestedModel,
@@ -4719,6 +5550,7 @@ export class CodexPluginController {
                   action: "start-new-thread",
                   includeAll: true,
                   syncTopic: parsed.syncTopic,
+                  endpointId,
                   workspaceDir: parsed.cwd,
                   projectName: option.name,
                   requestedModel: parsed.requestedModel,
@@ -4735,6 +5567,7 @@ export class CodexPluginController {
                 mode: "threads",
                 includeAll: true,
                 syncTopic: parsed.syncTopic,
+                endpointId,
                 workspaceDir: parsed.cwd,
                 projectName: option.name,
                 requestedModel: parsed.requestedModel,
@@ -4761,6 +5594,7 @@ export class CodexPluginController {
             action,
             includeAll: true,
             syncTopic: parsed.syncTopic,
+            endpointId,
             workspaceDir: parsed.cwd,
             query: parsed.query || undefined,
             requestedModel: parsed.requestedModel,
@@ -4848,11 +5682,13 @@ export class CodexPluginController {
     parsed: ReturnType<typeof parseThreadSelectionArgs>,
     page: number,
     projectName: string,
+    endpointId?: string,
   ): Promise<PickerRender> {
     const { threads } = await this.listPickerThreads(binding, {
       parsed,
       projectName,
       filterProjectsOnly: true,
+      endpointId,
     });
     const normalizedThreads = await this.normalizeNewThreadProjectThreads(threads);
     const workspaceOptions = paginateItems(listWorkspaceChoices(normalizedThreads, projectName), page);
@@ -4861,6 +5697,7 @@ export class CodexPluginController {
       const callback = await this.store.putCallback({
         kind: "start-new-thread",
         conversation,
+        endpointId,
         workspaceDir: option.workspaceDir,
         syncTopic: parsed.syncTopic,
         requestedModel: parsed.requestedModel,
@@ -4885,6 +5722,7 @@ export class CodexPluginController {
             action: "start-new-thread",
             includeAll: true,
             syncTopic: parsed.syncTopic,
+            endpointId,
             workspaceDir: parsed.cwd,
             projectName,
             requestedModel: parsed.requestedModel,
@@ -4907,6 +5745,7 @@ export class CodexPluginController {
             action: "start-new-thread",
             includeAll: true,
             syncTopic: parsed.syncTopic,
+            endpointId,
             workspaceDir: parsed.cwd,
             projectName,
             requestedModel: parsed.requestedModel,
@@ -4933,6 +5772,7 @@ export class CodexPluginController {
         action: "start-new-thread",
         includeAll: true,
         syncTopic: parsed.syncTopic,
+        endpointId,
         workspaceDir: parsed.cwd,
         requestedModel: parsed.requestedModel,
         requestedFast: parsed.requestedFast,
@@ -4947,6 +5787,7 @@ export class CodexPluginController {
         mode: "threads",
         includeAll: true,
         syncTopic: parsed.syncTopic,
+        endpointId,
         workspaceDir: parsed.cwd,
         requestedModel: parsed.requestedModel,
         requestedFast: parsed.requestedFast,
@@ -5217,6 +6058,7 @@ export class CodexPluginController {
       const result = await this.startNewThreadAndBindConversation(
         callback.conversation,
         this.store.getBinding(callback.conversation),
+        callback.endpointId,
         callback.workspaceDir,
         callback.syncTopic ?? false,
         {
@@ -5241,11 +6083,12 @@ export class CodexPluginController {
         await responders.clear().catch(() => undefined);
       }
       const currentBinding = this.store.getBinding(callback.conversation);
+      const selectedEndpointId = callback.endpointId ?? this.getSelectedEndpointId(callback.conversation, currentBinding);
       const profile = this.resolveRequestedPermissionsMode(
         this.getPermissionsMode(currentBinding),
         callback.requestedYolo,
       );
-      const threadState = await this.client
+      const threadState = await this.getClientForEndpoint(selectedEndpointId)
         .readThreadState({
           profile,
           sessionKey: buildPluginSessionKey(callback.threadId),
@@ -5265,6 +6108,7 @@ export class CodexPluginController {
         callback.conversation,
         {
           threadId: callback.threadId,
+          endpointId: selectedEndpointId,
           workspaceDir: threadState?.cwd?.trim() || callback.workspaceDir,
           permissionsMode: profile,
           threadTitle: threadState?.threadName?.trim() || callback.threadTitle,
@@ -5485,7 +6329,7 @@ export class CodexPluginController {
       const nextTier = currentTier === "fast" ? null : "fast";
       let updatedState = threadState;
       if (threadState) {
-        updatedState = await this.client.setThreadServiceTier({
+        updatedState = await this.getClientForBinding(binding).setThreadServiceTier({
           profile,
           sessionKey: binding.sessionKey,
           threadId: binding.threadId,
@@ -5615,7 +6459,7 @@ export class CodexPluginController {
       }
       const currentProfile = this.getPermissionsMode(binding);
       const nextProfile = currentProfile === "full-access" ? "default" : "full-access";
-      if (nextProfile === "full-access" && !this.hasFullAccessProfile()) {
+      if (nextProfile === "full-access" && !this.hasFullAccessProfile(binding)) {
         const unchangedBinding: StoredBinding = {
           ...binding,
           updatedAt: Date.now(),
@@ -5861,6 +6705,55 @@ export class CodexPluginController {
       );
       return;
     }
+    if (callback.kind === "show-endpoint-picker") {
+      const binding = this.store.getBinding(callback.conversation);
+      await this.store.removeCallback(callback.token);
+      const conversation = {
+        ...callback.conversation,
+        threadId: responders.conversation.threadId,
+      };
+      if (responders.sourceMessage) {
+        const [picker, statusCard] = await Promise.all([
+          this.buildEndpointPicker(
+            conversation,
+            binding,
+            {
+              returnToStatus: true,
+            },
+          ),
+          binding
+            ? this.buildStatusCard(
+                conversation,
+                binding,
+                true,
+              )
+            : Promise.resolve({
+                text: this.formatEndpointListText({
+                  conversation,
+                  selection: this.getSelectedEndpointResolution(conversation),
+                  binding,
+                }),
+                buttons: undefined,
+              }),
+        ]);
+        await responders.editPicker({
+          text: statusCard.text,
+          buttons: picker.buttons,
+        });
+        return;
+      }
+      const picker = await this.buildEndpointPicker(
+        conversation,
+        binding,
+        {
+          returnToStatus: Boolean(binding),
+          statusMessage: responders.sourceMessage,
+        },
+      );
+      await responders.acknowledge?.();
+      await this.sendPickerToConversation(conversation, picker);
+      return;
+    }
     if (callback.kind === "show-model-picker") {
       const binding = this.store.getBinding(callback.conversation);
       await this.store.removeCallback(callback.token);
@@ -5905,6 +6798,100 @@ export class CodexPluginController {
       await this.sendPickerToConversation(conversation, picker);
       return;
     }
+    if (callback.kind === "set-endpoint") {
+      const binding = this.store.getBinding(callback.conversation);
+      await this.store.removeCallback(callback.token);
+      const conversation = {
+        ...callback.conversation,
+        threadId: responders.conversation.threadId,
+      };
+      await this.setSelectedEndpointId(conversation, callback.endpointId);
+      const refreshedBinding = this.store.getBinding(callback.conversation);
+      const text = this.buildEndpointSelectionNotice(
+        this.getSelectedEndpointResolution(conversation),
+        refreshedBinding,
+        conversation,
+      );
+      if (callback.returnToStatus && refreshedBinding) {
+        const statusCard = await this.buildStatusCard(
+          conversation,
+          refreshedBinding,
+          true,
+        );
+        if (responders.sourceMessage) {
+          await responders.editPicker({
+            text: statusCard.text,
+            buttons: statusCard.buttons,
+          });
+          await this.sendText(conversation, text);
+        } else {
+          await responders.acknowledge?.();
+          await this.sendText(conversation, statusCard.text, { buttons: statusCard.buttons });
+          await this.sendText(conversation, text);
+        }
+        return;
+      }
+      if (responders.sourceMessage) {
+        const picker = await this.buildEndpointPicker(conversation, refreshedBinding, {
+          returnToStatus: false,
+        });
+        await responders.editPicker({
+          text,
+          buttons: picker.buttons,
+        });
+      } else {
+        await responders.acknowledge?.();
+        const picker = await this.buildEndpointPicker(conversation, refreshedBinding, {
+          returnToStatus: false,
+        });
+        await this.sendText(conversation, text, { buttons: picker.buttons });
+      }
+      return;
+    }
+    if (callback.kind === "clear-endpoint") {
+      const binding = this.store.getBinding(callback.conversation);
+      await this.store.removeCallback(callback.token);
+      const conversation = {
+        ...callback.conversation,
+        threadId: responders.conversation.threadId,
+      };
+      await this.clearSelectedEndpointId(conversation);
+      const refreshedBinding = this.store.getBinding(callback.conversation);
+      const text = this.buildEndpointSelectionNotice(
+        this.getSelectedEndpointResolution(conversation),
+        refreshedBinding,
+        conversation,
+      );
+      if (callback.returnToStatus && refreshedBinding) {
+        const statusCard = await this.buildStatusCard(
+          conversation,
+          refreshedBinding,
+          true,
+        );
+        if (responders.sourceMessage) {
+          await responders.editPicker({
+            text: statusCard.text,
+            buttons: statusCard.buttons,
+          });
+          await this.sendText(conversation, text);
+        } else {
+          await responders.acknowledge?.();
+          await this.sendText(conversation, statusCard.text, { buttons: statusCard.buttons });
+          await this.sendText(conversation, text);
+        }
+        return;
+      }
+      if (responders.sourceMessage) {
+        await responders.editPicker({
+          text,
+          buttons: undefined,
+        });
+      } else {
+        await responders.acknowledge?.();
+        await this.sendText(conversation, text);
+      }
+      return;
+    }
     if (callback.kind === "set-model") {
       const binding = this.store.getBinding(callback.conversation);
       await this.store.removeCallback(callback.token);
@@ -5916,7 +6903,7 @@ export class CodexPluginController {
       const { state: threadState } = await this.readEffectiveThreadState(binding);
       let state = threadState;
       if (threadState) {
-        state = await this.client.setThreadModel({
+        state = await this.getClientForBinding(binding).setThreadModel({
           profile,
           sessionKey: binding.sessionKey,
           threadId: binding.threadId,
@@ -5933,7 +6920,7 @@ export class CodexPluginController {
         : "default";
       let nextState = state;
       if (!modelSupportsFast(callback.model) && normalizeServiceTier(state?.serviceTier) === "fast") {
-        nextState = await this.client
+        nextState = await this.getClientForBinding(binding)
           .setThreadServiceTier({
             profile,
             sessionKey: binding.sessionKey,
@@ -6058,6 +7045,7 @@ export class CodexPluginController {
             parsed!,
             callback.view.page,
             callback.view.action ?? "resume-thread",
+            callback.view.endpointId,
           )
         : callback.view.mode === "workspaces"
           ? await this.renderNewThreadWorkspacePicker(
@@ -6066,6 +7054,7 @@ export class CodexPluginController {
               parsed!,
               callback.view.page,
               callback.view.projectName,
+              callback.view.endpointId,
             )
         : callback.view.mode === "skills"
           ? await this.buildSkillsPicker(
@@ -6083,6 +7072,7 @@ export class CodexPluginController {
               parsed!,
               callback.view.page,
               callback.view.projectName,
+              callback.view.endpointId,
             );
     await responders.editPicker(picker);
   }
@@ -6090,6 +7080,7 @@ export class CodexPluginController {
   private async startNewThreadAndBindConversation(
     conversation: ConversationTarget,
     binding: StoredBinding | null,
+    endpointId: string | undefined,
     workspaceDir: string,
     syncTopic: boolean,
     overrides: CommandPreferenceOverrides,
@@ -6103,7 +7094,8 @@ export class CodexPluginController {
       this.getPermissionsMode(binding),
       overrides.requestedYolo,
     );
-    const created = await this.client.startThread({
+    const resolvedEndpointId = endpointId ?? this.getSelectedEndpointId(conversation, binding);
+    const created = await this.getClientForEndpoint(resolvedEndpointId).startThread({
       profile,
       sessionKey: binding?.sessionKey,
       workspaceDir,
@@ -6118,6 +7110,7 @@ export class CodexPluginController {
       conversation,
       {
         threadId: created.threadId,
+        endpointId: resolvedEndpointId,
         workspaceDir: created.cwd?.trim() || workspaceDir,
         threadTitle: created.threadName,
         permissionsMode: profile,
@@ -6148,6 +7141,7 @@ export class CodexPluginController {
   }
 
   private async resolveSingleThread(
+    endpointId: string | undefined,
     sessionKey: string | undefined,
     workspaceDir: string | undefined,
     filter: string,
@@ -6157,7 +7151,7 @@ export class CodexPluginController {
     | { kind: "ambiguous"; threads: Array<{ threadId: string; title?: string; projectKey?: string }> }
   > {
     const trimmed = filter.trim();
-    const threads = await this.client.listThreads({
+    const threads = await this.getClientForEndpoint(endpointId).listThreads({
       profile: "default",
       sessionKey,
       workspaceDir,
@@ -6185,11 +7179,11 @@ export class CodexPluginController {
     binding: StoredBinding,
     profile: PermissionsMode,
   ): Promise<StoredBinding> {
-    if (profile === "full-access" && !this.hasFullAccessProfile()) {
+    if (profile === "full-access" && !this.hasFullAccessProfile(binding)) {
       throw new Error("Full Access is unavailable in the current Codex Desktop session.");
     }
     const preferredPermissions = getPermissionsForMode(profile);
-    const state = await this.client
+    const state = await this.getClientForBinding(binding)
       .setThreadPermissions({
         profile,
         sessionKey: binding.sessionKey,
@@ -6198,7 +7192,7 @@ export class CodexPluginController {
         sandbox: preferredPermissions.sandbox,
       })
       .catch(() =>
-        this.client.readThreadState({
+        this.getClientForBinding(binding).readThreadState({
           profile,
           sessionKey: binding.sessionKey,
           threadId: binding.threadId,
@@ -6242,6 +7236,7 @@ export class CodexPluginController {
     conversation: ConversationTarget,
     params: {
       threadId: string;
+      endpointId?: string;
       workspaceDir: string;
       threadTitle?: string;
       permissionsMode?: PermissionsMode;
@@ -6260,6 +7255,7 @@ export class CodexPluginController {
       },
       sessionKey,
       threadId: params.threadId,
+      endpointId: params.endpointId ?? existing?.endpointId ?? this.settings.defaultEndpoint,
       workspaceDir: params.workspaceDir,
       permissionsMode: params.permissionsMode ?? existing?.permissionsMode ?? "default",
       pendingPermissionsMode: params.pendingPermissionsMode ?? existing?.pendingPermissionsMode,
@@ -6288,6 +7284,7 @@ export class CodexPluginController {
     }
     const binding = await this.bindConversation(conversation, {
       threadId: pending.threadId,
+      endpointId: pending.endpointId,
       workspaceDir: pending.workspaceDir,
       threadTitle: pending.threadTitle,
       permissionsMode: normalizePermissionsMode(pending.permissionsMode),
@@ -6300,6 +7297,7 @@ export class CodexPluginController {
     conversation: ConversationTarget,
     params: {
       threadId: string;
+      endpointId?: string;
       workspaceDir: string;
       permissionsMode?: PermissionsMode;
       threadTitle?: string;
@@ -6344,6 +7342,7 @@ export class CodexPluginController {
           parentConversationId: conversation.parentConversationId,
         },
           threadId: params.threadId,
+          endpointId: params.endpointId ?? this.settings.defaultEndpoint,
           workspaceDir: params.workspaceDir,
           permissionsMode: params.permissionsMode,
           threadTitle: params.threadTitle,
@@ -6415,7 +7414,7 @@ export class CodexPluginController {
 
     const readStateForRestore = async (): Promise<ThreadState | undefined> => {
       try {
-        return await this.client.readThreadState({
+        return await this.getClientForBinding(binding).readThreadState({
           profile,
           sessionKey: binding.sessionKey,
           threadId: binding.threadId,
@@ -6436,7 +7435,7 @@ export class CodexPluginController {
       lastAssistantMessage?: string;
     }> => {
       try {
-        return await this.client.readThreadContext({
+        return await this.getClientForBinding(binding).readThreadContext({
           profile,
           sessionKey: binding.sessionKey,
           threadId: binding.threadId,
@@ -6573,6 +7572,8 @@ export class CodexPluginController {
     binding: StoredBinding | null,
     bindingActive: boolean,
   ): Promise<string> {
+    const selection = this.getSelectedEndpointResolution(conversation);
+    const selectedEndpointId = selection.endpointId;
     const activeRun =
       bindingActive && conversation
         ? this.activeRuns.get(buildConversationKey(conversation))
@@ -6585,18 +7586,19 @@ export class CodexPluginController {
       serviceWorkspaceDir: this.serviceWorkspaceDir,
     });
     const [threadState, account, limits, projectFolder] = await Promise.all([
+      
       binding
-        ? this.client.readThreadState({
+        ? this.getClientForBinding(binding).readThreadState({
             profile,
             sessionKey: binding.sessionKey,
             threadId: binding.threadId,
           }).catch(() => undefined)
         : Promise.resolve(undefined),
-      this.client.readAccount({
+      this.getClientForEndpoint(selectedEndpointId).readAccount({
         profile,
         sessionKey: binding?.sessionKey,
       }).catch(() => null),
-      this.client.readRateLimits({
+      this.getClientForEndpoint(selectedEndpointId).readRateLimits({
         profile,
         sessionKey: binding?.sessionKey,
       }).catch(() => []),
@@ -6616,12 +7618,18 @@ export class CodexPluginController {
       binding && !threadState
         ? "Live thread details are unavailable until Codex materializes the thread, usually after the first user message. Model, reasoning, and fast-mode changes made here are saved as defaults until then."
         : undefined;
+    const endpointNote =
+      binding && this.getEndpointIdForBinding(binding) !== selectedEndpointId
+        ? `Active endpoint ${selectedEndpointId} differs from the bound endpoint ${this.getEndpointIdForBinding(binding)}.`
+        : undefined;
     this.api.logger.debug?.(
       `codex status snapshot bindingActive=${bindingActive ? "yes" : "no"} activeRun=${activeRun?.mode ?? "none"} boundThread=${binding?.threadId ?? "<none>"} raw=${formatThreadStateForLog(threadState)} effective=${formatThreadStateForLog(displayThreadState)} ${formatBindingPreferencesForLog(binding)} threadCwd=${displayThreadState?.cwd?.trim() || "<none>"}`,
     );
 
     return formatCodexStatusText({
       pluginVersion: PLUGIN_VERSION,
+      endpointId: selectedEndpointId,
+      endpointLabel: this.formatEndpointResolutionLabel(selection),
       threadState: displayThreadState,
       bindingThreadTitle: binding?.threadTitle,
       account,
@@ -6633,7 +7641,16 @@ export class CodexPluginController {
       planMode: bindingActive ? activeRun?.mode === "plan" : undefined,
       threadNote,
       permissionNote:
-        pendingProfile && activeRun
+        endpointNote
+          ? [
+              pendingProfile && activeRun
+                ? buildPendingPermissionsMigrationNote(pendingProfile)
+                : undefined,
+              endpointNote,
+            ]
+              .filter(Boolean)
+              .join(" ")
+          : pendingProfile && activeRun
           ? buildPendingPermissionsMigrationNote(pendingProfile)
           : undefined,
     });
