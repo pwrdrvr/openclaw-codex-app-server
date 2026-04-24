@@ -43,6 +43,12 @@ export const COMMAND_HELP: Record<CommandName, CommandHelpEntry> = {
     usage: "/cas_detach",
     examples: ["/cas_detach"],
   },
+  cas_reset: {
+    summary: COMMAND_SUMMARY.cas_reset,
+    usage: "/cas_reset",
+    examples: ["/cas_reset"],
+    notes: "Use this as a recovery command when a conversation looks stuck or stale. It clears the stored binding state for this conversation, including pending bind/request UI state, and detaches from Codex.",
+  },
   cas_status: {
     summary: COMMAND_SUMMARY.cas_status,
     usage: "/cas_status [--model <name>] [--fast|--no-fast] [--yolo|--no-yolo]",
