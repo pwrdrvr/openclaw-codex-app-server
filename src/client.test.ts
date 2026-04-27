@@ -200,6 +200,9 @@ describe("CodexAppServerClient.setThreadModel", () => {
         command: "codex",
         args: [],
         requestTimeoutMs: 1_000,
+        verbose: false,
+        verboseMaxEvents: 12,
+        verboseFlushMs: 2_500,
       },
       {
         debug: vi.fn(),
@@ -253,6 +256,9 @@ describe("CodexAppServerClient.setThreadPermissions", () => {
         command: "codex",
         args: [],
         requestTimeoutMs: 1_000,
+        verbose: false,
+        verboseMaxEvents: 12,
+        verboseFlushMs: 2_500,
       },
       {
         debug: vi.fn(),
@@ -320,6 +326,9 @@ describe("CodexAppServerClient.startReview", () => {
         command: "codex",
         args: [],
         requestTimeoutMs: 1_000,
+        verbose: false,
+        verboseMaxEvents: 12,
+        verboseFlushMs: 2_500,
       },
       {
         debug: vi.fn(),

@@ -14,6 +14,7 @@ import {
   type CompactProgress,
   type CompactResult,
   type ContextUsageSnapshot,
+  type CodexProgressEvent,
   type CodexTurnInputItem,
   type ExperimentalFeatureSummary,
   type McpServerSummary,
@@ -2026,6 +2027,84 @@ function extractAssistantNotificationText(
   return { mode: "ignore", text: "" };
 }
 
+function extractProgressEventFromItem(params: unknown): CodexProgressEvent | undefined {
+  const item = asRecord(asRecord(params)?.item) ?? asRecord(params);
+  if (!item) {
+    return undefined;
+  }
+  const itemId = pickString(item, ["id", "itemId", "item_id"]);
+  const itemType = pickString(item, ["type"])?.trim();
+  const normalizedType = itemType?.toLowerCase();
+  const keyPrefix = itemId || normalizedType || "item";
+  switch (normalizedType) {
+    case "reasoning":
+      return { label: "Reasoning", key: `reasoning:${keyPrefix}` };
+    case "commandexecution":
+      return { label: "Command", key: `command:${keyPrefix}` };
+    case "mcptoolcall": {
+      return { label: "Tool", key: `mcp:${keyPrefix}` };
+    }
+    case "dynamictoolcall": {
+      return { label: "Tool", key: `dynamic:${keyPrefix}` };
+    }
+    case "collabagenttoolcall": {
+      return { label: "Agent", key: `agent:${keyPrefix}` };
+    }
+    case "websearch": {
+      return { label: "Web search", key: `web:${keyPrefix}` };
+    }
+    case "filechange":
+      return { label: "File edit", key: `file:${keyPrefix}` };
+    case "imageview":
+      return { label: "Image view", key: `image-view:${keyPrefix}` };
+    case "imagegeneration":
+      return { label: "Image generation", key: `image-generation:${keyPrefix}` };
+    case "contextcompaction":
+      return { label: "Compacting context", key: `compact:${keyPrefix}` };
+    default:
+      return undefined;
+  }
+}
+
+function extractProgressEventFromNotification(
+  methodLower: string,
+  params: unknown,
+): CodexProgressEvent | undefined {
+  if (methodLower === "turn/started") {
+    return { label: "Working", key: "turn:started" };
+  }
+  if (methodLower === "item/started") {
+    return extractProgressEventFromItem(params);
+  }
+  if (
+    methodLower === "item/reasoning/textdelta" ||
+    methodLower === "item/reasoning/summarytextdelta" ||
+    methodLower === "item/reasoning/summarypartadded"
+  ) {
+    const ids = extractIds(params);
+    return { label: "Reasoning", key: `reasoning:${ids.itemId ?? ids.runId ?? "delta"}` };
+  }
+  if (methodLower === "item/mcptoolcall/progress") {
+    const ids = extractIds(params);
+    return {
+      label: "Tool",
+      key: `mcp-progress:${ids.itemId ?? ids.runId ?? "progress"}`,
+    };
+  }
+  if (methodLower === "command/exec/outputdelta") {
+    return { label: "Command output", key: "command-output" };
+  }
+  if (methodLower === "item/commandexecution/outputdelta") {
+    const ids = extractIds(params);
+    return { label: "Command output", key: `command-output:${ids.itemId ?? ids.runId ?? "item"}` };
+  }
+  if (methodLower === "turn/plan/updated" || methodLower === "item/plan/delta") {
+    const ids = extractIds(params);
+    return { label: "Planning", key: `planning:${ids.itemId ?? ids.runId ?? "turn"}` };
+  }
+  return undefined;
+}
+
 function extractPlanDeltaNotification(value: unknown): { itemId?: string; delta: string } {
   return {
     itemId: extractAssistantItemId(value),
@@ -3263,6 +3342,7 @@ export class CodexAppServerClient {
     collaborationMode?: CollaborationMode;
     onPendingInput?: (state: PendingInputState | null) => Promise<void> | void;
     onFileEdits?: (text: string) => Promise<void> | void;
+    onProgress?: (event: CodexProgressEvent) => Promise<void> | void;
     onInterrupted?: () => Promise<void> | void;
   }): ActiveCodexRun {
     let threadId = params.existingThreadId?.trim() || "";
@@ -3284,6 +3364,18 @@ export class CodexAppServerClient {
     let terminalError: TurnTerminalError | undefined;
     let approvalCancelled = false;
     let notificationQueue = Promise.resolve();
+    let lastProgressKey = "";
+    const emitProgress = async (event: CodexProgressEvent | undefined) => {
+      if (!event || !params.onProgress) {
+        return;
+      }
+      const key = event.key ?? `${event.label}:${event.detail ?? ""}`;
+      if (key === lastProgressKey) {
+        return;
+      }
+      lastProgressKey = key;
+      await params.onProgress(event);
+    };
     const pendingInputCoordinator = createPendingInputCoordinator({
       onPendingInput: params.onPendingInput,
       onActivated: () => {
@@ -3321,6 +3413,7 @@ export class CodexAppServerClient {
         }
         threadId ||= ids.threadId ?? "";
         turnId ||= ids.runId ?? "";
+        await emitProgress(extractProgressEventFromNotification(methodLower, notificationParams));
         const tokenUsage = extractThreadTokenUsageSnapshot(notificationParams);
         if (tokenUsage) {
           latestContextUsage = tokenUsage;

@@ -23,19 +23,11 @@ const discordSdkState = vi.hoisted(() => ({
   resolveDiscordAccount: vi.fn(() => ({ accountId: "default" })),
 }));
 
-const telegramSdkState = vi.hoisted(() => ({
-  resolveTelegramAccount: vi.fn(() => ({ accountId: "default", token: "telegram-token" })),
-}));
-
 vi.mock("openclaw/plugin-sdk/discord", () => ({
   buildDiscordComponentMessage: discordSdkState.buildDiscordComponentMessage,
   editDiscordComponentMessage: discordSdkState.editDiscordComponentMessage,
   registerBuiltDiscordComponentMessage: discordSdkState.registerBuiltDiscordComponentMessage,
   resolveDiscordAccount: discordSdkState.resolveDiscordAccount,
-}));
-
-vi.mock("openclaw/plugin-sdk/telegram-account", () => ({
-  resolveTelegramAccount: telegramSdkState.resolveTelegramAccount,
 }));
 
 function makeStateDir(): string {
@@ -552,7 +544,6 @@ beforeEach(() => {
   discordSdkState.editDiscordComponentMessage.mockClear();
   discordSdkState.registerBuiltDiscordComponentMessage.mockClear();
   discordSdkState.resolveDiscordAccount.mockClear();
-  telegramSdkState.resolveTelegramAccount.mockClear();
   vi.spyOn(CodexAppServerClient.prototype, "logStartupProbe").mockResolvedValue();
   vi.stubGlobal(
     "fetch",
@@ -754,6 +745,28 @@ describe("Discord controller flows", () => {
     expect(fastUsage).toEqual({ text: "Usage: /cas_fast [on|off|status]" });
     expect(steerUsage).toEqual({ text: "Usage: /cas_steer <message>" });
     expect(planUsage).toEqual({ text: "Usage: /cas_plan <goal> | /cas_plan off" });
+  });
+
+  it("toggles verbose progress through cas_verbose", async () => {
+    const { controller } = await createControllerHarness();
+
+    const enabled = await controller.handleCommand("cas_verbose", buildTelegramCommandContext({
+      args: "on",
+      commandBody: "/cas_verbose on",
+    }));
+    const status = await controller.handleCommand("cas_verbose", buildTelegramCommandContext({
+      args: "status",
+      commandBody: "/cas_verbose status",
+    }));
+    const disabled = await controller.handleCommand("cas_verbose", buildTelegramCommandContext({
+      args: "off",
+      commandBody: "/cas_verbose off",
+    }));
+
+    expect(enabled).toEqual({ text: "Codex verbose progress is on." });
+    expect(status).toEqual({ text: "Codex verbose progress is on. Source: runtime override." });
+    expect(disabled).toEqual({ text: "Codex verbose progress is off." });
+    expect((controller as any).store.getVerboseOverride()).toBe(false);
   });
 
   it("offers a New button on /cas_resume and flips into the new-thread project picker", async () => {
