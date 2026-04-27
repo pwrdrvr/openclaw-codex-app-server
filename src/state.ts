@@ -203,6 +203,7 @@ function toConversationKey(target: ConversationTarget): string {
 function cloneSnapshot(value?: Partial<StoreSnapshot>): StoreSnapshot {
   return {
     version: STORE_VERSION,
+    verbose: value?.verbose,
     bindings: value?.bindings ?? [],
     pendingBinds: value?.pendingBinds ?? [],
     pendingRequests: value?.pendingRequests ?? [],
@@ -347,6 +348,15 @@ export class PluginStateStore {
 
   listBindings(): StoredBinding[] {
     return [...this.snapshot.bindings];
+  }
+
+  getVerboseOverride(): boolean | undefined {
+    return typeof this.snapshot.verbose === "boolean" ? this.snapshot.verbose : undefined;
+  }
+
+  async setVerboseOverride(value: boolean): Promise<void> {
+    this.snapshot.verbose = value;
+    await this.save();
   }
 
   getBinding(target: ConversationTarget): StoredBinding | null {

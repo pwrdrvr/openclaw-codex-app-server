@@ -53,6 +53,7 @@ import { formatCommandUsage, renderCommandHelpText } from "./help.js";
 import type {
   AccountSummary,
   CollaborationMode,
+  CodexProgressEvent,
   CodexTurnInputItem,
   ConversationPreferences,
   InteractiveMessageRef,
@@ -217,6 +218,28 @@ type TelegramOutboundAdapter = {
     threadId?: string | number;
     mediaLocalRoots?: readonly string[];
   }) => Promise<{ messageId: string; chatId?: string }>;
+};
+
+type TelegramSendRuntimeModule = {
+  editMessageTelegram?: (
+    chatId: string,
+    messageId: string | number,
+    text: string,
+    opts?: {
+      cfg?: unknown;
+      accountId?: string;
+      textMode?: "markdown" | "html";
+      linkPreview?: boolean;
+    },
+  ) => Promise<{ messageId?: string; chatId?: string } | unknown>;
+  deleteMessageTelegram?: (
+    chatId: string,
+    messageId: string | number,
+    opts?: {
+      cfg?: unknown;
+      accountId?: string;
+    },
+  ) => Promise<unknown>;
 };
 
 type DiscordOutboundAdapter = {
@@ -1949,6 +1972,8 @@ export class CodexPluginController {
           binding,
           Boolean(currentBinding || binding),
         );
+      case "cas_verbose":
+        return await this.handleVerboseCommand(args);
       case "cas_init":
         return await this.handlePromptAlias(conversation, binding, args, "/init");
       case "cas_diff":
@@ -1962,6 +1987,31 @@ export class CodexPluginController {
 
   private renderCommandHelp(commandName: string): ReplyPayload {
     return { text: renderCommandHelpText(commandName) };
+  }
+
+  private async handleVerboseCommand(args: string): Promise<ReplyPayload> {
+    const normalized = args.trim().toLowerCase();
+    const current = this.store.getVerboseOverride() ?? this.settings.verbose;
+    const formatStatus = (value: boolean) =>
+      `Codex verbose progress is ${value ? "on" : "off"}.`;
+    if (!normalized || normalized === "toggle") {
+      const next = !current;
+      await this.store.setVerboseOverride(next);
+      return { text: formatStatus(next) };
+    }
+    if (normalized === "status") {
+      const source = this.store.getVerboseOverride() === undefined ? "config default" : "runtime override";
+      return { text: `${formatStatus(current)} Source: ${source}.` };
+    }
+    if (normalized === "on" || normalized === "true" || normalized === "1") {
+      await this.store.setVerboseOverride(true);
+      return { text: formatStatus(true) };
+    }
+    if (normalized === "off" || normalized === "false" || normalized === "0") {
+      await this.store.setVerboseOverride(false);
+      return { text: formatStatus(false) };
+    }
+    return { text: `${formatCommandUsage("cas_verbose")}\nUse on, off, or status.` };
   }
 
   private async handleStartNewThreadSelection(
@@ -2623,6 +2673,15 @@ export class CodexPluginController {
   ): Promise<boolean> {
     try {
       if (message.provider === "telegram") {
+        const runtime = await this.loadTelegramSendRuntime();
+        if (typeof runtime?.editMessageTelegram === "function") {
+          await runtime.editMessageTelegram(message.chatId, message.messageId, statusCard.text, {
+            cfg: this.getOpenClawConfig(),
+            accountId: conversation.accountId,
+            textMode: "markdown",
+          });
+          return true;
+        }
         const token = await this.resolveTelegramBotToken(conversation.accountId);
         if (!token) {
           return false;
@@ -2663,6 +2722,100 @@ export class CodexPluginController {
       );
       return false;
     }
+  }
+
+  private async updatePlainMessage(
+    conversation: ConversationTarget,
+    message: DeliveredMessageRef,
+    text: string,
+  ): Promise<boolean> {
+    try {
+      if (message.provider === "telegram") {
+        const runtime = await this.loadTelegramSendRuntime();
+        if (typeof runtime?.editMessageTelegram === "function") {
+          await runtime.editMessageTelegram(message.chatId, message.messageId, text, {
+            cfg: this.getOpenClawConfig(),
+            accountId: conversation.accountId,
+            textMode: "markdown",
+          });
+          return true;
+        }
+        const token = await this.resolveTelegramBotToken(conversation.accountId);
+        if (!token) {
+          return false;
+        }
+        await this.callTelegramEditMessageApi(token, {
+          chat_id: message.chatId,
+          message_id: Number(message.messageId),
+          text,
+        });
+        return true;
+      }
+      await this.editDiscordComponentMessage(
+        message.channelId,
+        message.messageId,
+        this.buildDiscordPickerSpec({ text, buttons: [] }),
+        {
+          accountId: conversation.accountId,
+        },
+      );
+      return true;
+    } catch (error) {
+      this.api.logger.debug?.(
+        `codex plain message update failed ${this.formatConversationForLog(conversation)} provider=${message.provider}: ${String(error)}`,
+      );
+      return false;
+    }
+  }
+
+  private async deletePlainMessage(
+    conversation: ConversationTarget,
+    message: DeliveredMessageRef,
+  ): Promise<boolean> {
+    try {
+      if (message.provider === "telegram") {
+        const runtime = await this.loadTelegramSendRuntime();
+        if (typeof runtime?.deleteMessageTelegram === "function") {
+          await runtime.deleteMessageTelegram(message.chatId, message.messageId, {
+            cfg: this.getOpenClawConfig(),
+            accountId: conversation.accountId,
+          });
+          return true;
+        }
+        const token = await this.resolveTelegramBotToken(conversation.accountId);
+        if (!token) {
+          return false;
+        }
+        await this.callTelegramDeleteMessageApi(token, {
+          chat_id: message.chatId,
+          message_id: Number(message.messageId),
+        });
+        return true;
+      }
+      const token = await this.resolveDiscordBotToken(conversation.accountId);
+      if (!token) {
+        return false;
+      }
+      await this.callDiscordDeleteMessageApi(token, message.channelId, message.messageId);
+      return true;
+    } catch (error) {
+      this.api.logger.debug?.(
+        `codex plain message delete failed ${this.formatConversationForLog(conversation)} provider=${message.provider}: ${String(error)}`,
+      );
+      return false;
+    }
+  }
+
+  private async replacePlainMessage(
+    conversation: ConversationTarget,
+    previous: DeliveredMessageRef | null,
+    text: string,
+  ): Promise<DeliveredMessageRef | null> {
+    const next = await this.sendTextWithDeliveryRef(conversation, text);
+    if (previous && next) {
+      await this.deletePlainMessage(conversation, previous).catch(() => false);
+    }
+    return next ?? previous;
   }
 
   private async buildModelPicker(
@@ -3529,6 +3682,10 @@ export class CodexPluginController {
       }
     }
     const typing = await this.startTypingLease(params.conversation);
+    const verboseEnabled = this.store.getVerboseOverride() ?? this.settings.verbose;
+    const progressReporter = verboseEnabled
+      ? this.createVerboseProgressReporter(params.conversation)
+      : null;
     this.api.logger.debug?.(
       `codex turn starting app-server run ${this.formatConversationForLog(params.conversation)} typing=${typing ? "yes" : "no"} session=${params.binding?.sessionKey ?? "<none>"} existingThread=${params.binding?.threadId ?? "<none>"} profile=${profile} mode=${params.collaborationMode?.mode ?? "default"}`,
     );
@@ -3560,6 +3717,11 @@ export class CodexPluginController {
       onFileEdits: async (text) => {
         await this.sendText(params.conversation, text);
       },
+      onProgress: progressReporter
+        ? async (event) => {
+            progressReporter.push(event);
+          }
+        : undefined,
       onInterrupted: async () => {
         this.api.logger.debug?.(
           `codex turn interrupted ${this.formatConversationForLog(params.conversation)}`,
@@ -3643,6 +3805,7 @@ export class CodexPluginController {
         );
       })
       .finally(async () => {
+        await progressReporter?.stop();
         typing?.stop();
         this.activeRuns.delete(key);
         const pending = this.store.getPendingRequestByConversation(params.conversation);
@@ -3654,6 +3817,97 @@ export class CodexPluginController {
           `codex turn cleaned up ${this.formatConversationForLog(params.conversation)}`,
         );
       });
+  }
+
+  private createVerboseProgressReporter(conversation: ConversationTarget): {
+    push: (event: CodexProgressEvent) => void;
+    stop: () => Promise<void>;
+  } {
+    const lines: string[] = [];
+    const maxEvents = Math.max(1, this.settings.verboseMaxEvents);
+    const flushMs = Math.max(250, this.settings.verboseFlushMs);
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let pending = false;
+    let stopped = false;
+    let delivered: DeliveredMessageRef | null = null;
+    let updateChain = Promise.resolve();
+    let lastFlushedAt = 0;
+
+    const formatEvent = (event: CodexProgressEvent): string => {
+      const label = event.label.trim();
+      const detail = event.detail?.trim();
+      return detail ? `${label}: ${detail}` : label;
+    };
+
+    const flush = async () => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      if (!pending || lines.length === 0) {
+        return;
+      }
+      pending = false;
+      const text = ["Working...", ...lines.slice(-maxEvents).map((line) => `- ${line}`)].join("\n");
+      try {
+        if (delivered) {
+          const edited = await this.updatePlainMessage(conversation, delivered, text);
+          if (edited) {
+            return;
+          }
+          delivered = await this.replacePlainMessage(conversation, delivered, text);
+          return;
+        }
+        delivered = await this.sendTextWithDeliveryRef(conversation, text);
+      } catch (error) {
+        this.api.logger.debug?.(
+          `codex verbose progress send failed ${this.formatConversationForLog(conversation)}: ${String(error)}`,
+        );
+      } finally {
+        lastFlushedAt = Date.now();
+      }
+    };
+
+    const scheduleFlush = () => {
+      if (timer || stopped) {
+        return;
+      }
+      const delay = Math.max(0, flushMs - (Date.now() - lastFlushedAt));
+      timer = setTimeout(() => {
+        updateChain = updateChain.then(flush).catch((error: unknown) => {
+          this.api.logger.debug?.(
+            `codex verbose progress flush failed ${this.formatConversationForLog(conversation)}: ${String(error)}`,
+          );
+        });
+      }, delay);
+    };
+
+    return {
+      push: (event) => {
+        if (stopped) {
+          return;
+        }
+        const line = formatEvent(event);
+        if (!line) {
+          return;
+        }
+        lines.push(line);
+        while (lines.length > maxEvents) {
+          lines.shift();
+        }
+        pending = true;
+        scheduleFlush();
+      },
+      stop: async () => {
+        stopped = true;
+        await updateChain;
+        await flush();
+        if (delivered) {
+          await this.deletePlainMessage(conversation, delivered).catch(() => false);
+          delivered = null;
+        }
+      },
+    };
   }
 
   private async describeTurnFailure(params: {
@@ -6631,6 +6885,7 @@ export class CodexPluginController {
       worktreeFolder: displayThreadState?.cwd?.trim() || binding?.workspaceDir || workspaceDir,
       contextUsage: binding?.contextUsage,
       planMode: bindingActive ? activeRun?.mode === "plan" : undefined,
+      verboseEnabled: this.store.getVerboseOverride() ?? this.settings.verbose,
       threadNote,
       permissionNote:
         pendingProfile && activeRun
@@ -6962,6 +7217,53 @@ export class CodexPluginController {
       return undefined;
     }
     return (await loadAdapter("telegram")) as TelegramOutboundAdapter | undefined;
+  }
+
+  private async loadTelegramSendRuntime(): Promise<TelegramSendRuntimeModule | undefined> {
+    const candidates: string[] = [];
+    try {
+      const depsRoot = path.join(this.api.runtime.state.resolveStateDir(), "plugin-runtime-deps");
+      const entries = await fs.readdir(depsRoot).catch(() => []);
+      for (const entry of entries) {
+        candidates.push(
+          path.join(depsRoot, entry, "dist/extensions/telegram/runtime-api.js"),
+        );
+      }
+    } catch (error) {
+      this.api.logger.debug?.(`codex telegram runtime-deps scan unavailable: ${String(error)}`);
+    }
+    try {
+      const openClawEntrypointPath = resolveOpenClawEntrypointPath();
+      candidates.push(
+        resolveCompatFallbackPath(
+          openClawEntrypointPath,
+          "dist/extensions/telegram/runtime-api.js",
+        ),
+      );
+    } catch (error) {
+      this.api.logger.debug?.(`codex telegram global runtime path unavailable: ${String(error)}`);
+    }
+    let lastError: unknown;
+    for (const runtimePath of candidates) {
+      if (!existsSync(runtimePath)) {
+        continue;
+      }
+      try {
+        const runtime = (await import(pathToFileURL(runtimePath).href)) as TelegramSendRuntimeModule;
+        if (
+          typeof runtime.editMessageTelegram === "function" ||
+          typeof runtime.deleteMessageTelegram === "function"
+        ) {
+          return runtime;
+        }
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    if (lastError) {
+      this.api.logger.debug?.(`codex telegram send runtime unavailable: ${String(lastError)}`);
+    }
+    return undefined;
   }
 
   private async loadDiscordOutboundAdapter(): Promise<DiscordOutboundAdapter | undefined> {
@@ -7536,6 +7838,27 @@ export class CodexPluginController {
     }
   }
 
+  private async callDiscordDeleteMessageApi(
+    token: string,
+    channelId: string,
+    messageId: string,
+  ): Promise<void> {
+    const response = await fetch(
+      `https://discord.com/api/v10/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}`,
+      {
+        method: "DELETE",
+        headers: {
+          Authorization: `Bot ${token}`,
+        },
+      },
+    );
+    if (!response.ok && response.status !== 404) {
+      throw new Error(
+        `Discord deleteMessage failed status=${response.status} body=${await response.text()}`,
+      );
+    }
+  }
+
   private async callTelegramBotApi(
     method: string,
     token: string,
@@ -7588,6 +7911,13 @@ export class CodexPluginController {
     body: Record<string, unknown>,
   ): Promise<void> {
     await this.callTelegramBotApi("editMessageText", token, body);
+  }
+
+  private async callTelegramDeleteMessageApi(
+    token: string,
+    body: Record<string, unknown>,
+  ): Promise<void> {
+    await this.callTelegramBotApi("deleteMessage", token, body);
   }
 
   private async callTelegramTopicEditApi(
