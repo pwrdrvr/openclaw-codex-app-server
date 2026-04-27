@@ -153,6 +153,22 @@ export const COMMAND_HELP: Record<CommandName, CommandHelpEntry> = {
     examples: ["/cas_permissions"],
     notes: "This shows account and permission status. To change permissions, use /cas_status --yolo or the status card toggle.",
   },
+  cas_verbose: {
+    summary: COMMAND_SUMMARY.cas_verbose,
+    usage: "/cas_verbose [on|off|status]",
+    flags: [
+      { flag: "on", description: "Enable temporary verbose progress messages." },
+      { flag: "off", description: "Disable temporary verbose progress messages." },
+      { flag: "status", description: "Show the current verbose state." },
+    ],
+    examples: [
+      "/cas_verbose",
+      "/cas_verbose on",
+      "/cas_verbose off",
+      "/cas_verbose status",
+    ],
+    notes: "With no argument, this command toggles the runtime override. The plugin config remains the default.",
+  },
   cas_init: {
     summary: COMMAND_SUMMARY.cas_init,
     usage: "/cas_init [args]",
