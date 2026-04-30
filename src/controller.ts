@@ -2044,6 +2044,39 @@ export class CodexPluginController {
     };
   }
 
+  private async getSelectedEndpointResolutionWithNodeFallback(
+    conversation: ConversationTarget | null | undefined,
+  ): Promise<EndpointResolution> {
+    const manualEndpointId = this.getManualEndpointId(conversation);
+    if (manualEndpointId) {
+      return {
+        endpointId: manualEndpointId,
+        source: "manual",
+      };
+    }
+    const execContext = this.readExecContextFromConfig(this.getOpenClawConfig());
+    const autoEndpointId = this.resolveEndpointIdFromExecContext(execContext);
+    if (autoEndpointId) {
+      return {
+        endpointId: autoEndpointId,
+        source: "auto-node",
+        nodeId: execContext?.node?.trim() || undefined,
+      };
+    }
+    const derivedEndpointId = await this.tryRegisterNodeDerivedEndpoint(execContext);
+    if (derivedEndpointId) {
+      return {
+        endpointId: derivedEndpointId,
+        source: "auto-node",
+        nodeId: execContext?.node?.trim() || undefined,
+      };
+    }
+    return {
+      endpointId: this.settings.defaultEndpoint,
+      source: "default",
+    };
+  }
+
   private async setSelectedEndpointId(conversation: ConversationTarget, endpointId: string): Promise<void> {
     await this.store.upsertConversationEndpoint({
       conversation: {
@@ -2776,8 +2809,11 @@ export class CodexPluginController {
 
     switch (commandName) {
       case "cas_resume": {
-        const resolvedEndpointText = conversation
-          ? `Resolved endpoint: ${this.formatEndpointResolutionLabel(this.getSelectedEndpointResolution(conversation))}`
+        const resolvedEndpoint = conversation
+          ? await this.getSelectedEndpointResolutionWithNodeFallback(conversation)
+          : undefined;
+        const resolvedEndpointText = resolvedEndpoint
+          ? `Resolved endpoint: ${this.formatEndpointResolutionLabel(resolvedEndpoint)}`
           : undefined;
         const withResolvedEndpoint = (reply: ReplyPayload): ReplyPayload => {
           if (!resolvedEndpointText) {
@@ -2983,7 +3019,8 @@ export class CodexPluginController {
     if (parsed.error) {
       return { text: parsed.error };
     }
-    const selectedEndpointId = this.getSelectedEndpointId(conversation, binding);
+    const selectedEndpoint = await this.getSelectedEndpointResolutionWithNodeFallback(conversation);
+    const selectedEndpointId = selectedEndpoint.endpointId;
     const resumeBinding =
       binding && this.getEndpointIdForBinding(binding) === selectedEndpointId ? binding : null;
     const resumePendingBind =

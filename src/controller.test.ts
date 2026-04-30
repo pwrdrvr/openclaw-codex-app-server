@@ -7380,6 +7380,51 @@ describe("Discord controller flows", () => {
     expect(deriveSpy).toHaveBeenCalledWith({ host: "node", node: "nestdev" });
   });
 
+  it("uses the derived node endpoint in /cas_resume when no configured match exists", async () => {
+    const { controller } = await createControllerHarness({
+      defaultEndpoint: "default",
+      endpoints: [
+        {
+          id: "default",
+          transport: "websocket",
+          url: "ws://127.0.0.1:8765",
+        },
+      ],
+    });
+    vi.spyOn(controller as any, "getSelectedEndpointResolutionWithNodeFallback").mockResolvedValue({
+      endpointId: "auto-node-nestdev",
+      source: "auto-node",
+      nodeId: "nestdev",
+    });
+    const listSpy = vi.spyOn(controller as any, "handleListCommand").mockResolvedValue({
+      text: "picker body",
+    });
+
+    const reply = await controller.handleCommand(
+      "cas_resume",
+      buildDiscordCommandContext({
+        config: {
+          tools: {
+            exec: {
+              host: "node",
+              node: "nestdev",
+            },
+          },
+        },
+      }),
+    );
+
+    expect(listSpy).toHaveBeenCalledWith(
+      expect.anything(),
+      null,
+      "auto-node-nestdev",
+      "",
+      "discord",
+    );
+    expect(reply.text).toContain("picker body");
+    expect(reply.text).toContain("Resolved endpoint: auto-node-nestdev (auto from node: nestdev)");
+  });
+
   it("falls back to default endpoint when node-derived probe is unavailable", async () => {
     const { controller } = await createControllerHarness({
       defaultEndpoint: "default",
