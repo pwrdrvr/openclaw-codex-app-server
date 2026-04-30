@@ -2005,11 +2005,13 @@ export class CodexPluginController {
     if (!conversation) {
       return undefined;
     }
-    const stored = this.store.getConversationEndpoint(conversation)?.endpointId?.trim();
-    if (stored && this.settings.endpoints.some((entry) => entry.id === stored)) {
-      return stored;
-    }
-    return undefined;
+    const prefixedConversation = !conversation.conversationId.includes(":")
+      ? { ...conversation, conversationId: `${conversation.channel}:${conversation.conversationId}` }
+      : null;
+    return (
+      this.store.getConversationEndpoint(conversation)
+      ?? (prefixedConversation ? this.store.getConversationEndpoint(prefixedConversation) : null)
+    )?.endpointId?.trim() || undefined;
   }
 
   private getSelectedEndpointId(
@@ -2231,7 +2233,11 @@ export class CodexPluginController {
       );
       return null;
     }
-    const threadState = await this.client
+    const endpointSelection = await this.getSelectedEndpointResolutionWithNodeFallback(conversation);
+    const recoveryClient = this.settings.endpoints.some((entry) => entry.id === endpointSelection.endpointId)
+      ? this.getClientForEndpoint(endpointSelection.endpointId)
+      : this.client;
+    const threadState = await recoveryClient
       .readThreadState({
         profile: "default",
         sessionKey: buildPluginSessionKey(threadId),
@@ -2252,6 +2258,7 @@ export class CodexPluginController {
         : "default";
     const recovered = await this.bindConversation(conversation, {
       threadId,
+      endpointId: endpointSelection.endpointId,
       workspaceDir,
       threadTitle: threadState?.threadName?.trim() || undefined,
       permissionsMode,

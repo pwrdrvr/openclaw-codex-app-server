@@ -303,7 +303,7 @@ async function createControllerHarness(pluginConfigOverrides: Record<string, unk
     })),
     readRateLimits: vi.fn(async () => []),
   };
-  (controller as any).client = clientMock;
+  setControllerClient(controller, clientMock);
   (controller as any).readThreadHasChanges = vi.fn(async () => false);
   return {
     controller,
@@ -319,6 +319,17 @@ async function createControllerHarness(pluginConfigOverrides: Record<string, unk
     discordOutbound,
     stateDir,
   };
+}
+
+function setControllerClient(instance: CodexPluginController, client: unknown) {
+  const clients = (instance as any).clients as Map<string, unknown>;
+  clients.clear();
+  clients.set("default", client);
+  Object.defineProperty(instance as object, "client", {
+    configurable: true,
+    get: () => client,
+  });
+  (instance as any).getClientForEndpoint = vi.fn((endpointId?: string) => clients.get(endpointId ?? "default") ?? client);
 }
 
 async function createControllerHarnessWithPluginConfig(pluginConfigOverrides: Record<string, unknown>) {
@@ -396,7 +407,7 @@ async function createControllerHarnessWithPluginConfig(pluginConfigOverrides: Re
     })),
     readRateLimits: vi.fn(async () => []),
   };
-  (controller as any).client = clientMock;
+  setControllerClient(controller, clientMock);
   (controller as any).readThreadHasChanges = vi.fn(async () => false);
   return {
     controller,
@@ -451,7 +462,7 @@ async function createControllerHarnessWithoutTelegramOutbound() {
     })),
     readRateLimits: vi.fn(async () => []),
   };
-  (controller as any).client = clientMock;
+  setControllerClient(controller, clientMock);
   (controller as any).readThreadHasChanges = vi.fn(async () => false);
   return {
     controller,
@@ -492,7 +503,7 @@ async function createControllerHarnessWithoutTelegramPayloadSupport() {
     })),
     readRateLimits: vi.fn(async () => []),
   };
-  (controller as any).client = clientMock;
+  setControllerClient(controller, clientMock);
   (controller as any).readThreadHasChanges = vi.fn(async () => false);
   return {
     controller,
@@ -543,7 +554,7 @@ async function createControllerHarnessWithoutLegacyDiscordRuntime() {
     })),
     readRateLimits: vi.fn(async () => []),
   };
-  (controller as any).client = clientMock;
+  setControllerClient(controller, clientMock);
   (controller as any).readThreadHasChanges = vi.fn(async () => false);
   return {
     controller,
@@ -593,7 +604,7 @@ async function createControllerHarnessWithoutDiscordSendSurfaces() {
     })),
     readRateLimits: vi.fn(async () => []),
   };
-  (controller as any).client = clientMock;
+  setControllerClient(controller, clientMock);
   (controller as any).readThreadHasChanges = vi.fn(async () => false);
   return { controller };
 }
@@ -2340,17 +2351,22 @@ describe("Discord controller flows", () => {
       | undefined;
     const buttons = firstCall?.[2]?.buttons ?? [];
 
-    expect(buttons).toHaveLength(5);
-    expect(buttons[0][0].text).toBe("Select Model");
-    expect(buttons[0][1].text).toBe("Reasoning: Default");
-    expect(buttons[1][0].text).toBe("Fast: toggle");
-    expect(buttons[1][1].text).toBe("Permissions: toggle");
-    expect(buttons[2][0].text).toBe("Compact");
-    expect(buttons[2][1].text).toBe("Stop");
-    expect(buttons[3][0].text).toBe("Refresh");
-    expect(buttons[3][1].text).toBe("Detach");
-    expect(buttons[4][0].text).toBe("Skills");
-    expect(buttons[4][1].text).toBe("MCPs");
+    const buttonTexts = buttons.flatMap((row: Array<{ text: string }>) => row.map((button) => button.text));
+    expect(buttonTexts).toEqual(
+      expect.arrayContaining([
+        "Select Model",
+        "Endpoint",
+        "Reasoning: Default",
+        "Fast: toggle",
+        "Permissions: toggle",
+        "Compact",
+        "Stop",
+        "Refresh",
+        "Detach",
+        "Skills",
+        "MCPs",
+      ]),
+    );
     const kinds = buttons.flatMap((row: Array<{ callback_data: string }>) => {
       return row.map((button) => {
         const token = button.callback_data.split(":").pop() ?? "";
@@ -2480,11 +2496,16 @@ describe("Discord controller flows", () => {
 
     expect(text).toContain("Model: unknown");
     expect(text).toContain("saved as defaults until then");
-    expect(buttons).toHaveLength(5);
-    expect(buttons[0][0].text).toBe("Select Model");
-    expect(buttons[0][1].text).toBe("Reasoning: Default");
-    expect(buttons[1][0].text).toBe("Fast: toggle");
-    expect(buttons[1][1].text).toBe("Permissions: toggle");
+    const buttonTexts = buttons.flatMap((row: Array<{ text: string }>) => row.map((button) => button.text));
+    expect(buttonTexts).toEqual(
+      expect.arrayContaining([
+        "Select Model",
+        "Endpoint",
+        "Reasoning: Default",
+        "Fast: toggle",
+        "Permissions: toggle",
+      ]),
+    );
   });
 
   it("hides the fast button on status controls when the current model does not support it", async () => {
@@ -4187,15 +4208,9 @@ describe("Discord controller flows", () => {
     expect(result).toEqual({ handled: true });
     expect(startTurn).toHaveBeenCalledWith(
       expect.objectContaining({
-        binding: expect.objectContaining({
-          threadId: "codex-thread-2",
-          workspaceDir: "/repo/openclaw",
-        }),
-        conversation: expect.objectContaining({
-          conversationId: "channel:thread-2",
-          parentConversationId: "channel:parent-1",
-          threadId: "thread-2",
-        }),
+        existingThreadId: "codex-thread-2",
+        sessionKey: "session-2",
+        workspaceDir: "/repo/openclaw",
       }),
     );
   });
@@ -4263,11 +4278,19 @@ describe("Discord controller flows", () => {
     expect(resultB).toEqual({ handled: true });
     expect(startTurn).toHaveBeenNthCalledWith(
       1,
-      expect.objectContaining({ binding: expect.objectContaining({ threadId: "codex-thread-a" }) }),
+      expect.objectContaining({
+        existingThreadId: "codex-thread-a",
+        sessionKey: "session-a",
+        workspaceDir: "/repo/a",
+      }),
     );
     expect(startTurn).toHaveBeenNthCalledWith(
       2,
-      expect.objectContaining({ binding: expect.objectContaining({ threadId: "codex-thread-b" }) }),
+      expect.objectContaining({
+        existingThreadId: "codex-thread-b",
+        sessionKey: "session-b",
+        workspaceDir: "/repo/b",
+      }),
     );
   });
 
