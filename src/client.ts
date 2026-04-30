@@ -2418,6 +2418,11 @@ export function isMissingThreadError(error: unknown): boolean {
 }
 
 function buildFullAccessPluginSettings(settings: PluginSettings): PluginSettings | null {
+  if (settings.transport === "websocket") {
+    return {
+      ...settings,
+    };
+  }
   if (settings.transport !== "stdio") {
     return null;
   }
