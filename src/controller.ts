@@ -16,6 +16,7 @@ import type {
   ReplyPayload,
   ConversationRef,
 } from "openclaw/plugin-sdk";
+import { getCurrentPluginConversationBinding } from "openclaw/plugin-sdk/conversation-runtime";
 import { resolvePluginSettings, resolveWorkspaceDir } from "./config.js";
 import { CodexAppServerModeClient, type ActiveCodexRun, isMissingThreadError } from "./client.js";
 import { getThreadDisplayTitle } from "./thread-display.js";
@@ -169,6 +170,7 @@ type ActiveRunRecord = {
 };
 
 const execFileAsync = promisify(execFile);
+const PLUGIN_ROOT_DIR = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const require = createRequire(import.meta.url);
 const TEXT_ATTACHMENT_FILE_EXTENSIONS = new Set([
   ".json",
@@ -490,9 +492,8 @@ function normalizeDiscordChannelConversationId(raw?: string): string | undefined
 function resolveDiscordCommandConversation(
   ctx: PluginCommandContext,
 ): ConversationTarget | null {
-  const threadConversationId = normalizeDiscordChannelConversationId(
-    readCommandContextId(ctx, "messageThreadId"),
-  );
+  const rawThreadId = readCommandContextId(ctx, "messageThreadId");
+  const threadConversationId = normalizeDiscordChannelConversationId(rawThreadId);
   if (threadConversationId) {
     return {
       channel: "discord",
@@ -501,6 +502,7 @@ function resolveDiscordCommandConversation(
       parentConversationId: normalizeDiscordChannelConversationId(
         readCommandContextId(ctx, "threadParentId"),
       ),
+      threadId: denormalizeDiscordConversationId(threadConversationId) ?? rawThreadId,
     };
   }
   const candidates = [ctx.from, ctx.to]
@@ -573,9 +575,41 @@ function toConversationTargetFromInbound(event: {
   }
   const channel = event.channel.trim().toLowerCase();
   const conversationIdRaw = event.conversationId?.trim();
+  const parentConversationId =
+    channel === "discord"
+      ? normalizeDiscordConversationId(event.parentConversationId)
+      : event.parentConversationId;
+  const discordNormalizedThreadId =
+    channel === "discord"
+      ? (() => {
+          if (typeof event.threadId === "string") {
+            const trimmed = event.threadId.trim();
+            if (trimmed) {
+              return trimmed;
+            }
+          }
+          if (typeof event.threadId === "number" && Number.isFinite(event.threadId)) {
+            return String(Math.trunc(event.threadId));
+          }
+          return undefined;
+        })()
+      : undefined;
+  const normalizedThreadId =
+    channel === "discord"
+      ? discordNormalizedThreadId
+      : typeof event.threadId === "number"
+        ? event.threadId
+        : typeof event.threadId === "string"
+          ? Number.isFinite(Number(event.threadId))
+            ? Number(event.threadId)
+            : undefined
+          : undefined;
   const conversationId =
     channel === "discord"
       ? (() => {
+          if (discordNormalizedThreadId) {
+            return normalizeDiscordChannelConversationId(discordNormalizedThreadId);
+          }
           const normalized = normalizeDiscordConversationId(conversationIdRaw);
           if (!normalized) {
             return undefined;
@@ -589,28 +623,28 @@ function toConversationTargetFromInbound(event: {
           return `${isChannel ? "channel" : "user"}:${normalized}`;
         })()
       : event.conversationId;
-  const parentConversationId =
-    channel === "discord"
-      ? normalizeDiscordConversationId(event.parentConversationId)
-      : event.parentConversationId;
   if (!conversationId) {
     return null;
   }
+  const resolvedThreadId =
+    channel === "discord"
+      ? normalizedThreadId ?? (() => {
+          if (parentConversationId) {
+            const candidate = denormalizeDiscordConversationId(conversationId);
+            const parentRaw = denormalizeDiscordConversationId(parentConversationId);
+            if (candidate && parentRaw && candidate !== parentRaw) {
+              return candidate;
+            }
+          }
+          return undefined;
+        })()
+      : normalizedThreadId;
   return {
     channel,
     accountId: event.accountId,
     conversationId,
     parentConversationId,
-    threadId:
-      channel === "discord"
-        ? undefined
-        : typeof event.threadId === "number"
-          ? event.threadId
-          : typeof event.threadId === "string"
-            ? Number.isFinite(Number(event.threadId))
-              ? Number(event.threadId)
-              : undefined
-            : undefined,
+    threadId: resolvedThreadId,
   };
 }
 
@@ -1408,6 +1442,78 @@ export class CodexPluginController {
     this.started = false;
   }
 
+  private toPluginBindingConversation(conversation: ConversationTarget): {
+    channel: string;
+    accountId: string;
+    conversationId: string;
+    parentConversationId?: string;
+    threadId?: string | number;
+  } {
+    return {
+      channel: conversation.channel,
+      accountId: conversation.accountId,
+      conversationId: conversation.conversationId,
+      parentConversationId: conversation.parentConversationId,
+      threadId: conversation.threadId,
+    };
+  }
+
+  private parseCodexThreadIdFromBindingSummary(summary?: string): string | null {
+    const trimmed = summary?.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const match = trimmed.match(/\b([0-9a-f]{8}-[0-9a-f-]{27})\b/i);
+    return match?.[1] ?? null;
+  }
+
+  private async tryRecoverMissingLocalBinding(
+    conversation: ConversationTarget,
+  ): Promise<StoredBinding | null> {
+    const runtimeBinding = await getCurrentPluginConversationBinding({
+      pluginRoot: PLUGIN_ROOT_DIR,
+      conversation: this.toPluginBindingConversation(conversation),
+    }).catch(() => null);
+    if (!runtimeBinding) {
+      return null;
+    }
+    const threadId = this.parseCodexThreadIdFromBindingSummary(runtimeBinding.summary);
+    if (!threadId) {
+      this.api.logger.debug?.(
+        `codex binding recovery skipped, runtime summary missing thread id conversation=${conversation.conversationId}`,
+      );
+      return null;
+    }
+    const threadState = await this.client
+      .readThreadState({
+        profile: "default",
+        sessionKey: buildPluginSessionKey(threadId),
+        threadId,
+      })
+      .catch(() => undefined);
+    const workspaceDir = threadState?.cwd?.trim();
+    if (!workspaceDir) {
+      this.api.logger.warn(
+        `codex binding recovery could not read workspace for conversation=${conversation.conversationId} thread=${threadId}`,
+      );
+      return null;
+    }
+    const permissionsMode =
+      threadState?.approvalPolicy?.trim() === "never" &&
+      threadState?.sandbox?.trim() === "danger-full-access"
+        ? "full-access"
+        : "default";
+    const recovered = await this.bindConversation(conversation, {
+      threadId,
+      workspaceDir,
+      threadTitle: threadState?.threadName?.trim() || undefined,
+      permissionsMode,
+    });
+    this.api.logger.warn(
+      `codex recovered missing local binding conversation=${conversation.conversationId} thread=${threadId}`,
+    );
+    return recovered;
+  }
   async handleConversationBindingResolved(
     event: PluginConversationBindingResolvedEvent,
   ): Promise<void> {
@@ -1418,6 +1524,18 @@ export class CodexPluginController {
       conversationId: event.request.conversation.conversationId,
       parentConversationId: event.request.conversation.parentConversationId,
       threadId: (() => {
+        if (isDiscordChannel(event.request.conversation.channel)) {
+          if (typeof event.request.conversation.threadId === "string") {
+            return event.request.conversation.threadId.trim() || undefined;
+          }
+          if (
+            typeof event.request.conversation.threadId === "number" &&
+            Number.isFinite(event.request.conversation.threadId)
+          ) {
+            return String(Math.trunc(event.request.conversation.threadId));
+          }
+          return undefined;
+        }
         if (typeof event.request.conversation.threadId === "number") {
           return event.request.conversation.threadId;
         }
@@ -1430,6 +1548,12 @@ export class CodexPluginController {
     };
     const pending = this.store.getPendingBind(conversation);
     if (!pending) {
+      if (event.status === "approved") {
+        const recovered = await this.tryRecoverMissingLocalBinding(conversation);
+        if (recovered) {
+          return;
+        }
+      }
       this.api.logger.debug?.(
         `codex binding approved without pending local bind conversation=${conversation.conversationId}`,
       );
@@ -1541,7 +1665,11 @@ export class CodexPluginController {
       }
       const existingBinding = this.store.getBinding(conversation);
       const hydratedBinding = existingBinding ? null : await this.hydrateApprovedBinding(conversation);
-      const resolvedBinding = existingBinding ?? hydratedBinding?.binding ?? null;
+      const recoveredBinding =
+        existingBinding || hydratedBinding?.binding
+          ? null
+          : await this.tryRecoverMissingLocalBinding(conversation);
+      const resolvedBinding = existingBinding ?? hydratedBinding?.binding ?? recoveredBinding ?? null;
       this.api.logger.debug?.(
         `codex inbound claim channel=${conversation.channel} account=${conversation.accountId} conversation=${conversation.conversationId} parent=${conversation.parentConversationId ?? "<none>"} local=${resolvedBinding ? "yes" : "no"}`,
       );
@@ -1915,6 +2043,15 @@ export class CodexPluginController {
           text: detachResult?.removed
             ? "Detached this conversation from Codex."
             : "This conversation is not currently bound to Codex.",
+        };
+      case "cas_reset":
+        if (!conversation) {
+          return { text: "This command needs a Telegram or Discord conversation." };
+        }
+        await bindingApi.detachConversationBinding?.().catch(() => undefined);
+        await this.unbindConversation(conversation);
+        return {
+          text: "Reset Codex conversation state for this chat. The binding, pending requests, and stale callbacks were cleared. Run /cas_resume to bind again.",
         };
       case "cas_status":
         return await this.handleStatusCommand(
@@ -4993,10 +5130,12 @@ export class CodexPluginController {
       `codex discord picker send conversation=${conversation.conversationId} rows=${picker.buttons?.length ?? 0}`,
     );
     const outbound = await this.loadDiscordOutboundAdapter();
+    const discordRoute = this.resolveDiscordOutboundRoute(conversation);
     if (outbound?.sendPayload) {
       await outbound.sendPayload({
         cfg: this.getOpenClawConfig(),
-        to: conversation.conversationId,
+        to: discordRoute.to,
+        threadId: discordRoute.threadId,
         accountId: conversation.accountId,
         payload: {
           text: picker.text,
@@ -6872,10 +7011,12 @@ export class CodexPluginController {
             };
           }
         }
+        const discordRoute = this.resolveDiscordOutboundRoute(conversation);
         const result = outbound?.sendPayload
           ? await outbound.sendPayload({
               cfg: this.getOpenClawConfig(),
-              to: conversation.conversationId,
+              to: discordRoute.to,
+              threadId: discordRoute.threadId,
               accountId: conversation.accountId,
               mediaLocalRoots,
               payload: {
@@ -6970,6 +7111,27 @@ export class CodexPluginController {
       return undefined;
     }
     return (await loadAdapter("discord")) as DiscordOutboundAdapter | undefined;
+  }
+
+  private resolveDiscordOutboundRoute(conversation: ConversationTarget): {
+    to: string;
+    threadId?: string;
+  } {
+    const explicitThreadId =
+      typeof conversation.threadId === "string"
+        ? conversation.threadId.trim() || undefined
+        : typeof conversation.threadId === "number" && Number.isFinite(conversation.threadId)
+          ? String(Math.trunc(conversation.threadId))
+          : undefined;
+    const inferredThreadId =
+      conversation.parentConversationId != null
+        ? denormalizeDiscordConversationId(conversation.conversationId)
+        : undefined;
+    const threadId = explicitThreadId ?? inferredThreadId;
+    const to = threadId && conversation.parentConversationId
+      ? conversation.parentConversationId
+      : conversation.conversationId;
+    return { to, threadId };
   }
 
   private async sendTelegramTextChunk(
@@ -7096,10 +7258,12 @@ export class CodexPluginController {
   ): Promise<{ messageId: string; channelId?: string }> {
     const mediaUrl = opts?.mediaUrl;
     const mediaLocalRoots = opts?.mediaLocalRoots;
+    const discordRoute = this.resolveDiscordOutboundRoute(conversation);
     if (mediaUrl && outbound?.sendMedia) {
       return await outbound.sendMedia({
         cfg: this.getOpenClawConfig(),
-        to: conversation.conversationId,
+        to: discordRoute.to,
+        threadId: discordRoute.threadId,
         text,
         mediaUrl,
         accountId: conversation.accountId,
@@ -7109,7 +7273,8 @@ export class CodexPluginController {
     if (!mediaUrl && outbound?.sendText) {
       return await outbound.sendText({
         cfg: this.getOpenClawConfig(),
-        to: conversation.conversationId,
+        to: discordRoute.to,
+        threadId: discordRoute.threadId,
         text,
         accountId: conversation.accountId,
       });
@@ -7189,9 +7354,11 @@ export class CodexPluginController {
   }
 
   private async unbindConversation(conversation: ConversationTarget): Promise<void> {
-    const binding = this.store.getBinding(conversation);
-    if (binding?.pinnedBindingMessage) {
-      await this.unpinStoredBindingMessage(binding);
+    const bindings = this.store.listBindingsForConversationScope(conversation);
+    for (const binding of bindings) {
+      if (binding.pinnedBindingMessage) {
+        await this.unpinStoredBindingMessage(binding);
+      }
     }
     await this.store.removeBinding(conversation);
   }
@@ -7210,7 +7377,8 @@ export class CodexPluginController {
         return await legacyTyping({
           to: conversation.parentConversationId ?? conversation.conversationId,
           accountId: conversation.accountId,
-          messageThreadId: conversation.threadId,
+          messageThreadId:
+            typeof conversation.threadId === "number" ? conversation.threadId : undefined,
         });
       }
       return await this.startTelegramTypingLease(conversation);
@@ -7601,7 +7769,7 @@ export class CodexPluginController {
     conversation: ConversationTarget,
     name: string,
   ): Promise<void> {
-    if (isTelegramChannel(conversation.channel) && conversation.threadId != null) {
+    if (isTelegramChannel(conversation.channel) && typeof conversation.threadId === "number") {
       const legacyRename = this.api.runtime.channel.telegram?.conversationActions?.renameTopic;
       if (typeof legacyRename === "function") {
         await legacyRename(
