@@ -4,7 +4,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawPluginApi, PluginCommandContext, ReplyPayload } from "openclaw/plugin-sdk";
-import { CodexAppServerClient } from "./client.js";
+import { CodexAppServerClient, CodexAppServerModeClient } from "./client.js";
 import { CodexPluginController } from "./controller.js";
 
 const TEST_TELEGRAM_PEER_ID = "telegram-user-1";
@@ -27,6 +27,10 @@ const telegramSdkState = vi.hoisted(() => ({
   resolveTelegramAccount: vi.fn(() => ({ accountId: "default", token: "telegram-token" })),
 }));
 
+const conversationRuntimeState = vi.hoisted(() => ({
+  getCurrentPluginConversationBinding: vi.fn(async () => null),
+}));
+
 vi.mock("openclaw/plugin-sdk/discord", () => ({
   buildDiscordComponentMessage: discordSdkState.buildDiscordComponentMessage,
   editDiscordComponentMessage: discordSdkState.editDiscordComponentMessage,
@@ -38,11 +42,15 @@ vi.mock("openclaw/plugin-sdk/telegram-account", () => ({
   resolveTelegramAccount: telegramSdkState.resolveTelegramAccount,
 }));
 
+vi.mock("openclaw/plugin-sdk/conversation-runtime", () => ({
+  getCurrentPluginConversationBinding: conversationRuntimeState.getCurrentPluginConversationBinding,
+}));
+
 function makeStateDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-app-server-test-"));
 }
 
-function createApiMock() {
+function createApiMock(pluginConfigOverrides: Record<string, unknown> = {}) {
   const stateDir = makeStateDir();
   const sendComponentMessage = vi.fn(async (..._args: unknown[]) => ({ messageId: "discord-component-1", channelId: "channel:chan-1" }));
   const sendMessageDiscord = vi.fn(async (..._args: unknown[]) => ({ messageId: "discord-msg-1", channelId: "channel:chan-1" }));
@@ -131,6 +139,7 @@ function createApiMock() {
     pluginConfig: {
       enabled: true,
       defaultWorkspaceDir: "/repo/openclaw",
+      ...pluginConfigOverrides,
     },
     logger: {
       debug: vi.fn(),
@@ -205,7 +214,7 @@ function createApiMock() {
   };
 }
 
-async function createControllerHarness() {
+async function createControllerHarness(pluginConfigOverrides: Record<string, unknown> = {}) {
   const {
     api,
     sendComponentMessage,
@@ -217,7 +226,7 @@ async function createControllerHarness() {
     editChannel,
     discordOutbound,
     stateDir,
-  } = createApiMock();
+  } = createApiMock(pluginConfigOverrides);
   const controller = new CodexPluginController(api);
   await controller.start();
   const threadState: any = {
@@ -294,7 +303,111 @@ async function createControllerHarness() {
     })),
     readRateLimits: vi.fn(async () => []),
   };
-  (controller as any).client = clientMock;
+  setControllerClient(controller, clientMock);
+  (controller as any).readThreadHasChanges = vi.fn(async () => false);
+  return {
+    controller,
+    api,
+    clientMock,
+    sendComponentMessage,
+    sendMessageDiscord,
+    sendMessageTelegram,
+    discordTypingStart,
+    renameTopic,
+    resolveTelegramToken,
+    editChannel,
+    discordOutbound,
+    stateDir,
+  };
+}
+
+function setControllerClient(instance: CodexPluginController, client: unknown) {
+  const clients = (instance as any).clients as Map<string, unknown>;
+  clients.clear();
+  clients.set("default", client);
+  Object.defineProperty(instance as object, "client", {
+    configurable: true,
+    get: () => client,
+  });
+  (instance as any).getClientForEndpoint = vi.fn((endpointId?: string) => clients.get(endpointId ?? "default") ?? client);
+}
+
+async function createControllerHarnessWithPluginConfig(pluginConfigOverrides: Record<string, unknown>) {
+  const {
+    api,
+    sendComponentMessage,
+    sendMessageDiscord,
+    sendMessageTelegram,
+    discordTypingStart,
+    renameTopic,
+    resolveTelegramToken,
+    editChannel,
+    discordOutbound,
+    stateDir,
+  } = createApiMock(pluginConfigOverrides);
+  const controller = new CodexPluginController(api);
+  await controller.start();
+  const threadState: any = {
+    threadId: "thread-1",
+    threadName: "Discord Thread",
+    model: "openai/gpt-5.4",
+    cwd: "/repo/openclaw",
+    serviceTier: "default",
+    approvalPolicy: "on-request",
+    sandbox: "workspace-write",
+  };
+  const clientMock = {
+    hasProfile: vi.fn((profile: string) => profile === "default" || profile === "full-access"),
+    listThreads: vi.fn(async () => []),
+    startThread: vi.fn(async () => ({
+      threadId: "thread-new",
+      threadName: "New Thread",
+      model: "openai/gpt-5.4",
+      cwd: "/repo/openclaw",
+      serviceTier: "default",
+    })),
+    listModels: vi.fn(async () => [{ id: "openai/gpt-5.4", current: true }]),
+    listSkills: vi.fn(async () => []),
+    listMcpServers: vi.fn(async () => []),
+    readThreadState: vi.fn(async () => ({ ...threadState })),
+    readThreadContext: vi.fn(async () => ({
+      lastUserMessage: undefined,
+      lastAssistantMessage: undefined,
+    })),
+    setThreadName: vi.fn(async () => ({
+      threadId: "thread-1",
+      threadName: "Discord Thread",
+    })),
+    setThreadModel: vi.fn(async (params: { model: string }) => {
+      threadState.model = params.model;
+      return { ...threadState };
+    }),
+    setThreadServiceTier: vi.fn(async (params: { serviceTier: string | null }) => {
+      threadState.serviceTier = params.serviceTier ?? "default";
+      return { ...threadState };
+    }),
+    setThreadPermissions: vi.fn(async (params: { approvalPolicy: string; sandbox: string }) => {
+      threadState.approvalPolicy = params.approvalPolicy;
+      threadState.sandbox = params.sandbox;
+      return { ...threadState };
+    }),
+    startReview: vi.fn(() => ({
+      result: new Promise(() => {}),
+      getThreadId: () => "thread-1",
+      queueMessage: vi.fn(async () => false),
+      interrupt: vi.fn(async () => {}),
+      isAwaitingInput: () => false,
+      submitPendingInput: vi.fn(async () => false),
+      submitPendingInputPayload: vi.fn(async () => false),
+    })),
+    readAccount: vi.fn(async () => ({
+      email: "test@example.com",
+      planType: "pro",
+      type: "chatgpt",
+    })),
+    readRateLimits: vi.fn(async () => []),
+  };
+  setControllerClient(controller, clientMock);
   (controller as any).readThreadHasChanges = vi.fn(async () => false);
   return {
     controller,
@@ -349,7 +462,7 @@ async function createControllerHarnessWithoutTelegramOutbound() {
     })),
     readRateLimits: vi.fn(async () => []),
   };
-  (controller as any).client = clientMock;
+  setControllerClient(controller, clientMock);
   (controller as any).readThreadHasChanges = vi.fn(async () => false);
   return {
     controller,
@@ -390,7 +503,7 @@ async function createControllerHarnessWithoutTelegramPayloadSupport() {
     })),
     readRateLimits: vi.fn(async () => []),
   };
-  (controller as any).client = clientMock;
+  setControllerClient(controller, clientMock);
   (controller as any).readThreadHasChanges = vi.fn(async () => false);
   return {
     controller,
@@ -441,7 +554,7 @@ async function createControllerHarnessWithoutLegacyDiscordRuntime() {
     })),
     readRateLimits: vi.fn(async () => []),
   };
-  (controller as any).client = clientMock;
+  setControllerClient(controller, clientMock);
   (controller as any).readThreadHasChanges = vi.fn(async () => false);
   return {
     controller,
@@ -491,7 +604,7 @@ async function createControllerHarnessWithoutDiscordSendSurfaces() {
     })),
     readRateLimits: vi.fn(async () => []),
   };
-  (controller as any).client = clientMock;
+  setControllerClient(controller, clientMock);
   (controller as any).readThreadHasChanges = vi.fn(async () => false);
   return { controller };
 }
@@ -553,6 +666,8 @@ beforeEach(() => {
   discordSdkState.registerBuiltDiscordComponentMessage.mockClear();
   discordSdkState.resolveDiscordAccount.mockClear();
   telegramSdkState.resolveTelegramAccount.mockClear();
+  conversationRuntimeState.getCurrentPluginConversationBinding.mockClear();
+  conversationRuntimeState.getCurrentPluginConversationBinding.mockResolvedValue(null);
   vi.spyOn(CodexAppServerClient.prototype, "logStartupProbe").mockResolvedValue();
   vi.stubGlobal(
     "fetch",
@@ -565,6 +680,8 @@ beforeEach(() => {
 });
 
 async function flushAsyncWork(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
   await new Promise((resolve) => setTimeout(resolve, 0));
   await new Promise((resolve) => setTimeout(resolve, 0));
   await new Promise((resolve) => setTimeout(resolve, 0));
@@ -613,9 +730,8 @@ describe("Discord controller flows", () => {
 
     const reply = await controller.handleCommand("cas_resume", buildDiscordCommandContext());
 
-    expect(reply).toEqual({
-      text: "Sent a Codex thread picker to this Discord conversation.",
-    });
+    expect(reply.text).toContain("Sent a Codex thread picker to this Discord conversation.");
+    expect(reply.text).toContain("Resolved endpoint: default (default)");
     expect(sendComponentMessage).toHaveBeenCalledWith(
       "channel:chan-1",
       expect.objectContaining({
@@ -632,9 +748,8 @@ describe("Discord controller flows", () => {
 
     const reply = await controller.handleCommand("cas_resume", buildDiscordCommandContext());
 
-    expect(reply).toEqual({
-      text: "Sent a Codex thread picker to this Discord conversation.",
-    });
+    expect(reply.text).toContain("Sent a Codex thread picker to this Discord conversation.");
+    expect(reply.text).toContain("Resolved endpoint: default (default)");
     expect(discordOutbound.sendPayload).toHaveBeenCalledWith(
       expect.objectContaining({
         to: "channel:chan-1",
@@ -665,9 +780,8 @@ describe("Discord controller flows", () => {
 
     const reply = await controller.handleCommand("cas_resume", buildDiscordCommandContext());
 
-    expect(reply).toEqual({
-      text: "Sent a Codex thread picker to this Discord conversation.",
-    });
+    expect(reply.text).toContain("Sent a Codex thread picker to this Discord conversation.");
+    expect(reply.text).toContain("Resolved endpoint: default (default)");
     expect(sendDiscordComponentMessage).toHaveBeenCalledWith(
       "channel:chan-1",
       expect.objectContaining({
@@ -678,6 +792,16 @@ describe("Discord controller flows", () => {
         accountId: "default",
       }),
     );
+  });
+
+  it("includes the resolved endpoint in cas_resume replies when the command fails", async () => {
+    const { controller } = await createControllerHarness();
+    vi.spyOn(controller as any, "handleJoinCommand").mockRejectedValue(new Error("boom"));
+
+    const reply = await controller.handleCommand("cas_resume", buildDiscordCommandContext());
+
+    expect(reply.text).toContain("cas_resume failed: boom");
+    expect(reply.text).toContain("Resolved endpoint: default (default)");
   });
 
   it("renders structured help text for representative commands via handleCommand", async () => {
@@ -950,7 +1074,7 @@ describe("Discord controller flows", () => {
       }),
     );
 
-    expect(reply).toEqual({});
+    expect(reply.text).toContain("Resolved endpoint: default (default)");
     expect(clientMock.startThread).toHaveBeenCalledWith({
       profile: "default",
       sessionKey: undefined,
@@ -1053,7 +1177,7 @@ describe("Discord controller flows", () => {
       }),
     );
 
-    expect(reply).toEqual({});
+    expect(reply.text).toContain("Resolved endpoint: default (default)");
     expect(clientMock.startThread).toHaveBeenCalledWith({
       profile: "default",
       sessionKey: undefined,
@@ -1106,7 +1230,7 @@ describe("Discord controller flows", () => {
       }),
     );
 
-    expect(reply).toEqual({});
+    expect(reply.text).toContain("Resolved endpoint: default (default)");
     const binding = (controller as any).store.getBinding({
       channel: "discord",
       accountId: "default",
@@ -1128,7 +1252,7 @@ describe("Discord controller flows", () => {
       }),
     );
 
-    expect(reply).toEqual({});
+    expect(reply.text).toContain("Resolved endpoint: default (default)");
     const binding = (controller as any).store.getBinding({
       channel: "discord",
       accountId: "default",
@@ -1189,9 +1313,8 @@ describe("Discord controller flows", () => {
       }),
     );
 
-    expect(reply).toEqual({
-      text: "Sent a Codex thread picker to this Discord conversation.",
-    });
+    expect(reply.text).toContain("Sent a Codex thread picker to this Discord conversation.");
+    expect(reply.text).toContain("Resolved endpoint: default (default)");
     expect(sendComponentMessage).toHaveBeenCalledWith(
       "channel:chan-1",
       expect.objectContaining({
@@ -2230,17 +2353,22 @@ describe("Discord controller flows", () => {
       | undefined;
     const buttons = firstCall?.[2]?.buttons ?? [];
 
-    expect(buttons).toHaveLength(5);
-    expect(buttons[0][0].text).toBe("Select Model");
-    expect(buttons[0][1].text).toBe("Reasoning: Default");
-    expect(buttons[1][0].text).toBe("Fast: toggle");
-    expect(buttons[1][1].text).toBe("Permissions: toggle");
-    expect(buttons[2][0].text).toBe("Compact");
-    expect(buttons[2][1].text).toBe("Stop");
-    expect(buttons[3][0].text).toBe("Refresh");
-    expect(buttons[3][1].text).toBe("Detach");
-    expect(buttons[4][0].text).toBe("Skills");
-    expect(buttons[4][1].text).toBe("MCPs");
+    const buttonTexts = buttons.flatMap((row: Array<{ text: string }>) => row.map((button) => button.text));
+    expect(buttonTexts).toEqual(
+      expect.arrayContaining([
+        "Select Model",
+        "Endpoint",
+        "Reasoning: Default",
+        "Fast: toggle",
+        "Permissions: toggle",
+        "Compact",
+        "Stop",
+        "Refresh",
+        "Detach",
+        "Skills",
+        "MCPs",
+      ]),
+    );
     const kinds = buttons.flatMap((row: Array<{ callback_data: string }>) => {
       return row.map((button) => {
         const token = button.callback_data.split(":").pop() ?? "";
@@ -2370,11 +2498,16 @@ describe("Discord controller flows", () => {
 
     expect(text).toContain("Model: unknown");
     expect(text).toContain("saved as defaults until then");
-    expect(buttons).toHaveLength(5);
-    expect(buttons[0][0].text).toBe("Select Model");
-    expect(buttons[0][1].text).toBe("Reasoning: Default");
-    expect(buttons[1][0].text).toBe("Fast: toggle");
-    expect(buttons[1][1].text).toBe("Permissions: toggle");
+    const buttonTexts = buttons.flatMap((row: Array<{ text: string }>) => row.map((button) => button.text));
+    expect(buttonTexts).toEqual(
+      expect.arrayContaining([
+        "Select Model",
+        "Endpoint",
+        "Reasoning: Default",
+        "Fast: toggle",
+        "Permissions: toggle",
+      ]),
+    );
   });
 
   it("hides the fast button on status controls when the current model does not support it", async () => {
@@ -2663,7 +2796,7 @@ describe("Discord controller flows", () => {
       "Discord Thread (openclaw)",
       expect.objectContaining({ accountId: "default" }),
     );
-    expect(reply).toEqual({});
+    expect(reply.text).toContain("Resolved endpoint: default (default)");
     const lastCall = sendMessageTelegram.mock.calls.at(-1) as unknown as
       | [string, string, { buttons?: Array<Array<{ text: string }>>; messageThreadId?: number }]
       | undefined;
@@ -2863,7 +2996,8 @@ describe("Discord controller flows", () => {
       }),
     );
 
-    expect(pendingReply).toEqual({ text: "Plugin bind approval required" });
+    expect(pendingReply.text).toContain("Plugin bind approval required");
+    expect(pendingReply.text).toContain("Resolved endpoint: default (default)");
     expect((controller as any).store.getPendingBind({
       channel: "telegram",
       accountId: "default",
@@ -2895,7 +3029,7 @@ describe("Discord controller flows", () => {
       "Discord Thread (openclaw)",
       expect.objectContaining({ accountId: "default" }),
     );
-    expect(hydratedReply).toEqual({});
+    expect(hydratedReply.text).toContain("Resolved endpoint: default (default)");
     const hydratedLastCall = sendMessageTelegram.mock.calls.at(-1) as unknown as
       | [string, string, { buttons?: Array<Array<{ text: string }>>; messageThreadId?: number }]
       | undefined;
@@ -2949,7 +3083,8 @@ describe("Discord controller flows", () => {
       }),
     );
 
-    expect(reply).toEqual({ text: "Plugin bind approval required" });
+    expect(reply.text).toContain("Plugin bind approval required");
+    expect(reply.text).toContain("Resolved endpoint: default (default)");
     expect(requestConversationBinding).toHaveBeenCalledWith(
       expect.objectContaining({
         summary: "Bind this conversation to Codex thread Discord Thread.",
@@ -2992,7 +3127,7 @@ describe("Discord controller flows", () => {
 
     await flushAsyncWork();
 
-    expect(reply).toEqual({});
+    expect(reply.text).toContain("Resolved endpoint: default (default)");
     expect(renameTopic).toHaveBeenCalledWith(
       "123",
       456,
@@ -4036,8 +4171,170 @@ describe("Discord controller flows", () => {
     expect(startTurn).toHaveBeenCalled();
   });
 
-  it("does not claim inbound Discord messages when only core binding state exists", async () => {
+  it("routes Discord thread inbound claims to the thread conversation instead of the parent channel", async () => {
     const { controller } = await createControllerHarness();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:thread-2",
+        parentConversationId: "channel:parent-1",
+        threadId: "thread-2",
+      },
+      sessionKey: "session-2",
+      threadId: "codex-thread-2",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+    const startTurn = vi.fn(() => ({
+      result: Promise.resolve({
+        threadId: "codex-thread-2",
+        text: "hello from thread 2",
+      }),
+      getThreadId: () => "codex-thread-2",
+      queueMessage: vi.fn(async () => true),
+    }));
+    (controller as any).client.startTurn = startTurn;
+
+    const result = await controller.handleInboundClaim({
+      content: "message from second discord thread",
+      channel: "discord",
+      accountId: "default",
+      conversationId: "parent-1",
+      parentConversationId: "parent-1",
+      threadId: "thread-2",
+      isGroup: true,
+      metadata: { guildId: "guild-1" },
+    });
+
+    expect(result).toEqual({ handled: true });
+    expect(startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        existingThreadId: "codex-thread-2",
+        sessionKey: "session-2",
+        workspaceDir: "/repo/openclaw",
+      }),
+    );
+  });
+
+  it("keeps Discord bindings for sibling threads distinct when inbound events arrive from the same parent channel", async () => {
+    const { controller } = await createControllerHarness();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:thread-a",
+        parentConversationId: "channel:parent-1",
+        threadId: "thread-a",
+      },
+      sessionKey: "session-a",
+      threadId: "codex-thread-a",
+      workspaceDir: "/repo/a",
+      updatedAt: Date.now(),
+    });
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:thread-b",
+        parentConversationId: "channel:parent-1",
+        threadId: "thread-b",
+      },
+      sessionKey: "session-b",
+      threadId: "codex-thread-b",
+      workspaceDir: "/repo/b",
+      updatedAt: Date.now(),
+    });
+    const startTurn = vi.fn((params: any) => ({
+      result: Promise.resolve({
+        threadId: params.binding?.threadId ?? "unknown",
+        text: "ok",
+      }),
+      getThreadId: () => params.binding?.threadId ?? "unknown",
+      queueMessage: vi.fn(async () => true),
+    }));
+    (controller as any).client.startTurn = startTurn;
+
+    const resultA = await controller.handleInboundClaim({
+      content: "from thread A",
+      channel: "discord",
+      accountId: "default",
+      conversationId: "parent-1",
+      parentConversationId: "parent-1",
+      threadId: "thread-a",
+      isGroup: true,
+      metadata: { guildId: "guild-1" },
+    });
+    const resultB = await controller.handleInboundClaim({
+      content: "from thread B",
+      channel: "discord",
+      accountId: "default",
+      conversationId: "parent-1",
+      parentConversationId: "parent-1",
+      threadId: "thread-b",
+      isGroup: true,
+      metadata: { guildId: "guild-1" },
+    });
+
+    expect(resultA).toEqual({ handled: true });
+    expect(resultB).toEqual({ handled: true });
+    expect(startTurn).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        existingThreadId: "codex-thread-a",
+        sessionKey: "session-a",
+        workspaceDir: "/repo/a",
+      }),
+    );
+    expect(startTurn).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        existingThreadId: "codex-thread-b",
+        sessionKey: "session-b",
+        workspaceDir: "/repo/b",
+      }),
+    );
+  });
+
+  it("recovers a missing local Discord binding from the runtime binding state", async () => {
+    const { controller, clientMock } = await createControllerHarness();
+    await (controller as any).store.upsertConversationEndpoint({
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:1481858418548412579",
+      },
+      endpointId: "windows-main",
+      updatedAt: Date.now(),
+    });
+    conversationRuntimeState.getCurrentPluginConversationBinding.mockImplementation(async () => ({
+      bindingId: "b1",
+      pluginId: "openclaw-codex-app-server",
+      pluginRoot: "/root/.openclaw/extensions/openclaw-codex-app-server",
+      channel: "discord",
+      accountId: "default",
+      conversationId: "channel:1481858418548412579",
+      boundAt: Date.now(),
+      summary: "Bind this conversation to Codex thread 019dab3f-09f7-7a42-8d10-1f2949ce6f30.",
+    } as any));
+    clientMock.readThreadState.mockResolvedValue({
+      threadId: "019dab3f-09f7-7a42-8d10-1f2949ce6f30",
+      threadName: "Discord Thread",
+      model: "openai/gpt-5.4",
+      cwd: "/repo/openclaw",
+      serviceTier: "default",
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+    });
+    const startTurn = vi.fn(() => ({
+      result: Promise.resolve({
+        threadId: "019dab3f-09f7-7a42-8d10-1f2949ce6f30",
+        text: "hello",
+      }),
+      getThreadId: () => "019dab3f-09f7-7a42-8d10-1f2949ce6f30",
+      queueMessage: vi.fn(async () => true),
+    }));
+    (controller as any).client.startTurn = startTurn;
 
     const result = await controller.handleInboundClaim({
       content: "who are you?",
@@ -4048,7 +4345,91 @@ describe("Discord controller flows", () => {
       metadata: { guildId: "guild-1" },
     });
 
-    expect(result).toEqual({ handled: false });
+    expect(result).toEqual({ handled: true });
+    expect(startTurn).toHaveBeenCalled();
+    expect((controller as any).store.getBinding({
+      channel: "discord",
+      accountId: "default",
+      conversationId: "channel:1481858418548412579",
+    })).toEqual(expect.objectContaining({
+      threadId: "019dab3f-09f7-7a42-8d10-1f2949ce6f30",
+      endpointId: "windows-main",
+      workspaceDir: "/repo/openclaw",
+      permissionsMode: "full-access",
+    }));
+  });
+
+  it("recovers an approved Discord binding event when no pending local bind exists", async () => {
+    const { controller, clientMock } = await createControllerHarness();
+    const codexThreadId = "019dab3f-09f7-7a42-8d10-1f2949ce6f30";
+    conversationRuntimeState.getCurrentPluginConversationBinding.mockImplementation(async () => ({
+      bindingId: "b1",
+      pluginId: "openclaw-codex-app-server",
+      pluginRoot: "/root/.openclaw/extensions/openclaw-codex-app-server",
+      channel: "discord",
+      accountId: "default",
+      conversationId: "channel:1485612939816996900",
+      parentConversationId: "channel:1485612939816996956",
+      threadId: "1485612939816996900",
+      boundAt: Date.now(),
+      summary: `Bind this conversation to Codex thread ${codexThreadId}.`,
+    } as any));
+    clientMock.readThreadState.mockResolvedValue({
+      threadId: codexThreadId,
+      threadName: "Discord Thread",
+      model: "openai/gpt-5.4",
+      cwd: "/repo/openclaw",
+      serviceTier: "default",
+      approvalPolicy: "on-request",
+      sandbox: "workspace-write",
+    });
+
+    await controller.handleConversationBindingResolved({
+      status: "approved",
+      binding: {
+        bindingId: "binding-1",
+        pluginId: "openclaw-codex-app-server",
+        pluginRoot: "/plugins/codex",
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:1485612939816996900",
+        parentConversationId: "channel:1485612939816996956",
+        threadId: "1485612939816996900",
+        boundAt: Date.now(),
+      },
+      decision: "allow-once",
+      request: {
+        summary: `Bind this conversation to Codex thread ${codexThreadId}.`,
+        conversation: {
+          channel: "discord",
+          accountId: "default",
+          conversationId: "channel:1485612939816996900",
+          parentConversationId: "channel:1485612939816996956",
+          threadId: "1485612939816996900",
+        },
+      },
+    } as any);
+
+    expect(conversationRuntimeState.getCurrentPluginConversationBinding).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversation: expect.objectContaining({
+          channel: "discord",
+          conversationId: "channel:1485612939816996900",
+          parentConversationId: "channel:1485612939816996956",
+          threadId: "1485612939816996900",
+        }),
+      }),
+    );
+    expect((controller as any).store.getBinding({
+      channel: "discord",
+      accountId: "default",
+      conversationId: "channel:1485612939816996900",
+      parentConversationId: "channel:1485612939816996956",
+      threadId: "1485612939816996900",
+    })).toEqual(expect.objectContaining({
+      threadId: codexThreadId,
+      workspaceDir: "/repo/openclaw",
+    }));
   });
 
   it("uses a raw Discord channel id for the typing lease on inbound claims", async () => {
@@ -4221,6 +4602,127 @@ describe("Discord controller flows", () => {
       expect.objectContaining({
         prompt: "",
         input: [{ type: "localImage", path: imagePath }],
+      }),
+    );
+  });
+
+  it("transcribes inbound audio with a configured command before starting the turn", async () => {
+    const { controller, stateDir } = await createControllerHarnessWithPluginConfig({
+      inboundAudioTranscription: {
+        enabled: true,
+        command: process.execPath,
+        args: [
+          "-e",
+          'process.stdout.write(JSON.stringify({text:`Transcript for ${process.argv[1]}`}))',
+          "{path}",
+        ],
+      },
+    });
+    const audioPath = path.join(stateDir, "tmp", "voice.ogg");
+    fs.mkdirSync(path.dirname(audioPath), { recursive: true });
+    fs.writeFileSync(audioPath, "ogg");
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: TEST_TELEGRAM_PEER_ID,
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+    const startTurn = vi.fn(() => ({
+      result: Promise.resolve({
+        threadId: "thread-1",
+        text: "handled",
+      }),
+      getThreadId: () => "thread-1",
+      queueMessage: vi.fn(async () => true),
+      interrupt: vi.fn(async () => {}),
+      isAwaitingInput: () => false,
+      submitPendingInput: vi.fn(async () => false),
+      submitPendingInputPayload: vi.fn(async () => false),
+    }));
+    (controller as any).client.startTurn = startTurn;
+
+    const result = await controller.handleInboundClaim({
+      content: "",
+      channel: "telegram",
+      accountId: "default",
+      conversationId: TEST_TELEGRAM_PEER_ID,
+      isGroup: false,
+      metadata: { mediaPath: audioPath, mediaType: "audio/ogg" },
+    });
+
+    expect(result).toEqual({ handled: true });
+    expect(startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: "",
+        input: [{ type: "text", text: `Transcript for ${audioPath}` }],
+      }),
+    );
+  });
+
+  it("keeps labeled transcript text when audio arrives with a caption", async () => {
+    const { controller, stateDir } = await createControllerHarnessWithPluginConfig({
+      inboundAudioTranscription: {
+        enabled: true,
+        command: process.execPath,
+        args: [
+          "-e",
+          'process.stdout.write("hello from audio")',
+        ],
+      },
+    });
+    const audioPath = path.join(stateDir, "tmp", "voice-note.ogg");
+    fs.mkdirSync(path.dirname(audioPath), { recursive: true });
+    fs.writeFileSync(audioPath, "ogg");
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: TEST_TELEGRAM_PEER_ID,
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      updatedAt: Date.now(),
+    });
+    const startTurn = vi.fn(() => ({
+      result: Promise.resolve({
+        threadId: "thread-1",
+        text: "handled",
+      }),
+      getThreadId: () => "thread-1",
+      queueMessage: vi.fn(async () => true),
+      interrupt: vi.fn(async () => {}),
+      isAwaitingInput: () => false,
+      submitPendingInput: vi.fn(async () => false),
+      submitPendingInputPayload: vi.fn(async () => false),
+    }));
+    (controller as any).client.startTurn = startTurn;
+
+    const result = await controller.handleInboundClaim({
+      content: "Please use this note",
+      channel: "telegram",
+      accountId: "default",
+      conversationId: TEST_TELEGRAM_PEER_ID,
+      isGroup: false,
+      metadata: { mediaPath: audioPath, mediaType: "audio/ogg" },
+    });
+
+    expect(result).toEqual({ handled: true });
+    expect(startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: "Please use this note",
+        input: [
+          { type: "text", text: "Please use this note" },
+          {
+            type: "text",
+            text: "Transcribed audio: voice-note.ogg\n\nhello from audio",
+          },
+        ],
       }),
     );
   });
@@ -4621,15 +5123,16 @@ describe("Discord controller flows", () => {
     );
   });
 
-  it("does not forward Discord thread ids into outbound adapter sends", async () => {
+  it("routes Discord thread replies through the parent channel with a thread id", async () => {
     const { controller, discordOutbound } = await createControllerHarnessWithoutLegacyDiscordRuntime();
 
     const sent = await (controller as any).sendReply(
       {
         channel: "discord",
         accountId: "default",
-        conversationId: "channel:1485612939816996956",
-        threadId: 1485612939816996900,
+        conversationId: "channel:1485612939816996900",
+        parentConversationId: "channel:1485612939816996956",
+        threadId: "1485612939816996900",
       },
       {
         text: "hello from a bound discord thread",
@@ -4642,7 +5145,7 @@ describe("Discord controller flows", () => {
       | undefined;
     expect(outboundCall?.to).toBe("channel:1485612939816996956");
     expect(outboundCall?.accountId).toBe("default");
-    expect("threadId" in (outboundCall ?? {})).toBe(false);
+    expect(outboundCall?.threadId).toBe("1485612939816996900");
   });
 
   it("restarts a Discord bound run when the active queue path fails", async () => {
@@ -6814,5 +7317,402 @@ describe("Discord controller flows", () => {
     });
     // The callback should be removed from the store
     expect((controller as any).store.getCallback(callback.token)).toBeNull();
+  });
+
+  it("auto-selects the matching endpoint when exec host=node and node matches endpoint id", async () => {
+    const { controller } = await createControllerHarness({
+      defaultEndpoint: "default",
+      endpoints: [
+        {
+          id: "default",
+          transport: "websocket",
+          url: "ws://127.0.0.1:8765",
+        },
+        {
+          id: "nestdev",
+          transport: "websocket",
+          url: "ws://172.23.100.26:8765",
+        },
+      ],
+    });
+
+    expect((controller as any).resolveAgentEndpointId(undefined, { host: "node", node: "nestdev" })).toBe("nestdev");
+  });
+
+  it("auto-selects the matching endpoint when exec node matches an endpoint alias", async () => {
+    const { controller } = await createControllerHarness({
+      defaultEndpoint: "default",
+      endpoints: [
+        {
+          id: "default",
+          transport: "websocket",
+          url: "ws://127.0.0.1:8765",
+        },
+        {
+          id: "nestdev-cas",
+          execNodes: ["nestdev", "node-123"],
+          transport: "websocket",
+          url: "ws://172.23.100.26:8765",
+        },
+      ],
+    });
+
+    expect((controller as any).resolveAgentEndpointId(undefined, { host: "node", node: "node-123" })).toBe("nestdev-cas");
+  });
+
+  it("keeps the configured default endpoint when exec host is not node", async () => {
+    const { controller } = await createControllerHarness({
+      defaultEndpoint: "default",
+      endpoints: [
+        {
+          id: "default",
+          transport: "websocket",
+          url: "ws://127.0.0.1:8765",
+        },
+        {
+          id: "nestdev",
+          execNodes: ["nestdev"],
+          transport: "websocket",
+          url: "ws://172.23.100.26:8765",
+        },
+      ],
+    });
+
+    expect((controller as any).resolveAgentEndpointId(undefined, { host: "gateway", node: "nestdev" })).toBe("default");
+  });
+
+  it("auto-selects the matching endpoint when exec host=auto and node matches an endpoint alias", async () => {
+    const { controller } = await createControllerHarness({
+      defaultEndpoint: "default",
+      endpoints: [
+        {
+          id: "default",
+          transport: "websocket",
+          url: "ws://127.0.0.1:8765",
+        },
+        {
+          id: "nestdev-cas",
+          execNodes: ["nestdev"],
+          transport: "websocket",
+          url: "ws://172.23.100.26:8765",
+        },
+      ],
+    });
+
+    expect((controller as any).resolveAgentEndpointId(undefined, { host: "auto", node: "nestdev" })).toBe("nestdev-cas");
+  });
+
+  it("falls back to a derived node endpoint when exec host=node has no configured match", async () => {
+    const { controller } = await createControllerHarness({
+      defaultEndpoint: "default",
+      endpoints: [
+        {
+          id: "default",
+          transport: "websocket",
+          url: "ws://127.0.0.1:8765",
+        },
+      ],
+    });
+    const deriveSpy = vi
+      .spyOn(controller as any, "tryRegisterNodeDerivedEndpoint")
+      .mockResolvedValue("auto-node-nestdev");
+
+    await expect(
+      (controller as any).resolveAgentEndpointIdWithNodeFallback(undefined, {
+        host: "node",
+        node: "nestdev",
+      }),
+    ).resolves.toBe("auto-node-nestdev");
+    expect(deriveSpy).toHaveBeenCalledWith({ host: "node", node: "nestdev" });
+  });
+
+  it("prefers the paired node remoteIp before falling back to the node name for derived probes", async () => {
+    const { controller } = await createControllerHarness({
+      defaultEndpoint: "default",
+      endpoints: [
+        {
+          id: "default",
+          transport: "websocket",
+          url: "ws://127.0.0.1:8765",
+        },
+      ],
+    });
+    vi.spyOn(controller as any, "lookupNodeAddress").mockResolvedValue("172.23.100.26");
+
+    await expect((controller as any).resolveNodeProbeHosts("nestdev")).resolves.toEqual([
+      "172.23.100.26",
+      "nestdev",
+    ]);
+  });
+
+  it("registers a derived node endpoint using the resolved remoteIp when the default app-server port responds", async () => {
+    const { controller } = await createControllerHarness({
+      defaultEndpoint: "default",
+      endpoints: [
+        {
+          id: "default",
+          transport: "websocket",
+          url: "ws://127.0.0.1:8765",
+        },
+      ],
+    });
+    vi.spyOn(controller as any, "resolveNodeProbeHosts").mockResolvedValue([
+      "172.23.100.26",
+      "nestdev",
+    ]);
+    const readSpy = vi.spyOn(CodexAppServerModeClient.prototype, "readAccount").mockImplementation(async function (this: CodexAppServerModeClient) {
+      const url = ((this as any).clients?.default as any)?.settings?.url;
+      if (url === "ws://172.23.100.26:8765") {
+        return {
+          loginState: "logged-in",
+          endpointId: "probe",
+        } as any;
+      }
+      throw new Error(`unexpected probe url ${String(url)}`);
+    });
+    const closeSpy = vi.spyOn(CodexAppServerModeClient.prototype, "close").mockResolvedValue();
+
+    await expect(
+      (controller as any).tryRegisterNodeDerivedEndpoint({
+        host: "node",
+        node: "nestdev",
+      }),
+    ).resolves.toBe("auto-node-nestdev");
+
+    expect(readSpy).toHaveBeenCalledTimes(1);
+    expect(closeSpy).toHaveBeenCalledTimes(1);
+    expect((controller as any).settings.endpoints).toContainEqual(
+      expect.objectContaining({
+        id: "auto-node-nestdev",
+        url: "ws://172.23.100.26:8765",
+        execNodes: expect.arrayContaining(["nestdev", "172.23.100.26"]),
+      }),
+    );
+  });
+
+  it("uses the derived node endpoint in /cas_resume when no configured match exists", async () => {
+    const { controller } = await createControllerHarness({
+      defaultEndpoint: "default",
+      endpoints: [
+        {
+          id: "default",
+          transport: "websocket",
+          url: "ws://127.0.0.1:8765",
+        },
+      ],
+    });
+    vi.spyOn(controller as any, "getSelectedEndpointResolutionWithNodeFallback").mockResolvedValue({
+      endpointId: "auto-node-nestdev",
+      source: "auto-node",
+      nodeId: "nestdev",
+    });
+    const listSpy = vi.spyOn(controller as any, "handleListCommand").mockResolvedValue({
+      text: "picker body",
+    });
+
+    const reply = await controller.handleCommand(
+      "cas_resume",
+      buildDiscordCommandContext({
+        config: {
+          tools: {
+            exec: {
+              host: "node",
+              node: "nestdev",
+            },
+          },
+        },
+      }),
+    );
+
+    expect(listSpy).toHaveBeenCalledWith(
+      expect.anything(),
+      null,
+      "auto-node-nestdev",
+      "",
+      "discord",
+    );
+    expect(reply.text).toContain("picker body");
+    expect(reply.text).toContain("Resolved endpoint: auto-node-nestdev (auto from node: nestdev)");
+  });
+
+  it("falls back to default endpoint when node-derived probe is unavailable", async () => {
+    const { controller } = await createControllerHarness({
+      defaultEndpoint: "default",
+      endpoints: [
+        {
+          id: "default",
+          transport: "websocket",
+          url: "ws://127.0.0.1:8765",
+        },
+      ],
+    });
+    vi.spyOn(controller as any, "tryRegisterNodeDerivedEndpoint").mockResolvedValue(undefined);
+
+    await expect(
+      (controller as any).resolveAgentEndpointIdWithNodeFallback(undefined, {
+        host: "node",
+        node: "nestdev",
+      }),
+    ).resolves.toBe("default");
+  });
+
+  it("keeps explicit endpoint selection over node-derived fallback", async () => {
+    const { controller } = await createControllerHarness({
+      defaultEndpoint: "default",
+      endpoints: [
+        {
+          id: "default",
+          transport: "websocket",
+          url: "ws://127.0.0.1:8765",
+        },
+        {
+          id: "gateway",
+          transport: "websocket",
+          url: "ws://127.0.0.1:9999",
+        },
+      ],
+    });
+    const deriveSpy = vi.spyOn(controller as any, "tryRegisterNodeDerivedEndpoint");
+
+    await expect(
+      (controller as any).resolveAgentEndpointIdWithNodeFallback("gateway", {
+        host: "node",
+        node: "nestdev",
+      }),
+    ).resolves.toBe("gateway");
+    expect(deriveSpy).not.toHaveBeenCalled();
+  });
+
+  it("prefers a manual conversation endpoint over automatic node resolution", async () => {
+    const { controller } = await createControllerHarness({
+      defaultEndpoint: "default",
+      endpoints: [
+        {
+          id: "default",
+          transport: "websocket",
+          url: "ws://127.0.0.1:8765",
+        },
+        {
+          id: "nestdev",
+          execNodes: ["nestdev"],
+          transport: "websocket",
+          url: "ws://172.23.100.26:8765",
+        },
+      ],
+    });
+    (controller as any).lastRuntimeConfig = {
+      tools: {
+        exec: {
+          host: "node",
+          node: "nestdev",
+        },
+      },
+    };
+    await (controller as any).store.upsertConversationEndpoint({
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:chan-1",
+      },
+      endpointId: "default",
+      updatedAt: Date.now(),
+    });
+
+    await expect(
+      (controller as any).getSelectedEndpointResolution({
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:chan-1",
+      }),
+    ).resolves.toMatchObject({ endpointId: "default", source: "manual" });
+  });
+
+  it("clears the manual endpoint override and falls back to automatic node resolution", async () => {
+    const { controller } = await createControllerHarness({
+      defaultEndpoint: "default",
+      endpoints: [
+        {
+          id: "default",
+          transport: "websocket",
+          url: "ws://127.0.0.1:8765",
+        },
+        {
+          id: "nestdev",
+          execNodes: ["nestdev"],
+          transport: "websocket",
+          url: "ws://172.23.100.26:8765",
+        },
+      ],
+    });
+    await (controller as any).store.upsertConversationEndpoint({
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:chan-1",
+      },
+      endpointId: "default",
+      updatedAt: Date.now(),
+    });
+
+    const reply = await controller.handleCommand(
+      "cas_endpoint",
+      buildDiscordCommandContext({
+        args: "auto",
+        commandBody: "/cas_endpoint auto",
+        config: {
+          tools: {
+            exec: {
+              host: "node",
+              node: "nestdev",
+            },
+          },
+        },
+      }),
+    );
+
+    expect((controller as any).store.getConversationEndpoint({
+      channel: "discord",
+      accountId: "default",
+      conversationId: "channel:chan-1",
+    })).toBeNull();
+    expect(reply.text).toContain("Manual endpoint override cleared");
+    expect(reply.text).toContain("Active endpoint: nestdev (auto from node: nestdev)");
+  });
+
+  it("supports cas_endpoints as a direct endpoint inspection alias", async () => {
+    const { controller } = await createControllerHarness({
+      defaultEndpoint: "default",
+      endpoints: [
+        {
+          id: "default",
+          transport: "websocket",
+          url: "ws://127.0.0.1:8765",
+        },
+        {
+          id: "nestdev",
+          execNodes: ["nestdev"],
+          transport: "websocket",
+          url: "ws://172.23.100.26:8765",
+        },
+      ],
+    });
+
+    const reply = await controller.handleCommand(
+      "cas_endpoints",
+      buildDiscordCommandContext({
+        commandBody: "/cas_endpoints",
+        config: {
+          tools: {
+            exec: {
+              host: "node",
+              node: "nestdev",
+            },
+          },
+        },
+      }),
+    );
+
+    expect(reply.text).toContain("Active endpoint: nestdev (auto from node: nestdev)");
+    expect(reply.text).toContain("Configured endpoints:");
   });
 });

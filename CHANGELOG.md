@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Highlights
+
+- Added an optional inbound audio transcription preprocessor so bound conversations can convert staged voice/audio attachments into normal text turn input before forwarding the turn into Codex. The plugin stays transport-agnostic by delegating transcription to a configurable local command that prints transcript text to stdout.
+
+### Docs
+
+- Documented the new `inboundAudioTranscription` plugin config and clarified the media bridge notes around staged inbound audio handling.
+
 ## v0.6.0 - 2026-04-03
 
 ### Highlights

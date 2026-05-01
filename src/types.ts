@@ -2,7 +2,7 @@ import type { ConversationRef, PluginInteractiveButtons } from "openclaw/plugin-
 
 export const PLUGIN_ID = "openclaw-codex-app-server";
 export const INTERACTIVE_NAMESPACE = "codexapp";
-export const STORE_VERSION = 2;
+export const STORE_VERSION = 3;
 export const CALLBACK_TOKEN_BYTES = 9;
 export const CALLBACK_TTL_MS = 30 * 60_000;
 export const PENDING_INPUT_TTL_MS = 7 * 24 * 60 * 60_000;
@@ -11,17 +11,32 @@ export const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 export type CodexTransport = "stdio" | "websocket";
 export type PermissionsMode = "default" | "full-access";
 
-export type PluginSettings = {
-  enabled: boolean;
+export type EndpointSettings = {
+  id?: string;
+  execNodes?: string[];
   transport: CodexTransport;
   command: string;
   args: string[];
   url?: string;
   headers?: Record<string, string>;
   requestTimeoutMs: number;
+};
+
+export type PluginSettings = {
+  enabled: boolean;
+  defaultEndpoint: string;
+  endpoints: EndpointSettings[];
   defaultWorkspaceDir?: string;
   defaultModel?: string;
   defaultServiceTier?: string;
+  inboundAudioTranscription?: InboundAudioTranscriptionSettings;
+};
+
+export type InboundAudioTranscriptionSettings = {
+  enabled: boolean;
+  command?: string;
+  args: string[];
+  timeoutMs: number;
 };
 
 export type CodexPlanStep = {
@@ -274,6 +289,7 @@ export type StoredBinding = {
   conversation: ConversationRef;
   sessionKey: string;
   threadId: string;
+  endpointId?: string;
   workspaceDir: string;
   permissionsMode?: PermissionsMode;
   pendingPermissionsMode?: PermissionsMode;
@@ -299,6 +315,7 @@ export type InteractiveMessageRef =
 export type StoredPendingBind = {
   conversation: ConversationRef;
   threadId: string;
+  endpointId?: string;
   workspaceDir: string;
   permissionsMode?: PermissionsMode;
   threadTitle?: string;
@@ -312,9 +329,16 @@ export type StoredPendingRequest = {
   requestId: string;
   conversation: ConversationRef;
   threadId: string;
+  endpointId?: string;
   workspaceDir: string;
   state: PendingInputState;
   createdAt?: number;
+  updatedAt: number;
+};
+
+export type StoredConversationEndpoint = {
+  conversation: ConversationRef;
+  endpointId: string;
   updatedAt: number;
 };
 
@@ -323,6 +347,7 @@ export type CallbackAction =
       token: string;
       kind: "start-new-thread";
       conversation: ConversationRef;
+      endpointId?: string;
       workspaceDir: string;
       syncTopic?: boolean;
       requestedModel?: string;
@@ -335,6 +360,7 @@ export type CallbackAction =
       token: string;
       kind: "resume-thread";
       conversation: ConversationRef;
+      endpointId?: string;
       threadId: string;
       threadTitle?: string;
       workspaceDir: string;
@@ -375,6 +401,7 @@ export type CallbackAction =
             includeAll: boolean;
             page: number;
             syncTopic?: boolean;
+            endpointId?: string;
             query?: string;
             workspaceDir?: string;
             projectName?: string;
@@ -388,6 +415,7 @@ export type CallbackAction =
             includeAll: boolean;
             page: number;
             syncTopic?: boolean;
+            endpointId?: string;
             query?: string;
             workspaceDir?: string;
             projectName?: string;
@@ -401,6 +429,7 @@ export type CallbackAction =
             includeAll: boolean;
             page: number;
             syncTopic?: boolean;
+            endpointId?: string;
             workspaceDir?: string;
             projectName: string;
             requestedModel?: string;
@@ -527,9 +556,35 @@ export type CallbackAction =
     }
   | {
       token: string;
+      kind: "show-endpoint-picker";
+      conversation: ConversationRef;
+      createdAt: number;
+      expiresAt: number;
+    }
+  | {
+      token: string;
       kind: "set-model";
       conversation: ConversationRef;
       model: string;
+      returnToStatus?: boolean;
+      statusMessage?: InteractiveMessageRef;
+      createdAt: number;
+      expiresAt: number;
+    }
+  | {
+      token: string;
+      kind: "set-endpoint";
+      conversation: ConversationRef;
+      endpointId: string;
+      returnToStatus?: boolean;
+      statusMessage?: InteractiveMessageRef;
+      createdAt: number;
+      expiresAt: number;
+    }
+  | {
+      token: string;
+      kind: "clear-endpoint";
+      conversation: ConversationRef;
       returnToStatus?: boolean;
       statusMessage?: InteractiveMessageRef;
       createdAt: number;
@@ -563,13 +618,14 @@ export type CallbackAction =
 export type StoreSnapshot = {
   version: number;
   bindings: StoredBinding[];
+  conversationEndpoints: StoredConversationEndpoint[];
   pendingBinds: StoredPendingBind[];
   pendingRequests: StoredPendingRequest[];
   callbacks: CallbackAction[];
 };
 
 export type ConversationTarget = ConversationRef & {
-  threadId?: number;
+  threadId?: number | string;
 };
 
 export type CommandButtons = PluginInteractiveButtons;

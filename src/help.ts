@@ -43,6 +43,12 @@ export const COMMAND_HELP: Record<CommandName, CommandHelpEntry> = {
     usage: "/cas_detach",
     examples: ["/cas_detach"],
   },
+  cas_reset: {
+    summary: COMMAND_SUMMARY.cas_reset,
+    usage: "/cas_reset",
+    examples: ["/cas_reset"],
+    notes: "Use this as a recovery command when a conversation looks stuck or stale. It clears the stored binding state for this conversation, including pending bind/request UI state, and detaches from Codex.",
+  },
   cas_status: {
     summary: COMMAND_SUMMARY.cas_status,
     usage: "/cas_status [--model <name>] [--fast|--no-fast] [--yolo|--no-yolo]",
@@ -146,6 +152,24 @@ export const COMMAND_HELP: Record<CommandName, CommandHelpEntry> = {
       "/cas_model openai/gpt-5.4",
     ],
     notes: "The status card is the main interactive model-control surface, but this command remains available.",
+  },
+  cas_endpoints: {
+    summary: COMMAND_SUMMARY.cas_endpoints,
+    usage: "/cas_endpoints",
+    examples: ["/cas_endpoints"],
+    notes: "Shows configured endpoints, the active resolution source for this conversation, and whether a manual endpoint override is currently set.",
+  },
+  cas_endpoint: {
+    summary: COMMAND_SUMMARY.cas_endpoint,
+    usage: "/cas_endpoint [endpoint_id|auto|clear]",
+    flags: [{ flag: "[endpoint_id|auto|clear]", description: "Show the active endpoint, switch this conversation to a configured endpoint id, or clear the manual override and return to automatic resolution." }],
+    examples: [
+      "/cas_endpoint",
+      "/cas_endpoint primary",
+      "/cas_endpoint backup",
+      "/cas_endpoint auto",
+    ],
+    notes: "Manual endpoint selection affects future /cas_resume and unbound CAS actions for this conversation. Existing bindings stay attached to their original endpoint until you resume/bind there again. Use `auto` or `clear` to remove the manual override.",
   },
   cas_permissions: {
     summary: COMMAND_SUMMARY.cas_permissions,
