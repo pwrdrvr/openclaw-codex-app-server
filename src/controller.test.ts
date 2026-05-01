@@ -7381,6 +7381,27 @@ describe("Discord controller flows", () => {
     expect((controller as any).resolveAgentEndpointId(undefined, { host: "gateway", node: "nestdev" })).toBe("default");
   });
 
+  it("auto-selects the matching endpoint when exec host=auto and node matches an endpoint alias", async () => {
+    const { controller } = await createControllerHarness({
+      defaultEndpoint: "default",
+      endpoints: [
+        {
+          id: "default",
+          transport: "websocket",
+          url: "ws://127.0.0.1:8765",
+        },
+        {
+          id: "nestdev-cas",
+          execNodes: ["nestdev"],
+          transport: "websocket",
+          url: "ws://172.23.100.26:8765",
+        },
+      ],
+    });
+
+    expect((controller as any).resolveAgentEndpointId(undefined, { host: "auto", node: "nestdev" })).toBe("nestdev-cas");
+  });
+
   it("falls back to a derived node endpoint when exec host=node has no configured match", async () => {
     const { controller } = await createControllerHarness({
       defaultEndpoint: "default",

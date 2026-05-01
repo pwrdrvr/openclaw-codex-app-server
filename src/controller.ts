@@ -1848,29 +1848,33 @@ export class CodexPluginController {
   ): Promise<string | undefined> {
     const host = execContext?.host?.trim().toLowerCase();
     const node = execContext?.node?.trim();
-    if (host !== "node" || !node) {
+    if (!this.shouldUseNodeDerivedEndpointResolution(host, node)) {
       return undefined;
     }
-    const normalizedNode = node.toLowerCase();
+    const resolvedNode = node?.trim();
+    if (!resolvedNode) {
+      return undefined;
+    }
+    const normalizedNode = resolvedNode.toLowerCase();
     const existingAliasMatch = this.settings.endpoints.find((entry) =>
       (entry.execNodes ?? []).some((alias) => alias.trim().toLowerCase() === normalizedNode),
     );
     if (existingAliasMatch?.id) {
       return existingAliasMatch.id;
     }
-    const derivedEndpointId = this.buildNodeDerivedEndpointId(node);
+    const derivedEndpointId = this.buildNodeDerivedEndpointId(resolvedNode);
     const existingById = this.settings.endpoints.find((entry) => entry.id === derivedEndpointId);
     if (existingById?.id) {
       return existingById.id;
     }
 
-    const probeHosts = await this.resolveNodeProbeHosts(node);
+    const probeHosts = await this.resolveNodeProbeHosts(resolvedNode);
     let derivedUrl: string | undefined;
     for (const probeHost of probeHosts) {
       const candidateUrl = this.buildNodeDerivedEndpointUrl(probeHost);
       const probeEndpoint: EndpointSettings = {
         id: `${derivedEndpointId}__probe`,
-        execNodes: [node],
+        execNodes: [resolvedNode],
         transport: "websocket",
         command: "codex",
         args: [],
@@ -1884,7 +1888,7 @@ export class CodexPluginController {
         available = true;
       } catch (error) {
         this.api.logger.debug?.(
-          `codex auto-node endpoint probe failed node=${node} host=${probeHost} url=${candidateUrl}: ${String(error)}`,
+          `codex auto-node endpoint probe failed node=${resolvedNode} host=${probeHost} url=${candidateUrl}: ${String(error)}`,
         );
       } finally {
         await probeClient.close().catch(() => undefined);
@@ -1900,7 +1904,7 @@ export class CodexPluginController {
 
     const derivedEndpoint: EndpointSettings = {
       id: derivedEndpointId,
-      execNodes: [...new Set([node, ...probeHosts])],
+      execNodes: [...new Set([resolvedNode, ...probeHosts])],
       transport: "websocket",
       command: "codex",
       args: [],
@@ -1909,7 +1913,7 @@ export class CodexPluginController {
     };
     this.settings.endpoints.push(derivedEndpoint);
     this.api.logger.info(
-      `codex auto-node endpoint registered id=${derivedEndpoint.id} node=${node} url=${derivedUrl}`,
+      `codex auto-node endpoint registered id=${derivedEndpoint.id} node=${resolvedNode} url=${derivedUrl}`,
     );
     return derivedEndpoint.id;
   }
@@ -1987,14 +1991,14 @@ export class CodexPluginController {
 
   private resolveEndpointIdFromExecContext(execContext?: AgentExecContext): string | undefined {
     const host = execContext?.host?.trim().toLowerCase();
-    if (host !== "node") {
-      return undefined;
-    }
     const node = execContext?.node?.trim();
-    if (!node) {
+    if (!this.shouldUseNodeDerivedEndpointResolution(host, node)) {
       return undefined;
     }
-    const normalizedNode = node.toLowerCase();
+    const normalizedNode = node?.trim().toLowerCase();
+    if (!normalizedNode) {
+      return undefined;
+    }
     const exactMatch = this.settings.endpoints.find((entry) => entry.id?.trim().toLowerCase() === normalizedNode);
     if (exactMatch?.id) {
       return exactMatch.id;
@@ -2003,6 +2007,13 @@ export class CodexPluginController {
       (entry.execNodes ?? []).some((alias) => alias.trim().toLowerCase() === normalizedNode),
     );
     return aliasMatch?.id;
+  }
+
+  private shouldUseNodeDerivedEndpointResolution(host?: string, node?: string): boolean {
+    if (!node?.trim()) {
+      return false;
+    }
+    return host === "node" || host === "auto";
   }
 
   private resolveAgentPermissionsMode(
