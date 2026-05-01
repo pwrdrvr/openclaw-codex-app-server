@@ -4,7 +4,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawPluginApi, PluginCommandContext, ReplyPayload } from "openclaw/plugin-sdk";
-import { CodexAppServerClient } from "./client.js";
+import { CodexAppServerClient, CodexAppServerModeClient } from "./client.js";
 import { CodexPluginController } from "./controller.js";
 
 const TEST_TELEGRAM_PEER_ID = "telegram-user-1";
@@ -7403,6 +7403,70 @@ describe("Discord controller flows", () => {
       }),
     ).resolves.toBe("auto-node-nestdev");
     expect(deriveSpy).toHaveBeenCalledWith({ host: "node", node: "nestdev" });
+  });
+
+  it("prefers the paired node remoteIp before falling back to the node name for derived probes", async () => {
+    const { controller } = await createControllerHarness({
+      defaultEndpoint: "default",
+      endpoints: [
+        {
+          id: "default",
+          transport: "websocket",
+          url: "ws://127.0.0.1:8765",
+        },
+      ],
+    });
+    vi.spyOn(controller as any, "lookupNodeAddress").mockResolvedValue("172.23.100.26");
+
+    await expect((controller as any).resolveNodeProbeHosts("nestdev")).resolves.toEqual([
+      "172.23.100.26",
+      "nestdev",
+    ]);
+  });
+
+  it("registers a derived node endpoint using the resolved remoteIp when the default app-server port responds", async () => {
+    const { controller } = await createControllerHarness({
+      defaultEndpoint: "default",
+      endpoints: [
+        {
+          id: "default",
+          transport: "websocket",
+          url: "ws://127.0.0.1:8765",
+        },
+      ],
+    });
+    vi.spyOn(controller as any, "resolveNodeProbeHosts").mockResolvedValue([
+      "172.23.100.26",
+      "nestdev",
+    ]);
+    const readSpy = vi.spyOn(CodexAppServerModeClient.prototype, "readAccount").mockImplementation(async function (this: CodexAppServerModeClient) {
+      const url = ((this as any).clients?.default as any)?.settings?.url;
+      if (url === "ws://172.23.100.26:8765") {
+        return {
+          loginState: "logged-in",
+          endpointId: "probe",
+        } as any;
+      }
+      throw new Error(`unexpected probe url ${String(url)}`);
+    });
+    const closeSpy = vi.spyOn(CodexAppServerModeClient.prototype, "close").mockResolvedValue();
+
+    await expect(
+      (controller as any).tryRegisterNodeDerivedEndpoint({
+        host: "node",
+        node: "nestdev",
+      }),
+    ).resolves.toBe("auto-node-nestdev");
+
+    expect(readSpy).toHaveBeenCalledTimes(1);
+    expect(closeSpy).toHaveBeenCalledTimes(1);
+    expect((controller as any).settings.endpoints).toContainEqual(
+      expect.objectContaining({
+        id: "auto-node-nestdev",
+        url: "ws://172.23.100.26:8765",
+        execNodes: expect.arrayContaining(["nestdev", "172.23.100.26"]),
+      }),
+    );
   });
 
   it("uses the derived node endpoint in /cas_resume when no configured match exists", async () => {

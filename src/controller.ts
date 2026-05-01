@@ -1864,35 +1864,43 @@ export class CodexPluginController {
       return existingById.id;
     }
 
-    const derivedUrl = this.buildNodeDerivedEndpointUrl(node);
-    const probeEndpoint: EndpointSettings = {
-      id: `${derivedEndpointId}__probe`,
-      execNodes: [node],
-      transport: "websocket",
-      command: "codex",
-      args: [],
-      url: derivedUrl,
-      requestTimeoutMs: 3_000,
-    };
-    const probeClient = new CodexAppServerModeClient(probeEndpoint, this.api.logger);
-    let available = false;
-    try {
-      await probeClient.readAccount({ profile: "default" });
-      available = true;
-    } catch (error) {
-      this.api.logger.debug?.(
-        `codex auto-node endpoint probe failed node=${node} url=${derivedUrl}: ${String(error)}`,
-      );
-    } finally {
-      await probeClient.close().catch(() => undefined);
+    const probeHosts = await this.resolveNodeProbeHosts(node);
+    let derivedUrl: string | undefined;
+    for (const probeHost of probeHosts) {
+      const candidateUrl = this.buildNodeDerivedEndpointUrl(probeHost);
+      const probeEndpoint: EndpointSettings = {
+        id: `${derivedEndpointId}__probe`,
+        execNodes: [node],
+        transport: "websocket",
+        command: "codex",
+        args: [],
+        url: candidateUrl,
+        requestTimeoutMs: 3_000,
+      };
+      const probeClient = new CodexAppServerModeClient(probeEndpoint, this.api.logger);
+      let available = false;
+      try {
+        await probeClient.readAccount({ profile: "default" });
+        available = true;
+      } catch (error) {
+        this.api.logger.debug?.(
+          `codex auto-node endpoint probe failed node=${node} host=${probeHost} url=${candidateUrl}: ${String(error)}`,
+        );
+      } finally {
+        await probeClient.close().catch(() => undefined);
+      }
+      if (available) {
+        derivedUrl = candidateUrl;
+        break;
+      }
     }
-    if (!available) {
+    if (!derivedUrl) {
       return undefined;
     }
 
     const derivedEndpoint: EndpointSettings = {
       id: derivedEndpointId,
-      execNodes: [node],
+      execNodes: [...new Set([node, ...probeHosts])],
       transport: "websocket",
       command: "codex",
       args: [],
@@ -1904,6 +1912,45 @@ export class CodexPluginController {
       `codex auto-node endpoint registered id=${derivedEndpoint.id} node=${node} url=${derivedUrl}`,
     );
     return derivedEndpoint.id;
+  }
+
+  private async resolveNodeProbeHosts(node: string): Promise<string[]> {
+    const candidates: string[] = [];
+    const pushCandidate = (value?: string | null) => {
+      const trimmed = value?.trim();
+      if (!trimmed) {
+        return;
+      }
+      if (!candidates.some((entry) => entry.toLowerCase() === trimmed.toLowerCase())) {
+        candidates.push(trimmed);
+      }
+    };
+
+    const nodeAddress = await this.lookupNodeAddress(node).catch((error) => {
+      this.api.logger.debug?.(`codex auto-node address lookup failed node=${node}: ${String(error)}`);
+      return undefined;
+    });
+    pushCandidate(nodeAddress);
+    pushCandidate(node);
+    return candidates;
+  }
+
+  private async lookupNodeAddress(node: string): Promise<string | undefined> {
+    const result = await execFileAsync("openclaw", ["nodes", "status", "--json"], {
+      timeout: 5_000,
+      maxBuffer: 1024 * 1024,
+    });
+    const parsed = JSON.parse(result.stdout) as {
+      nodes?: Array<{ nodeId?: string; displayName?: string; remoteIp?: string; connected?: boolean }>;
+    };
+    const normalizedNode = node.trim().toLowerCase();
+    const match = parsed.nodes?.find((entry) => {
+      const nodeId = entry.nodeId?.trim().toLowerCase();
+      const displayName = entry.displayName?.trim().toLowerCase();
+      return nodeId === normalizedNode || displayName === normalizedNode;
+    });
+    const remoteIp = match?.remoteIp?.trim();
+    return remoteIp || undefined;
   }
 
   private buildNodeDerivedEndpointId(node: string): string {
