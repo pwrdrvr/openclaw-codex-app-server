@@ -683,6 +683,8 @@ async function flushAsyncWork(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
   await new Promise((resolve) => setTimeout(resolve, 0));
   await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 describe("Discord controller flows", () => {
@@ -7531,13 +7533,13 @@ describe("Discord controller flows", () => {
       updatedAt: Date.now(),
     });
 
-    expect(
+    await expect(
       (controller as any).getSelectedEndpointResolution({
         channel: "discord",
         accountId: "default",
         conversationId: "channel:chan-1",
       }),
-    ).toMatchObject({ endpointId: "default", source: "manual" });
+    ).resolves.toMatchObject({ endpointId: "default", source: "manual" });
   });
 
   it("clears the manual endpoint override and falls back to automatic node resolution", async () => {

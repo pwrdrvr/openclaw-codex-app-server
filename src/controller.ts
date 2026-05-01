@@ -2014,16 +2014,16 @@ export class CodexPluginController {
     )?.endpointId?.trim() || undefined;
   }
 
-  private getSelectedEndpointId(
+  private async getSelectedEndpointId(
     conversation: ConversationTarget | null | undefined,
     _binding?: StoredBinding | StoredPendingBind | null,
-  ): string {
-    return this.getSelectedEndpointResolution(conversation).endpointId;
+  ): Promise<string> {
+    return (await this.getSelectedEndpointResolution(conversation)).endpointId;
   }
 
-  private getSelectedEndpointResolution(
+  private async getSelectedEndpointResolution(
     conversation: ConversationTarget | null | undefined,
-  ): EndpointResolution {
+  ): Promise<EndpointResolution> {
     const manualEndpointId = this.getManualEndpointId(conversation);
     if (manualEndpointId) {
       return {
@@ -2036,6 +2036,14 @@ export class CodexPluginController {
     if (autoEndpointId) {
       return {
         endpointId: autoEndpointId,
+        source: "auto-node",
+        nodeId: execContext?.node?.trim() || undefined,
+      };
+    }
+    const derivedEndpointId = await this.tryRegisterNodeDerivedEndpoint(execContext);
+    if (derivedEndpointId) {
+      return {
+        endpointId: derivedEndpointId,
         source: "auto-node",
         nodeId: execContext?.node?.trim() || undefined,
       };
@@ -3730,7 +3738,7 @@ export class CodexPluginController {
       statusMessage?: InteractiveMessageRef;
     },
   ): Promise<PickerRender> {
-    const selection = this.getSelectedEndpointResolution(conversation);
+    const selection = await this.getSelectedEndpointResolution(conversation);
     const manualEndpointId = this.getManualEndpointId(conversation);
     const buttons: PluginInteractiveButtons = [];
     if (manualEndpointId) {
@@ -4316,7 +4324,7 @@ export class CodexPluginController {
     const profile = this.getPermissionsMode(binding);
     if (!binding) {
       const models = await this.getClientForEndpoint(
-        this.getSelectedEndpointId(conversation, binding),
+        await this.getSelectedEndpointId(conversation, binding),
       ).listModels({ profile });
       return { text: formatModels(models) };
     }
@@ -4392,7 +4400,7 @@ export class CodexPluginController {
     if (parsed.error) {
       return { text: parsed.error };
     }
-    const currentSelection = this.getSelectedEndpointResolution(conversation);
+    const currentSelection = await this.getSelectedEndpointResolution(conversation);
     if (!parsed.endpointId) {
       const picker = await this.buildEndpointPicker(conversation, binding);
       return buildReplyWithButtons(picker.text, picker.buttons);
@@ -4400,7 +4408,7 @@ export class CodexPluginController {
     const requested = parsed.endpointId.trim();
     if (["auto", "clear"].includes(requested.toLowerCase())) {
       await this.clearSelectedEndpointId(conversation);
-      const nextSelection = this.getSelectedEndpointResolution(conversation);
+      const nextSelection = await this.getSelectedEndpointResolution(conversation);
       return { text: this.buildEndpointSelectionNotice(nextSelection, binding, conversation) };
     }
     const endpoint = this.settings.endpoints.find((entry) => entry.id === requested);
@@ -4418,7 +4426,7 @@ export class CodexPluginController {
       };
     }
     await this.setSelectedEndpointId(conversation, endpoint.id || requested);
-    const nextSelection = this.getSelectedEndpointResolution(conversation);
+    const nextSelection = await this.getSelectedEndpointResolution(conversation);
     return { text: this.buildEndpointSelectionNotice(nextSelection, binding, conversation) };
   }
 
@@ -6389,7 +6397,7 @@ export class CodexPluginController {
         await responders.clear().catch(() => undefined);
       }
       const currentBinding = this.store.getBinding(callback.conversation);
-      const selectedEndpointId = callback.endpointId ?? this.getSelectedEndpointId(callback.conversation, currentBinding);
+      const selectedEndpointId = callback.endpointId ?? await this.getSelectedEndpointId(callback.conversation, currentBinding);
       const profile = this.resolveRequestedPermissionsMode(
         this.getPermissionsMode(currentBinding),
         callback.requestedYolo,
@@ -7036,7 +7044,7 @@ export class CodexPluginController {
             : Promise.resolve({
                 text: this.formatEndpointListText({
                   conversation,
-                  selection: this.getSelectedEndpointResolution(conversation),
+                  selection: await this.getSelectedEndpointResolution(conversation),
                   binding,
                 }),
                 buttons: undefined,
@@ -7114,7 +7122,7 @@ export class CodexPluginController {
       await this.setSelectedEndpointId(conversation, callback.endpointId);
       const refreshedBinding = this.store.getBinding(callback.conversation);
       const text = this.buildEndpointSelectionNotice(
-        this.getSelectedEndpointResolution(conversation),
+        await this.getSelectedEndpointResolution(conversation),
         refreshedBinding,
         conversation,
       );
@@ -7164,7 +7172,7 @@ export class CodexPluginController {
       await this.clearSelectedEndpointId(conversation);
       const refreshedBinding = this.store.getBinding(callback.conversation);
       const text = this.buildEndpointSelectionNotice(
-        this.getSelectedEndpointResolution(conversation),
+        await this.getSelectedEndpointResolution(conversation),
         refreshedBinding,
         conversation,
       );
@@ -7400,7 +7408,7 @@ export class CodexPluginController {
       this.getPermissionsMode(binding),
       overrides.requestedYolo,
     );
-    const resolvedEndpointId = endpointId ?? this.getSelectedEndpointId(conversation, binding);
+    const resolvedEndpointId = endpointId ?? await this.getSelectedEndpointId(conversation, binding);
     const created = await this.getClientForEndpoint(resolvedEndpointId).startThread({
       profile,
       sessionKey: binding?.sessionKey,
@@ -7878,7 +7886,7 @@ export class CodexPluginController {
     binding: StoredBinding | null,
     bindingActive: boolean,
   ): Promise<string> {
-    const selection = this.getSelectedEndpointResolution(conversation);
+    const selection = await this.getSelectedEndpointResolution(conversation);
     const selectedEndpointId = selection.endpointId;
     const activeRun =
       bindingActive && conversation
