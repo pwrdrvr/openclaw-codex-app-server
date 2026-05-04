@@ -2,6 +2,98 @@
   "id": "openclaw-codex-app-server",
   "name": "OpenClaw Plugin For Codex App Server",
   "description": "Independent OpenClaw plugin for the Codex App Server protocol with bound Telegram and Discord conversations.",
+  "activation": {
+    "onStartup": true,
+    "onCommands": [
+      "cas_resume",
+      "cas_detach",
+      "cas_status",
+      "cas_stop",
+      "cas_steer",
+      "cas_plan",
+      "cas_review",
+      "cas_compact",
+      "cas_skills",
+      "cas_experimental",
+      "cas_mcp",
+      "cas_fast",
+      "cas_model",
+      "cas_permissions",
+      "cas_init",
+      "cas_diff",
+      "cas_rename"
+    ]
+  },
+  "commandAliases": [
+    {
+      "name": "cas_resume",
+      "kind": "runtime-slash"
+    },
+    {
+      "name": "cas_detach",
+      "kind": "runtime-slash"
+    },
+    {
+      "name": "cas_status",
+      "kind": "runtime-slash"
+    },
+    {
+      "name": "cas_stop",
+      "kind": "runtime-slash"
+    },
+    {
+      "name": "cas_steer",
+      "kind": "runtime-slash"
+    },
+    {
+      "name": "cas_plan",
+      "kind": "runtime-slash"
+    },
+    {
+      "name": "cas_review",
+      "kind": "runtime-slash"
+    },
+    {
+      "name": "cas_compact",
+      "kind": "runtime-slash"
+    },
+    {
+      "name": "cas_skills",
+      "kind": "runtime-slash"
+    },
+    {
+      "name": "cas_experimental",
+      "kind": "runtime-slash"
+    },
+    {
+      "name": "cas_mcp",
+      "kind": "runtime-slash"
+    },
+    {
+      "name": "cas_fast",
+      "kind": "runtime-slash"
+    },
+    {
+      "name": "cas_model",
+      "kind": "runtime-slash"
+    },
+    {
+      "name": "cas_permissions",
+      "kind": "runtime-slash"
+    },
+    {
+      "name": "cas_init",
+      "kind": "runtime-slash"
+    },
+    {
+      "name": "cas_diff",
+      "kind": "runtime-slash"
+    },
+    {
+      "name": "cas_rename",
+      "kind": "runtime-slash"
+    }
+  ],
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

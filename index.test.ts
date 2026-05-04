@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import { COMMANDS } from "./src/commands.js";
 
 const controllerState = vi.hoisted(() => ({
@@ -22,6 +23,7 @@ vi.mock("./src/controller.js", () => ({
 }));
 
 const { default: plugin } = await import("./index.js");
+const manifest = JSON.parse(readFileSync(new URL("./openclaw.plugin.json", import.meta.url), "utf8"));
 
 describe("plugin registration", () => {
   it("loads without the binding resolved hook on older OpenClaw cores", () => {
@@ -54,5 +56,18 @@ describe("plugin registration", () => {
     plugin.register(api as never);
 
     expect(api.onConversationBindingResolved).toHaveBeenCalledTimes(1);
+  });
+
+  it("declares command activation metadata for every runtime slash command", () => {
+    const commandNames = COMMANDS.map(([name]) => name);
+
+    expect(manifest.activation?.onStartup).toBe(true);
+    expect(manifest.activation?.onCommands).toEqual(commandNames);
+    expect(manifest.commandAliases).toEqual(
+      commandNames.map((name) => ({
+        name,
+        kind: "runtime-slash",
+      })),
+    );
   });
 });
