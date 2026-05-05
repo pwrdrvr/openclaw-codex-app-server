@@ -19,6 +19,7 @@
       "cas_fast",
       "cas_model",
       "cas_permissions",
+      "cas_verbose",
       "cas_init",
       "cas_diff",
       "cas_rename"
@@ -79,6 +80,10 @@
     },
     {
       "name": "cas_permissions",
+      "kind": "runtime-slash"
+    },
+    {
+      "name": "cas_verbose",
       "kind": "runtime-slash"
     },
     {
