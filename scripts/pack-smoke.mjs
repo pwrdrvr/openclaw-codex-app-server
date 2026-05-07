@@ -48,6 +48,7 @@ try {
     "index.ts",
     "openclaw.plugin.json",
     path.join("src", "client.ts"),
+    path.join("dist", "index.js"),
   ];
   const unexpectedFiles = [
     "AGENTS.md",

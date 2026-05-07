@@ -20,6 +20,8 @@
     }
   },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepublishOnly": "pnpm run build",
     "project:sync": "node ./.agents/skills/project-manager/scripts/sync-work-items.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",

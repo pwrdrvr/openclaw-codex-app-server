@@ -55,6 +55,9 @@ jobs:
       - name: Run package smoke install
         run: pnpm pack:smoke
 
+      - name: Build
+        run: pnpm build
+
       - name: Configure npm authentication
         if: ${{ env.NODE_AUTH_TOKEN != '' }}
         run: |

@@ -4,3 +4,5 @@ node_modules/
 *.tgz
 __pycache__/
 *.pyc
+tsconfig.build.json
+dist/
