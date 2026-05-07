@@ -2420,6 +2420,11 @@ export function isMissingThreadError(error: unknown): boolean {
 }
 
 function buildFullAccessPluginSettings(settings: ClientEndpointSettings): ClientEndpointSettings | null {
+  if (settings.transport === "websocket") {
+    return {
+      ...settings,
+    };
+  }
   if (settings.transport !== "stdio") {
     return null;
   }

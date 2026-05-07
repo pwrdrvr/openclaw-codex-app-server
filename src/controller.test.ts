@@ -7535,6 +7535,65 @@ describe("Discord controller flows", () => {
     expect(reply.text).toContain("Resolved endpoint: auto-node-nestdev (auto from node: nestdev)");
   });
 
+  it("resolves /cas_resume endpoint from the active agent tools.exec config", async () => {
+    const { controller } = await createControllerHarness({
+      defaultEndpoint: "default",
+      endpoints: [
+        {
+          id: "default",
+          transport: "websocket",
+          url: "ws://127.0.0.1:8765",
+        },
+        {
+          id: "nestdev",
+          execNodes: ["nestdev"],
+          transport: "websocket",
+          url: "ws://172.23.100.26:8765",
+        },
+      ],
+    });
+    const listSpy = vi.spyOn(controller as any, "handleListCommand").mockResolvedValue({
+      text: "picker body",
+    });
+
+    const reply = await controller.handleCommand(
+      "cas_resume",
+      buildDiscordCommandContext({
+        sessionKey: "agent:karan-nestdev:discord:channel:1501285305729155143",
+        config: {
+          tools: {
+            exec: {
+              host: "gateway",
+              node: "nestdev",
+            },
+          },
+          agents: {
+            list: [
+              {
+                id: "karan-nestdev",
+                tools: {
+                  exec: {
+                    host: "node",
+                    node: "nestdev",
+                  },
+                },
+              },
+            ],
+          },
+        },
+      }),
+    );
+
+    expect(listSpy).toHaveBeenCalledWith(
+      expect.anything(),
+      null,
+      "nestdev",
+      "",
+      "discord",
+    );
+    expect(reply.text).toContain("Resolved endpoint: nestdev (auto from node: nestdev)");
+  });
+
   it("falls back to default endpoint when node-derived probe is unavailable", async () => {
     const { controller } = await createControllerHarness({
       defaultEndpoint: "default",
