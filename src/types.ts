@@ -28,6 +28,7 @@ export type PluginSettings = {
   endpoints: EndpointSettings[];
   defaultWorkspaceDir?: string;
   defaultModel?: string;
+  defaultReasoningEffort?: string;
   defaultServiceTier?: string;
   inboundAudioTranscription?: InboundAudioTranscriptionSettings;
 };

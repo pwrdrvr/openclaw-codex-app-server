@@ -154,6 +154,7 @@ export function resolvePluginSettings(rawConfig: unknown): PluginSettings {
     endpoints,
     defaultWorkspaceDir: readString(record, "defaultWorkspaceDir"),
     defaultModel: readString(record, "defaultModel"),
+    defaultReasoningEffort: readString(record, "defaultReasoningEffort"),
     defaultServiceTier: readString(record, "defaultServiceTier"),
     inboundAudioTranscription: resolveInboundAudioTranscription(record),
   };

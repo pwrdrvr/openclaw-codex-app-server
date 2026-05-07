@@ -1137,13 +1137,15 @@ function buildDesiredThreadConfiguration(
   threadState: ThreadState | undefined,
   binding: StoredBinding | null,
   modelFallback?: string,
+  reasoningEffortFallback?: string,
 ): DesiredThreadConfiguration {
   const effectiveState = applyBindingPreferencesToThreadState(threadState, binding) ?? threadState;
   const model = effectiveState?.model?.trim() || modelFallback;
   return {
     effectiveState,
     model,
-    reasoningEffort: normalizeReasoningEffort(effectiveState?.reasoningEffort),
+    reasoningEffort: normalizeReasoningEffort(effectiveState?.reasoningEffort)
+      ?? normalizeReasoningEffort(reasoningEffortFallback),
     serviceTier: modelSupportsFast(model)
       ? requestServiceTierFromPreference(effectiveState?.serviceTier)
       : null,
@@ -1775,7 +1777,7 @@ export class CodexPluginController {
       runId: `agent-${crypto.randomUUID()}`,
       existingThreadId: threadId || undefined,
       model: params.model?.trim() || this.settings.defaultModel,
-      reasoningEffort: params.reasoningEffort?.trim() || undefined,
+      reasoningEffort: params.reasoningEffort?.trim() || this.settings.defaultReasoningEffort,
       serviceTier: params.serviceTier?.trim() || this.settings.defaultServiceTier,
       collaborationMode: params.collaborationMode,
       onPendingInput: async (state) => {
@@ -4877,6 +4879,7 @@ export class CodexPluginController {
       undefined,
       params.binding,
       this.settings.defaultModel,
+      this.settings.defaultReasoningEffort,
     );
     const run = this.getClientForBinding(params.binding).startTurn({
       profile,
@@ -5129,6 +5132,7 @@ export class CodexPluginController {
       threadState ?? undefined,
       params.binding,
       this.settings.defaultModel,
+      this.settings.defaultReasoningEffort,
     );
     const effectiveThreadState = desired.effectiveState;
     const run = this.getClientForBinding(params.binding).startTurn({
@@ -5319,6 +5323,7 @@ export class CodexPluginController {
       threadState ?? undefined,
       params.binding,
       this.settings.defaultModel,
+      this.settings.defaultReasoningEffort,
     );
     const run = this.getClientForBinding(params.binding).startReview({
       profile,
