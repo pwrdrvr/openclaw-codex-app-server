@@ -8,7 +8,7 @@
   "type": "module",
   "openclaw": {
     "extensions": [
-      "./index.ts"
+      "./dist/index.js"
     ],
     "compat": {
       "pluginApi": ">=2026.3.22",
@@ -19,7 +19,13 @@
       "pluginSdkVersion": "2026.3.22"
     }
   },
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "types": "./dist/index.d.ts",
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "tsc -p tsconfig.build.json",
     "project:sync": "node ./.agents/skills/project-manager/scripts/sync-work-items.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
@@ -29,6 +35,13 @@
     "release:metadata": "node ./scripts/release-metadata.mjs",
     "release:apply-version": "node ./scripts/apply-release-version.mjs"
   },
+  "files": [
+    "dist/",
+    "openclaw.plugin.json",
+    "README.md",
+    "LICENSE",
+    "package.json"
+  ],
   "peerDependencies": {
     "openclaw": ">=2026.3.22"
   },

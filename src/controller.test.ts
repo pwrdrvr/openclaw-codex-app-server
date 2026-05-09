@@ -863,7 +863,7 @@ describe("Discord controller flows", () => {
       },
     ]);
     (controller as any).resolveProjectFolder = vi.fn(async (workspaceDir?: string) => {
-      if (!workspaceDir?.includes("/.codex/worktrees/")) {
+      if (!workspaceDir?.replaceAll("\\", "/").includes("/.codex/worktrees/")) {
         return workspaceDir;
       }
       return canonicalWorkspaceDir;

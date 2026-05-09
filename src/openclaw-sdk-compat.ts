@@ -42,11 +42,22 @@ export function isMissingPluginSdkSubpathError(error: unknown, specifier: string
   );
 }
 
+function pathApiFor(targetPath: string): typeof path.posix | typeof path.win32 {
+  if (targetPath.startsWith("/")) {
+    return path.posix;
+  }
+  if (/^[a-zA-Z]:[\\/]/.test(targetPath) || targetPath.startsWith("\\\\")) {
+    return path.win32;
+  }
+  return path;
+}
+
 export function resolveCompatFallbackPath(
   openClawEntrypointPath: string,
   fallbackRelativePath: string,
 ): string {
-  return path.resolve(path.dirname(openClawEntrypointPath), "..", fallbackRelativePath);
+  const pathApi = pathApiFor(openClawEntrypointPath);
+  return pathApi.resolve(pathApi.dirname(openClawEntrypointPath), "..", fallbackRelativePath);
 }
 
 function readPackageJsonNameAndExports(
@@ -54,7 +65,8 @@ function readPackageJsonNameAndExports(
   readFile: CompatReadFile,
 ): { name?: string; exports?: Record<string, unknown>; bin?: string | Record<string, unknown> } | null {
   try {
-    return JSON.parse(readFile(path.join(packageRoot, "package.json"))) as {
+    const pathApi = pathApiFor(packageRoot);
+    return JSON.parse(readFile(pathApi.join(packageRoot, "package.json"))) as {
       name?: string;
       exports?: Record<string, unknown>;
       bin?: string | Record<string, unknown>;
@@ -83,7 +95,8 @@ function isTrustedOpenClawRoot(
     (typeof pkg.bin === "object" &&
       pkg.bin !== null &&
       typeof pkg.bin.openclaw === "string");
-  return hasCliEntry || hasOpenClawBin || pathExists(path.join(packageRoot, "openclaw.mjs"));
+  const pathApi = pathApiFor(packageRoot);
+  return hasCliEntry || hasOpenClawBin || pathExists(pathApi.join(packageRoot, "openclaw.mjs"));
 }
 
 function resolveTrustedOpenClawRootFromStart(
@@ -94,17 +107,18 @@ function resolveTrustedOpenClawRootFromStart(
   if (!startPath) {
     return null;
   }
-  let cursor = path.resolve(startPath);
-  if (!path.extname(cursor)) {
+  const pathApi = pathApiFor(startPath);
+  let cursor = pathApi.resolve(startPath);
+  if (!pathApi.extname(cursor)) {
     // Keep directory-like hints as-is.
   } else {
-    cursor = path.dirname(cursor);
+    cursor = pathApi.dirname(cursor);
   }
   for (let depth = 0; depth < 12; depth += 1) {
     if (isTrustedOpenClawRoot(cursor, pathExists, readFile)) {
       return cursor;
     }
-    const parent = path.dirname(cursor);
+    const parent = pathApi.dirname(cursor);
     if (parent === cursor) {
       break;
     }
@@ -127,13 +141,21 @@ export function resolveOpenClawEntrypointPath(params?: {
     resolveTrustedOpenClawRootFromStart(params?.argv1 ?? process.argv[1], pathExists, readFile) ??
     resolveTrustedOpenClawRootFromStart(params?.cwd ?? process.cwd(), pathExists, readFile);
   if (hostRoot) {
-    const distEntrypoint = path.join(hostRoot, "dist", "index.js");
+    const pathApi = pathApiFor(hostRoot);
+    const distEntrypoint = pathApi.join(hostRoot, "dist", "index.js");
     if (pathExists(distEntrypoint)) {
       return distEntrypoint;
     }
-    return path.join(hostRoot, "src", "index.ts");
+    return pathApi.join(hostRoot, "src", "index.ts");
   }
   return resolver("openclaw");
+}
+
+function compatFileUrl(targetPath: string): string {
+  if (targetPath.startsWith("/")) {
+    return `file://${targetPath}`;
+  }
+  return pathToFileURL(targetPath).href;
 }
 
 export async function loadOpenClawCompatModule<T>(params: {
@@ -176,7 +198,7 @@ export async function loadOpenClawCompatModule<T>(params: {
         throw error;
       }
       params.logger?.debug?.(`codex ${params.label} sdk fallback using ${fallbackPath}`);
-      return (await importer(pathToFileURL(fallbackPath).href)) as T;
+      return (await importer(compatFileUrl(fallbackPath))) as T;
     }
   })();
 
