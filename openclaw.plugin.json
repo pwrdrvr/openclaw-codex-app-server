@@ -19,6 +19,12 @@
       "command": {
         "type": "string"
       },
+      "execNodes": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
       "args": {
         "type": "array",
         "items": {
@@ -41,6 +47,62 @@
         "type": "number",
         "minimum": 100
       },
+      "defaultEndpoint": {
+        "type": "string"
+      },
+      "endpoints": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "transport": {
+              "type": "string",
+              "enum": [
+                "stdio",
+                "websocket"
+              ]
+            },
+            "command": {
+              "type": "string"
+            },
+            "execNodes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "url": {
+              "type": "string"
+            },
+            "authToken": {
+              "type": "string"
+            },
+            "headers": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "requestTimeoutMs": {
+              "type": "number",
+              "minimum": 100
+            },
+            "defaultWorkspaceDir": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "inputTimeoutMs": {
         "type": "number",
         "minimum": 1000
@@ -51,8 +113,39 @@
       "defaultModel": {
         "type": "string"
       },
+      "defaultReasoningEffort": {
+        "type": "string",
+        "enum": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ]
+      },
       "defaultServiceTier": {
         "type": "string"
+      },
+      "inboundAudioTranscription": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "command": {
+            "type": "string"
+          },
+          "args": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "timeoutMs": {
+            "type": "number",
+            "minimum": 100
+          }
+        }
       }
     }
   },
@@ -66,6 +159,10 @@
     "command": {
       "label": "Codex Command",
       "help": "Used for stdio mode. Defaults to codex."
+    },
+    "execNodes": {
+      "label": "Exec Node Aliases",
+      "advanced": true
     },
     "args": {
       "label": "Codex Args",
@@ -86,6 +183,14 @@
       "label": "Request Timeout (ms)",
       "advanced": true
     },
+    "defaultEndpoint": {
+      "label": "Default Endpoint",
+      "advanced": true
+    },
+    "endpoints": {
+      "label": "Endpoints",
+      "advanced": true
+    },
     "inputTimeoutMs": {
       "label": "Input Timeout (ms)",
       "advanced": true
@@ -97,9 +202,18 @@
       "label": "Default Model",
       "advanced": true
     },
+    "defaultReasoningEffort": {
+      "label": "Default Reasoning Effort",
+      "advanced": true
+    },
     "defaultServiceTier": {
       "label": "Default Service Tier",
       "advanced": true
+    },
+    "inboundAudioTranscription": {
+      "label": "Inbound Audio Transcription",
+      "advanced": true,
+      "help": "Optional preprocessor for inbound audio/voice attachments. The command should print the transcript to stdout. Use {path}, {mimeType}, and {fileName} placeholders in args when needed."
     }
   }
 }

@@ -244,6 +244,130 @@ describe("state store", () => {
     ).toBeNull();
   });
 
+  it("clears Discord thread-scoped state even when reset is issued from the parent channel scope", async () => {
+    const store = await makeStore();
+    await store.upsertBinding({
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:thread-1",
+        parentConversationId: "channel:parent-1",
+      },
+      sessionKey: buildPluginSessionKey("thread-1"),
+      threadId: "thread-1",
+      workspaceDir: "/tmp/work",
+      updatedAt: Date.now(),
+    });
+    await store.upsertPendingBind({
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:thread-1",
+        parentConversationId: "channel:parent-1",
+      },
+      threadId: "thread-1",
+      workspaceDir: "/tmp/work",
+      updatedAt: Date.now(),
+    });
+    await store.upsertPendingRequest({
+      requestId: "req-discord-1",
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:thread-1",
+        parentConversationId: "channel:parent-1",
+      },
+      threadId: "thread-1",
+      workspaceDir: "/tmp/work",
+      state: {
+        requestId: "req-discord-1",
+        options: ["yes"],
+        expiresAt: Date.now() + 10_000,
+      },
+      updatedAt: Date.now(),
+    });
+    const callback = await store.putCallback({
+      kind: "resume-thread",
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:thread-1",
+        parentConversationId: "channel:parent-1",
+      },
+      threadId: "thread-1",
+      workspaceDir: "/tmp/work",
+    });
+
+    await store.removeBinding({
+      channel: "discord",
+      accountId: "default",
+      conversationId: "channel:parent-1",
+      threadId: "thread-1",
+    });
+
+    expect(store.listBindingsForConversationScope({
+      channel: "discord",
+      accountId: "default",
+      conversationId: "channel:thread-1",
+    })).toHaveLength(0);
+    expect(store.getPendingBind({
+      channel: "discord",
+      accountId: "default",
+      conversationId: "channel:thread-1",
+    })).toBeNull();
+    expect(store.getPendingRequestById("req-discord-1")).toBeNull();
+    expect(store.getCallback(callback.token)).toBeNull();
+  });
+
+  it("does not clear sibling Discord threads that share the same parent channel", async () => {
+    const store = await makeStore();
+    await store.upsertBinding({
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:thread-1",
+        parentConversationId: "channel:parent-1",
+      },
+      sessionKey: buildPluginSessionKey("thread-1"),
+      threadId: "thread-1",
+      workspaceDir: "/tmp/work-1",
+      updatedAt: Date.now(),
+    });
+    await store.upsertBinding({
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:thread-2",
+        parentConversationId: "channel:parent-1",
+      },
+      sessionKey: buildPluginSessionKey("thread-2"),
+      threadId: "thread-2",
+      workspaceDir: "/tmp/work-2",
+      updatedAt: Date.now(),
+    });
+
+    await store.removeBinding({
+      channel: "discord",
+      accountId: "default",
+      conversationId: "channel:parent-1",
+      threadId: "thread-1",
+    });
+
+    expect(store.getBinding({
+      channel: "discord",
+      accountId: "default",
+      conversationId: "channel:thread-1",
+    })).toBeNull();
+    expect(store.getBinding({
+      channel: "discord",
+      accountId: "default",
+      conversationId: "channel:thread-2",
+    })).toEqual(expect.objectContaining({
+      sessionKey: buildPluginSessionKey("thread-2"),
+      workspaceDir: "/tmp/work-2",
+    }));
+  });
+
   it("persists conversation preferences in bindings across reload", async () => {
     const dir = await makeStoreDir();
     const store = await makeStore(dir);

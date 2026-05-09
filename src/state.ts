@@ -10,6 +10,7 @@ import type {
   PermissionsMode,
   StoreSnapshot,
   StoredBinding,
+  StoredConversationEndpoint,
   StoredPendingBind,
   StoredPendingRequest,
 } from "./types.js";
@@ -18,6 +19,7 @@ type PutCallbackInput =
   | {
       kind: "start-new-thread";
       conversation: ConversationTarget;
+      endpointId?: string;
       workspaceDir: string;
       syncTopic?: boolean;
       requestedModel?: string;
@@ -29,6 +31,7 @@ type PutCallbackInput =
   | {
       kind: "resume-thread";
       conversation: ConversationTarget;
+      endpointId?: string;
       threadId: string;
       threadTitle?: string;
       workspaceDir: string;
@@ -168,11 +171,34 @@ type PutCallbackInput =
       ttlMs?: number;
     }
   | {
+      kind: "show-endpoint-picker";
+      conversation: ConversationTarget;
+      token?: string;
+      ttlMs?: number;
+    }
+  | {
       kind: "set-model";
       conversation: ConversationTarget;
       model: string;
       returnToStatus?: boolean;
       statusMessage?: Extract<CallbackAction, { kind: "set-model" }>["statusMessage"];
+      token?: string;
+      ttlMs?: number;
+    }
+  | {
+      kind: "set-endpoint";
+      conversation: ConversationTarget;
+      endpointId: string;
+      returnToStatus?: boolean;
+      statusMessage?: Extract<CallbackAction, { kind: "set-endpoint" }>["statusMessage"];
+      token?: string;
+      ttlMs?: number;
+    }
+  | {
+      kind: "clear-endpoint";
+      conversation: ConversationTarget;
+      returnToStatus?: boolean;
+      statusMessage?: Extract<CallbackAction, { kind: "clear-endpoint" }>["statusMessage"];
       token?: string;
       ttlMs?: number;
     }
@@ -190,6 +216,54 @@ type PutCallbackInput =
       ttlMs?: number;
     };
 
+function normalizeDiscordConversationAlias(raw: string | number | undefined): string | undefined {
+  if (raw == null) {
+    return undefined;
+  }
+  const trimmed = String(raw).trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  if (trimmed.startsWith("channel:") || trimmed.startsWith("user:")) {
+    return trimmed;
+  }
+  return `channel:${trimmed}`;
+}
+
+function getConversationScopeAliases(target: ConversationTarget): Set<string> {
+  const aliases = new Set<string>();
+  const conversationId = target.conversationId.trim();
+  if (conversationId) {
+    aliases.add(conversationId);
+  }
+  if (target.channel.trim().toLowerCase() !== "discord") {
+    return aliases;
+  }
+  const threadConversationId = normalizeDiscordConversationAlias(target.threadId);
+  if (threadConversationId) {
+    aliases.add(threadConversationId);
+  }
+  return aliases;
+}
+
+function matchesConversationScope(target: ConversationTarget, candidate: ConversationTarget): boolean {
+  const targetChannel = target.channel.trim().toLowerCase();
+  if (targetChannel !== candidate.channel.trim().toLowerCase()) {
+    return false;
+  }
+  if (target.accountId.trim() !== candidate.accountId.trim()) {
+    return false;
+  }
+  if (targetChannel !== "discord") {
+    return toConversationKey(target) === toConversationKey(candidate);
+  }
+  const aliases = getConversationScopeAliases(target);
+  if (aliases.size === 0) {
+    return false;
+  }
+  return aliases.has(candidate.conversationId.trim());
+}
+
 function toConversationKey(target: ConversationTarget): string {
   const channel = target.channel.trim().toLowerCase();
   return [
@@ -204,6 +278,7 @@ function cloneSnapshot(value?: Partial<StoreSnapshot>): StoreSnapshot {
   return {
     version: STORE_VERSION,
     bindings: value?.bindings ?? [],
+    conversationEndpoints: value?.conversationEndpoints ?? [],
     pendingBinds: value?.pendingBinds ?? [],
     pendingRequests: value?.pendingRequests ?? [],
     callbacks: value?.callbacks ?? [],
@@ -263,6 +338,7 @@ function normalizeSnapshot(value?: Partial<StoreSnapshot>): StoreSnapshot {
       | undefined;
     return {
       ...binding,
+      endpointId: binding.endpointId?.trim() || "default",
       permissionsMode: inferPermissionsModeFromLegacyFields({
         permissionsMode: (binding as StoredBinding & { permissionsMode?: string }).permissionsMode,
         appServerProfile: (binding as StoredBinding & { appServerProfile?: string }).appServerProfile,
@@ -288,6 +364,7 @@ function normalizeSnapshot(value?: Partial<StoreSnapshot>): StoreSnapshot {
       | undefined;
     return {
       ...entry,
+      endpointId: entry.endpointId?.trim() || "default",
       permissionsMode: inferPermissionsModeFromLegacyFields({
         permissionsMode: (entry as StoredPendingBind & { permissionsMode?: string }).permissionsMode,
         appServerProfile: (entry as StoredPendingBind & { appServerProfile?: string }).appServerProfile,
@@ -297,6 +374,16 @@ function normalizeSnapshot(value?: Partial<StoreSnapshot>): StoreSnapshot {
       preferences: normalizeConversationPreferences(legacyPreferences),
     };
   });
+  snapshot.pendingRequests = snapshot.pendingRequests.map((entry) => ({
+    ...entry,
+    endpointId: entry.endpointId?.trim() || "default",
+  }));
+  snapshot.conversationEndpoints = snapshot.conversationEndpoints
+    .map((entry) => ({
+      ...entry,
+      endpointId: entry.endpointId?.trim() || "default",
+    }))
+    .filter((entry) => entry.endpointId);
   return snapshot;
 }
 
@@ -349,9 +436,41 @@ export class PluginStateStore {
     return [...this.snapshot.bindings];
   }
 
+  listBindingsForConversationScope(target: ConversationTarget): StoredBinding[] {
+    return this.snapshot.bindings.filter((entry) =>
+      matchesConversationScope(target, entry.conversation as ConversationTarget),
+    );
+  }
+
   getBinding(target: ConversationTarget): StoredBinding | null {
     const key = toConversationKey(target);
     return this.snapshot.bindings.find((entry) => toConversationKey(entry.conversation) === key) ?? null;
+  }
+
+  getConversationEndpoint(target: ConversationTarget): StoredConversationEndpoint | null {
+    const key = toConversationKey(target);
+    return (
+      this.snapshot.conversationEndpoints.find(
+        (entry) => toConversationKey(entry.conversation as ConversationTarget) === key,
+      ) ?? null
+    );
+  }
+
+  async upsertConversationEndpoint(entry: StoredConversationEndpoint): Promise<void> {
+    const key = toConversationKey(entry.conversation as ConversationTarget);
+    this.snapshot.conversationEndpoints = this.snapshot.conversationEndpoints.filter(
+      (current) => toConversationKey(current.conversation as ConversationTarget) !== key,
+    );
+    this.snapshot.conversationEndpoints.push(entry);
+    await this.save();
+  }
+
+  async removeConversationEndpoint(target: ConversationTarget): Promise<void> {
+    const key = toConversationKey(target);
+    this.snapshot.conversationEndpoints = this.snapshot.conversationEndpoints.filter(
+      (current) => toConversationKey(current.conversation as ConversationTarget) !== key,
+    );
+    await this.save();
   }
 
   async upsertBinding(binding: StoredBinding): Promise<void> {
@@ -367,18 +486,17 @@ export class PluginStateStore {
   }
 
   async removeBinding(target: ConversationTarget): Promise<void> {
-    const key = toConversationKey(target);
     this.snapshot.bindings = this.snapshot.bindings.filter(
-      (entry) => toConversationKey(entry.conversation) !== key,
+      (entry) => !matchesConversationScope(target, entry.conversation as ConversationTarget),
     );
     this.snapshot.pendingBinds = this.snapshot.pendingBinds.filter(
-      (entry) => toConversationKey(entry.conversation) !== key,
+      (entry) => !matchesConversationScope(target, entry.conversation as ConversationTarget),
     );
     this.snapshot.pendingRequests = this.snapshot.pendingRequests.filter(
-      (entry) => toConversationKey(entry.conversation) !== key,
+      (entry) => !matchesConversationScope(target, entry.conversation as ConversationTarget),
     );
     this.snapshot.callbacks = this.snapshot.callbacks.filter(
-      (entry) => toConversationKey(entry.conversation) !== key,
+      (entry) => !matchesConversationScope(target, entry.conversation as ConversationTarget),
     );
     await this.save();
   }
@@ -452,6 +570,7 @@ export class PluginStateStore {
         ? {
             kind: "start-new-thread",
             conversation: callback.conversation,
+            endpointId: callback.endpointId,
             workspaceDir: callback.workspaceDir,
             syncTopic: callback.syncTopic,
             requestedModel: callback.requestedModel,
@@ -465,6 +584,7 @@ export class PluginStateStore {
         ? {
             kind: "resume-thread",
             conversation: callback.conversation,
+            endpointId: callback.endpointId,
             threadId: callback.threadId,
             threadTitle: callback.threadTitle,
             workspaceDir: callback.workspaceDir,
@@ -647,6 +767,35 @@ export class PluginStateStore {
                       ? {
                           kind: "show-model-picker",
                           conversation: callback.conversation,
+                          token: callback.token ?? this.createCallbackToken(),
+                          createdAt: now,
+                          expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
+                        }
+                    : callback.kind === "show-endpoint-picker"
+                      ? {
+                          kind: "show-endpoint-picker",
+                          conversation: callback.conversation,
+                          token: callback.token ?? this.createCallbackToken(),
+                          createdAt: now,
+                          expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
+                        }
+                    : callback.kind === "set-endpoint"
+                      ? {
+                          kind: "set-endpoint",
+                          conversation: callback.conversation,
+                          endpointId: callback.endpointId,
+                          returnToStatus: callback.returnToStatus,
+                          statusMessage: callback.statusMessage,
+                          token: callback.token ?? this.createCallbackToken(),
+                          createdAt: now,
+                          expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
+                        }
+                    : callback.kind === "clear-endpoint"
+                      ? {
+                          kind: "clear-endpoint",
+                          conversation: callback.conversation,
+                          returnToStatus: callback.returnToStatus,
+                          statusMessage: callback.statusMessage,
                           token: callback.token ?? this.createCallbackToken(),
                           createdAt: now,
                           expiresAt: now + (callback.ttlMs ?? CALLBACK_TTL_MS),
