@@ -1576,6 +1576,7 @@ export class CodexPluginController {
       url: string | null;
       command: string;
       args: string[];
+      defaultWorkspaceDir: string | null;
       requestTimeoutMs: number;
       supportsFullAccess: boolean;
     }>;
@@ -1592,6 +1593,7 @@ export class CodexPluginController {
         url: endpoint.url ?? null,
         command: endpoint.command,
         args: [...endpoint.args],
+        defaultWorkspaceDir: endpoint.defaultWorkspaceDir ?? null,
         requestTimeoutMs: endpoint.requestTimeoutMs,
         supportsFullAccess: this.getClientForEndpoint(endpoint.id).hasProfile("full-access"),
       })),
@@ -1623,6 +1625,7 @@ export class CodexPluginController {
       ? undefined
       : resolveWorkspaceDir({
           requested: params.workspaceDir,
+          endpointWorkspaceDir: this.getConfiguredWorkspaceDirForEndpoint(endpointId),
           configuredWorkspaceDir: this.settings.defaultWorkspaceDir,
           serviceWorkspaceDir: this.serviceWorkspaceDir,
         });
@@ -1717,6 +1720,7 @@ export class CodexPluginController {
     const permissionsMode = this.resolveAgentPermissionsMode(endpointId, params.permissionsMode);
     const workspaceDir = resolveWorkspaceDir({
       requested: params.workspaceDir,
+      endpointWorkspaceDir: this.getConfiguredWorkspaceDirForEndpoint(endpointId),
       configuredWorkspaceDir: this.settings.defaultWorkspaceDir,
       serviceWorkspaceDir: this.serviceWorkspaceDir,
     });
@@ -2039,6 +2043,27 @@ export class CodexPluginController {
     return this.settings.defaultEndpoint;
   }
 
+  private getEndpointSettings(endpointId?: string): EndpointSettings | undefined {
+    const resolvedEndpointId =
+      endpointId && this.settings.endpoints.some((entry) => entry.id === endpointId)
+        ? endpointId
+        : this.settings.defaultEndpoint;
+    return (
+      this.settings.endpoints.find((entry) => entry.id === resolvedEndpointId) ??
+      this.settings.endpoints[0]
+    );
+  }
+
+  private getConfiguredWorkspaceDirForEndpoint(endpointId?: string): string | undefined {
+    return this.getEndpointSettings(endpointId)?.defaultWorkspaceDir ?? this.settings.defaultWorkspaceDir;
+  }
+
+  private getConfiguredWorkspaceDirForBinding(
+    binding: StoredBinding | StoredPendingBind | null | undefined,
+  ): string | undefined {
+    return this.getConfiguredWorkspaceDirForEndpoint(this.getEndpointIdForBinding(binding));
+  }
+
   private readExecContextFromConfig(config: unknown): AgentExecContext | undefined {
     if (!config || typeof config !== "object" || Array.isArray(config)) {
       return undefined;
@@ -2340,9 +2365,7 @@ export class CodexPluginController {
     if (existing) {
       return existing;
     }
-    const endpoint =
-      this.settings.endpoints.find((entry) => entry.id === resolvedEndpointId) ??
-      this.settings.endpoints[0];
+    const endpoint = this.getEndpointSettings(resolvedEndpointId);
     if (!endpoint) {
       throw new Error("Codex endpoint configuration is missing.");
     }
@@ -3393,6 +3416,7 @@ export class CodexPluginController {
         workspaceDir ||
         resolveWorkspaceDir({
           bindingWorkspaceDir: resumeBinding?.workspaceDir,
+          endpointWorkspaceDir: this.getConfiguredWorkspaceDirForEndpoint(selectedEndpointId),
           configuredWorkspaceDir: this.settings.defaultWorkspaceDir,
           serviceWorkspaceDir: this.serviceWorkspaceDir,
       }),
@@ -4104,6 +4128,7 @@ export class CodexPluginController {
   ): Promise<PickerRender> {
     const workspaceDir = resolveWorkspaceDir({
       bindingWorkspaceDir: binding?.workspaceDir,
+      endpointWorkspaceDir: this.getConfiguredWorkspaceDirForBinding(binding),
       configuredWorkspaceDir: this.settings.defaultWorkspaceDir,
       serviceWorkspaceDir: this.serviceWorkspaceDir,
     });
@@ -4278,6 +4303,7 @@ export class CodexPluginController {
     }
     const workspaceDir = resolveWorkspaceDir({
       bindingWorkspaceDir: binding?.workspaceDir,
+      endpointWorkspaceDir: this.getConfiguredWorkspaceDirForBinding(binding),
       configuredWorkspaceDir: this.settings.defaultWorkspaceDir,
       serviceWorkspaceDir: this.serviceWorkspaceDir,
     });
@@ -4415,6 +4441,7 @@ export class CodexPluginController {
   ): Promise<ReplyPayload> {
     const workspaceDir = resolveWorkspaceDir({
       bindingWorkspaceDir: binding?.workspaceDir,
+      endpointWorkspaceDir: this.getConfiguredWorkspaceDirForBinding(binding),
       configuredWorkspaceDir: this.settings.defaultWorkspaceDir,
       serviceWorkspaceDir: this.serviceWorkspaceDir,
     });
@@ -4670,6 +4697,7 @@ export class CodexPluginController {
     }
     const workspaceDir = resolveWorkspaceDir({
       bindingWorkspaceDir: binding?.workspaceDir,
+      endpointWorkspaceDir: this.getConfiguredWorkspaceDirForBinding(binding),
       configuredWorkspaceDir: this.settings.defaultWorkspaceDir,
       serviceWorkspaceDir: this.serviceWorkspaceDir,
     });
@@ -5688,6 +5716,7 @@ export class CodexPluginController {
     }
     return resolveWorkspaceDir({
       bindingWorkspaceDir: binding?.workspaceDir,
+      endpointWorkspaceDir: this.getConfiguredWorkspaceDirForBinding(binding),
       configuredWorkspaceDir: this.settings.defaultWorkspaceDir,
       serviceWorkspaceDir: this.serviceWorkspaceDir,
     });
@@ -6816,6 +6845,7 @@ export class CodexPluginController {
       };
       const workspaceDir = callback.workspaceDir?.trim() || binding?.workspaceDir || resolveWorkspaceDir({
         bindingWorkspaceDir: binding?.workspaceDir,
+        endpointWorkspaceDir: this.getConfiguredWorkspaceDirForBinding(binding),
         configuredWorkspaceDir: this.settings.defaultWorkspaceDir,
         serviceWorkspaceDir: this.serviceWorkspaceDir,
       });
@@ -7184,6 +7214,7 @@ export class CodexPluginController {
         binding?.workspaceDir ||
         resolveWorkspaceDir({
           bindingWorkspaceDir: binding?.workspaceDir,
+          endpointWorkspaceDir: this.getConfiguredWorkspaceDirForBinding(binding),
           configuredWorkspaceDir: this.settings.defaultWorkspaceDir,
           serviceWorkspaceDir: this.serviceWorkspaceDir,
         });
@@ -8121,6 +8152,7 @@ export class CodexPluginController {
     const pendingProfile = getBindingPendingPermissionsMode(binding);
     const workspaceDir = resolveWorkspaceDir({
       bindingWorkspaceDir: binding?.workspaceDir,
+      endpointWorkspaceDir: this.getConfiguredWorkspaceDirForBinding(binding),
       configuredWorkspaceDir: this.settings.defaultWorkspaceDir,
       serviceWorkspaceDir: this.serviceWorkspaceDir,
     });

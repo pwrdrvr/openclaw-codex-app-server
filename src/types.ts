@@ -19,6 +19,7 @@ export type EndpointSettings = {
   args: string[];
   url?: string;
   headers?: Record<string, string>;
+  defaultWorkspaceDir?: string;
   requestTimeoutMs: number;
 };
 
