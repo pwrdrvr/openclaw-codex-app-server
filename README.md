@@ -244,6 +244,7 @@ The plugin schema in [`openclaw.plugin.json`](./openclaw.plugin.json) supports:
 - `execNodes`: optional list of `tools.exec.node` aliases that should auto-select a specific endpoint when agent tools run with `tools.exec.host=node`
 - `url`, `authToken`, `headers`: connection settings for `websocket`
 - `defaultWorkspaceDir`: fallback workspace for unbound actions
+- `agentEndpoints`: optional map of OpenClaw agent id to default endpoint id, used after manual `/cas_endpoint` overrides and exec node-derived endpoint selection but before `defaultEndpoint`
 - `endpoints[].defaultWorkspaceDir`: endpoint-specific fallback workspace; useful when a remote app-server cannot access the controller host path
 - `defaultModel`: model used when a new thread starts without an explicit selection
 - `defaultServiceTier`: default service tier for new turns

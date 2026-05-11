@@ -26,6 +26,7 @@ export type EndpointSettings = {
 export type PluginSettings = {
   enabled: boolean;
   defaultEndpoint: string;
+  agentEndpoints: Record<string, string>;
   endpoints: EndpointSettings[];
   defaultWorkspaceDir?: string;
   defaultModel?: string;

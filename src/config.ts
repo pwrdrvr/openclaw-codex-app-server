@@ -33,6 +33,19 @@ function readStringArray(record: Record<string, unknown>, key: string): string[]
     .filter(Boolean);
 }
 
+function readStringMap(record: Record<string, unknown>, key: string): Record<string, string> {
+  const value = record[key];
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter((entry): entry is [string, string] => typeof entry[1] === "string")
+      .map(([entryKey, entryValue]) => [entryKey.trim(), entryValue.trim()])
+      .filter(([entryKey, entryValue]) => entryKey && entryValue),
+  );
+}
+
 function readHeaders(record: Record<string, unknown>): Record<string, string> | undefined {
   const value = record.headers;
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -149,10 +162,17 @@ export function resolvePluginSettings(rawConfig: unknown): PluginSettings {
   const requestedDefaultEndpoint = readString(record, "defaultEndpoint");
   const defaultEndpoint =
     endpoints.find((entry) => entry.id === requestedDefaultEndpoint)?.id ?? endpoints[0]?.id ?? "default";
+  const endpointIds = new Set(endpoints.map((entry) => entry.id).filter(Boolean));
+  const agentEndpoints = Object.fromEntries(
+    Object.entries(readStringMap(record, "agentEndpoints"))
+      .map(([agentId, endpointId]) => [agentId, endpoints.find((entry) => entry.id === endpointId)?.id] as const)
+      .filter((entry): entry is [string, string] => Boolean(entry[1]) && endpointIds.has(entry[1])),
+  );
 
   return {
     enabled: record.enabled !== false,
     defaultEndpoint,
+    agentEndpoints,
     endpoints,
     defaultWorkspaceDir: readString(record, "defaultWorkspaceDir"),
     defaultModel: readString(record, "defaultModel"),

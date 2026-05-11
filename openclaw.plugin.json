@@ -50,6 +50,12 @@
       "defaultEndpoint": {
         "type": "string"
       },
+      "agentEndpoints": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "string"
+        }
+      },
       "endpoints": {
         "type": "array",
         "items": {
@@ -185,6 +191,10 @@
     },
     "defaultEndpoint": {
       "label": "Default Endpoint",
+      "advanced": true
+    },
+    "agentEndpoints": {
+      "label": "Agent Endpoints",
       "advanced": true
     },
     "endpoints": {

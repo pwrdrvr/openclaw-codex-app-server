@@ -32,9 +32,12 @@ MCP is still useful **inside** Codex for tools, but for **OpenClaw -> Codex work
 Returns:
 
 - default endpoint
+- per-agent default endpoint map
 - default workspace/model
 - configured endpoints
 - whether each endpoint supports `full-access`
+
+Worker tools resolve endpoints in this order: explicit `endpointId`, exec-context/node-derived endpoint, `agentEndpoints[agentId]`, then `defaultEndpoint`.
 
 ### `codex_workers_list_threads`
 

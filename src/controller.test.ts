@@ -7615,6 +7615,106 @@ describe("Discord controller flows", () => {
     ).resolves.toBe("default");
   });
 
+  it("prefers exec-context endpoint resolution over an agent default endpoint", async () => {
+    const { controller } = await createControllerHarness({
+      defaultEndpoint: "default",
+      agentEndpoints: {
+        "karan-nestdev": "agent-default",
+      },
+      endpoints: [
+        {
+          id: "default",
+          transport: "websocket",
+          url: "ws://127.0.0.1:8765",
+        },
+        {
+          id: "agent-default",
+          transport: "websocket",
+          url: "ws://127.0.0.1:8766",
+        },
+        {
+          id: "nestdev",
+          execNodes: ["nestdev"],
+          transport: "websocket",
+          url: "ws://172.23.100.26:8765",
+        },
+      ],
+    });
+
+    await expect(
+      (controller as any).resolveAgentEndpointIdWithNodeFallback(
+        undefined,
+        { host: "node", node: "nestdev" },
+        "agent:karan-nestdev:discord:channel:chan-1",
+      ),
+    ).resolves.toBe("nestdev");
+  });
+
+  it("uses an agent default endpoint before the global default endpoint", async () => {
+    const { controller } = await createControllerHarness({
+      defaultEndpoint: "default",
+      agentEndpoints: {
+        "karan-nestdev": "nestdev",
+      },
+      endpoints: [
+        {
+          id: "default",
+          transport: "websocket",
+          url: "ws://127.0.0.1:8765",
+        },
+        {
+          id: "nestdev",
+          transport: "websocket",
+          url: "ws://172.23.100.26:8765",
+        },
+      ],
+    });
+
+    await expect(
+      (controller as any).resolveAgentEndpointIdWithNodeFallback(
+        undefined,
+        undefined,
+        "agent:karan-nestdev:discord:channel:chan-1",
+      ),
+    ).resolves.toBe("nestdev");
+  });
+
+  it("uses an agent default endpoint for conversation selection before the global default endpoint", async () => {
+    const { controller } = await createControllerHarness({
+      defaultEndpoint: "default",
+      agentEndpoints: {
+        "karan-nestdev": "nestdev",
+      },
+      endpoints: [
+        {
+          id: "default",
+          transport: "websocket",
+          url: "ws://127.0.0.1:8765",
+        },
+        {
+          id: "nestdev",
+          transport: "websocket",
+          url: "ws://172.23.100.26:8765",
+        },
+      ],
+    });
+
+    await expect(
+      (controller as any).getSelectedEndpointResolution(
+        {
+          channel: "discord",
+          accountId: "default",
+          conversationId: "channel:chan-1",
+        },
+        "agent:karan-nestdev:discord:channel:chan-1",
+      ),
+    ).resolves.toMatchObject({
+      endpointId: "nestdev",
+      source: "agent-default",
+      agentId: "karan-nestdev",
+    });
+  });
+
   it("keeps explicit endpoint selection over node-derived fallback", async () => {
     const { controller } = await createControllerHarness({
       defaultEndpoint: "default",
@@ -7640,6 +7740,40 @@ describe("Discord controller flows", () => {
       }),
     ).resolves.toBe("gateway");
     expect(deriveSpy).not.toHaveBeenCalled();
+  });
+
+  it("keeps explicit endpoint selection over an agent default endpoint", async () => {
+    const { controller } = await createControllerHarness({
+      defaultEndpoint: "default",
+      agentEndpoints: {
+        "karan-nestdev": "nestdev",
+      },
+      endpoints: [
+        {
+          id: "default",
+          transport: "websocket",
+          url: "ws://127.0.0.1:8765",
+        },
+        {
+          id: "gateway",
+          transport: "websocket",
+          url: "ws://127.0.0.1:9999",
+        },
+        {
+          id: "nestdev",
+          transport: "websocket",
+          url: "ws://172.23.100.26:8765",
+        },
+      ],
+    });
+
+    await expect(
+      (controller as any).resolveAgentEndpointIdWithNodeFallback(
+        "gateway",
+        undefined,
+        "agent:karan-nestdev:discord:channel:chan-1",
+      ),
+    ).resolves.toBe("gateway");
   });
 
   it("prefers a manual conversation endpoint over automatic node resolution", async () => {
@@ -7684,6 +7818,52 @@ describe("Discord controller flows", () => {
         conversationId: "channel:chan-1",
       }),
     ).resolves.toMatchObject({ endpointId: "default", source: "manual" });
+  });
+
+  it("prefers a manual conversation endpoint over an agent default endpoint", async () => {
+    const { controller } = await createControllerHarness({
+      defaultEndpoint: "default",
+      agentEndpoints: {
+        "karan-nestdev": "nestdev",
+      },
+      endpoints: [
+        {
+          id: "default",
+          transport: "websocket",
+          url: "ws://127.0.0.1:8765",
+        },
+        {
+          id: "manual",
+          transport: "websocket",
+          url: "ws://127.0.0.1:9999",
+        },
+        {
+          id: "nestdev",
+          transport: "websocket",
+          url: "ws://172.23.100.26:8765",
+        },
+      ],
+    });
+    await (controller as any).store.upsertConversationEndpoint({
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "channel:chan-1",
+      },
+      endpointId: "manual",
+      updatedAt: Date.now(),
+    });
+
+    await expect(
+      (controller as any).getSelectedEndpointResolution(
+        {
+          channel: "discord",
+          accountId: "default",
+          conversationId: "channel:chan-1",
+        },
+        "agent:karan-nestdev:discord:channel:chan-1",
+      ),
+    ).resolves.toMatchObject({ endpointId: "manual", source: "manual" });
   });
 
   it("clears the manual endpoint override and falls back to automatic node resolution", async () => {

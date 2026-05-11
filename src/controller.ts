@@ -1455,8 +1455,9 @@ type AgentExecContext = {
 
 type EndpointResolution = {
   endpointId: string;
-  source: "manual" | "auto-node" | "default";
+  source: "manual" | "auto-node" | "agent-default" | "default";
   nodeId?: string;
+  agentId?: string;
 };
 
 function listWorkspaceChoices(
@@ -1567,6 +1568,7 @@ export class CodexPluginController {
 
   async describeAgentEndpoints(): Promise<{
     defaultEndpoint: string;
+    agentEndpoints: Record<string, string>;
     defaultWorkspaceDir: string | null;
     defaultModel: string | null;
     endpoints: Array<{
@@ -1584,6 +1586,7 @@ export class CodexPluginController {
     await this.start();
     return {
       defaultEndpoint: this.settings.defaultEndpoint,
+      agentEndpoints: { ...this.settings.agentEndpoints },
       defaultWorkspaceDir: this.settings.defaultWorkspaceDir ?? null,
       defaultModel: this.settings.defaultModel ?? null,
       endpoints: this.settings.endpoints.map((endpoint, index) => ({
@@ -1619,6 +1622,7 @@ export class CodexPluginController {
     const endpointId = await this.resolveAgentEndpointIdWithNodeFallback(
       params.endpointId,
       params.execContext,
+      params.sessionKey,
     );
     const permissionsMode = this.resolveAgentPermissionsMode(endpointId, params.permissionsMode);
     const workspaceDir = params.includeAllWorkspaces
@@ -1661,6 +1665,7 @@ export class CodexPluginController {
     const endpointId = await this.resolveAgentEndpointIdWithNodeFallback(
       params.endpointId,
       params.execContext,
+      params.sessionKey,
     );
     const permissionsMode = this.resolveAgentPermissionsMode(endpointId, params.permissionsMode);
     const threadId = params.threadId.trim();
@@ -1716,6 +1721,7 @@ export class CodexPluginController {
     const endpointId = await this.resolveAgentEndpointIdWithNodeFallback(
       params.endpointId,
       params.execContext,
+      params.sessionKey,
     );
     const permissionsMode = this.resolveAgentPermissionsMode(endpointId, params.permissionsMode);
     const workspaceDir = resolveWorkspaceDir({
@@ -1817,7 +1823,11 @@ export class CodexPluginController {
     };
   }
 
-  private resolveAgentEndpointId(endpointId?: string, execContext?: AgentExecContext): string {
+  private resolveAgentEndpointId(
+    endpointId?: string,
+    execContext?: AgentExecContext,
+    sessionKey?: string,
+  ): string {
     const requested = endpointId?.trim();
     if (requested) {
       if (!this.settings.endpoints.some((entry) => entry.id === requested)) {
@@ -1829,16 +1839,21 @@ export class CodexPluginController {
     if (inferred) {
       return inferred;
     }
+    const agentEndpointId = this.resolveEndpointIdFromAgentDefault(sessionKey);
+    if (agentEndpointId) {
+      return agentEndpointId;
+    }
     return this.settings.defaultEndpoint;
   }
 
   private async resolveAgentEndpointIdWithNodeFallback(
     endpointId?: string,
     execContext?: AgentExecContext,
+    sessionKey?: string,
   ): Promise<string> {
     const requested = endpointId?.trim();
     if (requested) {
-      return this.resolveAgentEndpointId(requested, execContext);
+      return this.resolveAgentEndpointId(requested, execContext, sessionKey);
     }
     const inferred = this.resolveEndpointIdFromExecContext(execContext);
     if (inferred) {
@@ -1847,6 +1862,10 @@ export class CodexPluginController {
     const derived = await this.tryRegisterNodeDerivedEndpoint(execContext);
     if (derived) {
       return derived;
+    }
+    const agentEndpointId = this.resolveEndpointIdFromAgentDefault(sessionKey);
+    if (agentEndpointId) {
+      return agentEndpointId;
     }
     return this.settings.defaultEndpoint;
   }
@@ -2115,7 +2134,7 @@ export class CodexPluginController {
     config: unknown,
     sessionKey: string | undefined,
   ): AgentExecContext | undefined {
-    const agentId = sessionKey?.trim().match(/^agent:([^:]+):/)?.[1]?.trim();
+    const agentId = this.resolveAgentIdFromSessionKey(sessionKey);
     if (!agentId || !config || typeof config !== "object" || Array.isArray(config)) {
       return undefined;
     }
@@ -2156,6 +2175,18 @@ export class CodexPluginController {
       return undefined;
     }
     return { host, node };
+  }
+
+  private resolveAgentIdFromSessionKey(sessionKey: string | undefined): string | undefined {
+    return sessionKey?.trim().match(/^agent:([^:]+):/)?.[1]?.trim() || undefined;
+  }
+
+  private resolveEndpointIdFromAgentDefault(sessionKey: string | undefined): string | undefined {
+    const agentId = this.resolveAgentIdFromSessionKey(sessionKey);
+    if (!agentId) {
+      return undefined;
+    }
+    return this.settings.agentEndpoints[agentId]?.trim() || undefined;
   }
 
   private resolveConversationSessionKey(
@@ -2232,6 +2263,15 @@ export class CodexPluginController {
         nodeId: execContext?.node?.trim() || undefined,
       };
     }
+    const resolvedSessionKey = this.resolveConversationSessionKey(conversation, sessionKey);
+    const agentEndpointId = this.resolveEndpointIdFromAgentDefault(resolvedSessionKey);
+    if (agentEndpointId) {
+      return {
+        endpointId: agentEndpointId,
+        source: "agent-default",
+        agentId: this.resolveAgentIdFromSessionKey(resolvedSessionKey),
+      };
+    }
     return {
       endpointId: this.settings.defaultEndpoint,
       source: "default",
@@ -2266,6 +2306,15 @@ export class CodexPluginController {
         nodeId: execContext?.node?.trim() || undefined,
       };
     }
+    const resolvedSessionKey = this.resolveConversationSessionKey(conversation, sessionKey);
+    const agentEndpointId = this.resolveEndpointIdFromAgentDefault(resolvedSessionKey);
+    if (agentEndpointId) {
+      return {
+        endpointId: agentEndpointId,
+        source: "agent-default",
+        agentId: this.resolveAgentIdFromSessionKey(resolvedSessionKey),
+      };
+    }
     return {
       endpointId: this.settings.defaultEndpoint,
       source: "default",
@@ -2295,6 +2344,9 @@ export class CodexPluginController {
     }
     if (selection.source === "auto-node") {
       return `${selection.endpointId} (auto from node${selection.nodeId ? `: ${selection.nodeId}` : ""})`;
+    }
+    if (selection.source === "agent-default") {
+      return `${selection.endpointId} (agent default${selection.agentId ? `: ${selection.agentId}` : ""})`;
     }
     return `${selection.endpointId} (default)`;
   }

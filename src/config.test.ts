@@ -24,6 +24,32 @@ describe("config resolution", () => {
     expect(settings.endpoints[1]?.defaultWorkspaceDir).toBe("/home/agent/workspace");
   });
 
+  it("keeps only agent endpoint defaults that reference configured endpoints", () => {
+    const settings = resolvePluginSettings({
+      defaultEndpoint: "default",
+      agentEndpoints: {
+        "karan-nestdev": "nestdev",
+        "unknown-agent": "missing",
+      },
+      endpoints: [
+        {
+          id: "default",
+          transport: "websocket",
+          url: "ws://127.0.0.1:8765",
+        },
+        {
+          id: "nestdev",
+          transport: "websocket",
+          url: "ws://172.23.100.26:8765",
+        },
+      ],
+    });
+
+    expect(settings.agentEndpoints).toEqual({
+      "karan-nestdev": "nestdev",
+    });
+  });
+
   it("prefers requested and binding workspaces before endpoint defaults", () => {
     expect(
       resolveWorkspaceDir({
