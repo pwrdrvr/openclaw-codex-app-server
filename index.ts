@@ -1,4 +1,5 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
+import { createAgentTools } from "./src/agent-tools.js";
 import { CodexPluginController } from "./src/controller.js";
 import { COMMANDS } from "./src/commands.js";
 import { INTERACTIVE_NAMESPACE } from "./src/types.js";
@@ -10,6 +11,17 @@ const plugin = {
     const controller = new CodexPluginController(api);
 
     api.registerService(controller.createService());
+
+    const toolRegistrar = (
+      api as OpenClawPluginApi & {
+        registerTool?: (tool: unknown) => void;
+      }
+    ).registerTool;
+    if (typeof toolRegistrar === "function") {
+      for (const tool of createAgentTools(controller)) {
+        toolRegistrar(tool);
+      }
+    }
 
     const bindingResolvedHook = (
       api as OpenClawPluginApi & {

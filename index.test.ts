@@ -27,6 +27,7 @@ describe("plugin registration", () => {
   it("loads without the binding resolved hook on older OpenClaw cores", () => {
     const api = {
       registerService: vi.fn(),
+      registerTool: vi.fn(),
       registerInteractiveHandler: vi.fn(),
       registerCommand: vi.fn(),
       on: vi.fn(),
@@ -34,6 +35,7 @@ describe("plugin registration", () => {
 
     expect(() => plugin.register(api as never)).not.toThrow();
     expect(api.registerService).toHaveBeenCalledTimes(1);
+    expect(api.registerTool).toHaveBeenCalledTimes(4);
     expect(api.on).toHaveBeenCalledWith("inbound_claim", expect.any(Function));
     expect(api.registerInteractiveHandler).toHaveBeenCalledTimes(2);
     expect(api.registerCommand).toHaveBeenCalled();
@@ -45,6 +47,7 @@ describe("plugin registration", () => {
   it("registers the binding resolved hook when available", () => {
     const api = {
       registerService: vi.fn(),
+      registerTool: vi.fn(),
       registerInteractiveHandler: vi.fn(),
       registerCommand: vi.fn(),
       on: vi.fn(),
