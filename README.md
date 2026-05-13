@@ -115,6 +115,19 @@ Pre-release packages are published on matching npm dist-tags instead of `latest`
 5. Use `/cas_status` to inspect or adjust the binding in place, including model, reasoning, fast mode, permissions, compact, and stop controls.
 6. If you leave plan mode through the normal `Implement this plan` button, you do not need `/cas_plan off`; use `/cas_plan off` only when you want to exit planning manually instead.
 
+## Use With TweetClaw For X/Twitter Workflows
+
+This plugin keeps Telegram and Discord conversations bound to a Codex App Server thread. If that same OpenClaw workspace also needs X/Twitter automation, install [TweetClaw](https://github.com/Xquik-dev/tweetclaw) beside this plugin:
+
+```bash
+openclaw plugins install @xquik/tweetclaw
+openclaw config set tools.alsoAllow '["explore", "tweetclaw"]'
+```
+
+Use this plugin for Telegram/Discord delivery, thread binding, model controls, plans, reviews, and approval handoff. Use TweetClaw for search tweets, search tweet replies, follower export, user lookup, post tweets and replies, media upload/download, direct messages, monitors, webhooks, and giveaway draws.
+
+Keep TweetClaw credentials in TweetClaw config or environment variables on the OpenClaw host. Posts, replies, follows, DMs, monitors, webhooks, and other visible or write actions still go through OpenClaw approval prompts.
+
 ## Command Reference
 
 | Command | What it does | Notes / examples |
