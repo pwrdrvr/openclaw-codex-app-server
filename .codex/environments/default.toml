@@ -3,4 +3,10 @@ version = 1
 name = "default"
 
 [setup]
-script = "pnpm install"
+script = '''
+export NVM_DIR="$HOME/.nvm"
+. "$NVM_DIR/nvm.sh"
+nvm use
+corepack enable pnpm
+pnpm install
+'''

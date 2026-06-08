@@ -8,6 +8,7 @@ import YAML from "yaml";
 const CONFIG_PATH = path.resolve(".agents/project-manager.config.json");
 const DEFAULT_TRACKER_PATH = ".local/work-items.yaml";
 const DEFAULT_LOCAL_ID_PREFIX = "item-";
+const DEFAULT_GH_LIMIT = "500";
 
 function runGh(args) {
   return execFileSync("gh", args, {
@@ -138,7 +139,7 @@ function main() {
       "--state",
       "all",
       "--limit",
-      "500",
+      DEFAULT_GH_LIMIT,
       "--json",
       "number,state,title,url",
     ]),
@@ -152,6 +153,8 @@ function main() {
       String(config.projectNumber),
       "--owner",
       config.projectOwner,
+      "--limit",
+      DEFAULT_GH_LIMIT,
       "--format",
       "json",
     ]),

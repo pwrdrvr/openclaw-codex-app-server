@@ -29,12 +29,20 @@ Buttons are presented for project and thread selection, model switching, and ski
 
 ## Install In OpenClaw
 
-These are the intended install commands for OpenClaw `2026.3.22` and newer, which include the binding and plugin interface this package requires.
+These are the intended install commands for OpenClaw `2026.3.22` and newer.
+
+Compatibility:
+
+| Plugin release | OpenClaw compatibility |
+| --- | --- |
+| `0.6.1+` | `2026.3.22` and newer, including post-`v2026.4.2` local checkouts such as `2026.4.5`, with fallback across the legacy Telegram runtime shim, the `2026.3.31+` outbound adapter, and the generated Discord / Telegram facades used after the channel-specific SDK exports were removed |
+| `0.6.0` | `2026.3.22` through `v2026.4.2`; falls back between the legacy Telegram runtime shim and the `2026.3.31+` outbound adapter, but newer local OpenClaw checkouts break Discord interactive loading because `openclaw/plugin-sdk/discord` is no longer exported |
+| `0.5.x` | `2026.3.22` through `2026.3.30`; Telegram breaks on `2026.3.31+` |
 
 Install:
 
 ```bash
-openclaw plugins install openclaw-codex-app-server
+openclaw plugins install --dangerously-force-unsafe-install openclaw-codex-app-server
 ```
 
 Uninstall:
@@ -43,7 +51,51 @@ Uninstall:
 openclaw plugins uninstall openclaw-codex-app-server
 ```
 
-OpenClaw `2026.3.22` and newer include the required binding and plugin interface changes. If you are testing before that release, use the local developer workflow at the bottom of this document.
+OpenClaw `2026.3.22` and newer include the binding and plugin interface changes this package originally targeted. Plugin `0.6.1+` first tries the public `openclaw/plugin-sdk/discord` and `openclaw/plugin-sdk/telegram-account` paths that existed through released OpenClaw `v2026.4.2`, then falls back to the generated `dist/plugin-sdk/*.js` facades used by newer local checkouts such as `2026.4.5`, while still preserving the older `runtime.channel.telegram` path used by OpenClaw `2026.3.22` through `2026.3.30`. Plugin `0.6.0` covers the Telegram runtime and outbound-adapter split, but not the later Discord facade export removal. Older plugin `0.5.x` releases only match the legacy Telegram path and are not compatible with Telegram on OpenClaw `2026.3.31+`.
+
+> ⚠️ OpenClaw flags this plugin as unsafe because it must launch `codex app-server`. That process spawn is the whole bridge, not an optional extra.
+
+### Updating on OpenClaw `2026.3.31` through at least `2026.4.3`
+
+> ⚠️ On released OpenClaw builds through `2026.4.3`, `plugins update` still cannot accept the unsafe-install flag for this plugin. The fix is merged upstream but not deployed yet, so for now the reliable update path is:
+
+```bash
+openclaw plugins uninstall openclaw-codex-app-server
+openclaw plugins install --dangerously-force-unsafe-install openclaw-codex-app-server
+```
+
+### If install is still blocked on OpenClaw `2026.3.31`
+
+Some OpenClaw `2026.3.31` installs still block this package even with `--dangerously-force-unsafe-install`. That behavior is tracked upstream in [openclaw/openclaw#59241](https://github.com/openclaw/openclaw/issues/59241).
+
+When that happens, use this manual path:
+
+1. Download and unpack the published package into OpenClaw's extension directory.
+
+```bash
+cd /tmp
+npm --userconfig /tmp/empty-npmrc pack openclaw-codex-app-server@latest
+rm -rf /tmp/openclaw-cas
+mkdir -p /tmp/openclaw-cas
+tar -xzf openclaw-codex-app-server-*.tgz -C /tmp/openclaw-cas
+mkdir -p ~/.openclaw/extensions/openclaw-codex-app-server
+cp -R /tmp/openclaw-cas/package/. ~/.openclaw/extensions/openclaw-codex-app-server/
+```
+
+2. Add this plugin id to OpenClaw's allowlist, preserving any existing entries you already have in `plugins.allow`.
+
+```bash
+openclaw config set plugins.allow '["openclaw-codex-app-server"]'
+```
+
+3. Restart the gateway and confirm the plugin loads.
+
+```bash
+openclaw gateway restart
+openclaw plugins inspect openclaw-codex-app-server
+```
+
+If you already allow other plugins, merge `openclaw-codex-app-server` into that existing JSON array instead of replacing it.
 
 Pre-release packages are published on matching npm dist-tags instead of `latest`. For example, a tag such as `v0.3.0-beta.1` publishes to `openclaw-codex-app-server@beta`, so `npm install openclaw-codex-app-server@latest` stays on the newest stable release.
 

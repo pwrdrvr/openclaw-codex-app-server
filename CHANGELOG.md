@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.6.0 - 2026-04-03
+
+### Highlights
+
+- Forwarded inbound image messages into Codex turns for bound conversations, so Telegram image prompts can now reach Codex as multimodal input instead of being dropped. @huntharo (#60)
+- Updated Telegram delivery to work across both the older and newer OpenClaw runtime surfaces by preferring the post-`2026.3.31` outbound adapter when available and safely falling back to the legacy Telegram shim on older hosts. @huntharo (#75)
+- Tightened the install and compatibility guidance for current OpenClaw builds, including the required unsafe-install flag, reinstall-based updates on affected hosts, and clearer `0.5.x` versus `0.6.x` support notes. @huntharo (#78, #80)
+
+### Fixes
+
+- Fell back to thread preview text when Codex returns unnamed resume entries, so `/cas_resume` pickers, exact matches, and initial bind text stay readable and consistent. @huntharo (#63)
+- Fixed the repo-local project sync to request enough GitHub project items, preventing `.local/work-items.yaml` from silently truncating once the board grows past the CLI default page size. @huntharo (#77)
+
+### Compatibility
+
+- This release line supports OpenClaw `2026.3.22` and newer.
+- `v0.6.0+` automatically chooses the new or legacy Telegram runtime surface at startup based on what the host exposes.
+
+### Docs
+
+- Updated the GitHub Sponsors configuration to point at the current username.
+
 ## v0.5.0 - 2026-03-26
 
 ### Highlights

@@ -3,7 +3,7 @@ import { existsSync, promises as fs } from "node:fs";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import type {
   PluginConversationBindingResolvedEvent,
@@ -17,13 +17,6 @@ import type {
   ReplyPayload,
   ConversationRef,
 } from "openclaw/plugin-sdk";
-import {
-  buildDiscordComponentMessage,
-  editDiscordComponentMessage,
-  registerBuiltDiscordComponentMessage,
-  type DiscordComponentMessageSpec,
-  resolveDiscordAccount,
-} from "openclaw/plugin-sdk/discord";
 import { resolvePluginSettings, resolveWorkspaceDir } from "./config.js";
 import { CodexAppServerModeClient, type ActiveCodexRun, isMissingThreadError } from "./client.js";
 import { getThreadDisplayTitle } from "./thread-display.js";
@@ -102,6 +95,71 @@ import {
   type StoredPendingBind,
   type StoredPendingRequest,
 } from "./types.js";
+import {
+  isMissingPluginSdkSubpathError,
+  loadOpenClawCompatModule,
+  resolveOpenClawEntrypointPath,
+  resolveCompatFallbackPath,
+} from "./openclaw-sdk-compat.js";
+
+type DiscordSdkModule = typeof import("openclaw/plugin-sdk/discord");
+type TelegramAccountSdkModule = typeof import("openclaw/plugin-sdk/telegram-account");
+type DiscordComponentMessageSpec = import("openclaw/plugin-sdk/discord").DiscordComponentMessageSpec;
+type DiscordComponentBuildResult = ReturnType<DiscordSdkModule["buildDiscordComponentMessage"]>;
+type DiscordExtensionApiModule = {
+  resolveDiscordAccount?: (params: { cfg: unknown; accountId?: string }) => {
+    token?: string;
+  };
+};
+type DiscordRuntimeApiModule = {
+  editDiscordComponentMessage?: (
+    to: string,
+    messageId: string,
+    spec: DiscordComponentMessageSpec,
+    opts?: {
+      cfg?: unknown;
+      accountId?: string;
+    },
+  ) => Promise<{ messageId: string; channelId: string }>;
+  registerBuiltDiscordComponentMessage?: (params: {
+    buildResult: DiscordComponentBuildResult;
+    messageId: string;
+  }) => void;
+  sendDiscordComponentMessage?: (
+    to: string,
+    spec: DiscordComponentMessageSpec,
+    opts?: {
+      cfg?: unknown;
+      accountId?: string;
+      mediaUrl?: string;
+      mediaLocalRoots?: readonly string[];
+    },
+  ) => Promise<{ messageId: string; channelId: string }>;
+  sendMessageDiscord?: (
+    to: string,
+    text: string,
+    opts?: {
+      cfg?: unknown;
+      accountId?: string;
+      mediaUrl?: string;
+      mediaLocalRoots?: readonly string[];
+    },
+  ) => Promise<{ messageId: string; channelId: string }>;
+  sendTypingDiscord?: (
+    channelId: string,
+    opts?: {
+      cfg?: unknown;
+      accountId?: string;
+    },
+  ) => Promise<unknown>;
+  editChannelDiscord?: (
+    payload: { channelId: string; name?: string },
+    opts?: {
+      cfg?: unknown;
+      accountId?: string;
+    },
+  ) => Promise<unknown>;
+};
 
 type ActiveRunRecord = {
   conversation: ConversationTarget;
@@ -134,6 +192,60 @@ const TEXT_ATTACHMENT_MIME_TYPES = new Set([
   "text/yaml",
 ]);
 const MAX_TEXT_ATTACHMENT_BYTES = 64 * 1024;
+
+type TelegramOutboundAdapter = {
+  sendText?: (ctx: {
+    cfg: unknown;
+    to: string;
+    text: string;
+    accountId?: string;
+    threadId?: string | number;
+  }) => Promise<{ messageId: string; chatId?: string }>;
+  sendMedia?: (ctx: {
+    cfg: unknown;
+    to: string;
+    text: string;
+    mediaUrl: string;
+    accountId?: string;
+    threadId?: string | number;
+    mediaLocalRoots?: readonly string[];
+  }) => Promise<{ messageId: string; chatId?: string }>;
+  sendPayload?: (ctx: {
+    cfg: unknown;
+    to: string;
+    payload: ReplyPayload;
+    accountId?: string;
+    threadId?: string | number;
+    mediaLocalRoots?: readonly string[];
+  }) => Promise<{ messageId: string; chatId?: string }>;
+};
+
+type DiscordOutboundAdapter = {
+  sendText?: (ctx: {
+    cfg: unknown;
+    to: string;
+    text: string;
+    accountId?: string;
+    threadId?: string | number;
+  }) => Promise<{ messageId: string; channelId?: string }>;
+  sendMedia?: (ctx: {
+    cfg: unknown;
+    to: string;
+    text: string;
+    mediaUrl: string;
+    accountId?: string;
+    threadId?: string | number;
+    mediaLocalRoots?: readonly string[];
+  }) => Promise<{ messageId: string; channelId?: string }>;
+  sendPayload?: (ctx: {
+    cfg: unknown;
+    to: string;
+    payload: ReplyPayload;
+    accountId?: string;
+    threadId?: string | number;
+    mediaLocalRoots?: readonly string[];
+  }) => Promise<{ messageId: string; channelId?: string }>;
+};
 const MAX_TEXT_ATTACHMENT_CHARS = 16_000;
 const PLUGIN_VERSION = (() => {
   try {
@@ -356,6 +468,77 @@ function normalizeDiscordInteractiveConversationId(params: {
   return params.guildId ? `channel:${normalized}` : `user:${normalized}`;
 }
 
+function readCommandContextId(ctx: PluginCommandContext, key: string): string | undefined {
+  const value = asRecord(ctx)?.[key];
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed || undefined;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(Math.trunc(value));
+  }
+  return undefined;
+}
+
+function normalizeDiscordChannelConversationId(raw?: string): string | undefined {
+  const normalized = normalizeDiscordConversationId(raw);
+  if (!normalized) {
+    return undefined;
+  }
+  return normalized.includes(":") ? normalized : `channel:${normalized}`;
+}
+
+function resolveDiscordCommandConversation(
+  ctx: PluginCommandContext,
+): ConversationTarget | null {
+  const threadConversationId = normalizeDiscordChannelConversationId(
+    readCommandContextId(ctx, "messageThreadId"),
+  );
+  if (threadConversationId) {
+    return {
+      channel: "discord",
+      accountId: ctx.accountId ?? "default",
+      conversationId: threadConversationId,
+      parentConversationId: normalizeDiscordChannelConversationId(
+        readCommandContextId(ctx, "threadParentId"),
+      ),
+    };
+  }
+  const candidates = [ctx.from, ctx.to]
+    .map((raw) => {
+      const normalized = normalizeDiscordConversationId(raw);
+      if (!normalized) {
+        return undefined;
+      }
+      const kind = normalized.startsWith("channel:")
+        ? 2
+        : normalized.startsWith("user:")
+          ? 1
+          : 0;
+      return {
+        raw: raw?.trim() ?? "",
+        normalized,
+        kind,
+      };
+    })
+    .filter((candidate): candidate is { raw: string; normalized: string; kind: number } =>
+      Boolean(candidate),
+    );
+  if (candidates.length === 0) {
+    return null;
+  }
+  candidates.sort((left, right) => right.kind - left.kind);
+  const conversationId = candidates[0]?.normalized;
+  if (!conversationId) {
+    return null;
+  }
+  return {
+    channel: "discord",
+    accountId: ctx.accountId ?? "default",
+    conversationId,
+  };
+}
+
 function toConversationTargetFromCommand(ctx: PluginCommandContext): ConversationTarget | null {
   if (isTelegramChannel(ctx.channel)) {
     const chatId = normalizeTelegramChatId(ctx.to ?? ctx.from ?? ctx.senderId);
@@ -368,24 +551,11 @@ function toConversationTargetFromCommand(ctx: PluginCommandContext): Conversatio
       conversationId:
         typeof ctx.messageThreadId === "number" ? `${chatId}:topic:${ctx.messageThreadId}` : chatId,
       parentConversationId: typeof ctx.messageThreadId === "number" ? chatId : undefined,
-      threadId: ctx.messageThreadId,
+      threadId: typeof ctx.messageThreadId === "number" ? ctx.messageThreadId : undefined,
     };
   }
   if (isDiscordChannel(ctx.channel)) {
-    // In brand-new Discord threads, the slash interaction may place the slash
-    // user identity in ctx.from (e.g. "slash:user-id") while ctx.to holds the
-    // real channel target. Prefer ctx.to when ctx.from is a slash identity so
-    // /cas_resume resolves to the correct channel from the first attempt.
-    const sourceId = ctx.from?.startsWith("slash:") ? ctx.to : (ctx.from ?? ctx.to);
-    const conversationId = normalizeDiscordConversationId(sourceId);
-    if (!conversationId) {
-      return null;
-    }
-    return {
-      channel: "discord",
-      accountId: ctx.accountId ?? "default",
-      conversationId,
-    };
+    return resolveDiscordCommandConversation(ctx);
   }
   return null;
 }
@@ -433,13 +603,15 @@ function toConversationTargetFromInbound(event: {
     conversationId,
     parentConversationId,
     threadId:
-      typeof event.threadId === "number"
-        ? event.threadId
-        : typeof event.threadId === "string"
-          ? Number.isFinite(Number(event.threadId))
-            ? Number(event.threadId)
-            : undefined
-          : undefined,
+      channel === "discord"
+        ? undefined
+        : typeof event.threadId === "number"
+          ? event.threadId
+          : typeof event.threadId === "string"
+            ? Number.isFinite(Number(event.threadId))
+              ? Number(event.threadId)
+              : undefined
+            : undefined,
   };
 }
 
@@ -1545,7 +1717,7 @@ export class CodexPluginController {
               callback.kind === "pending-questionnaire"
                 ? "Recorded your answers and sent them to Codex."
                 : "Sent to Codex.";
-            await editDiscordComponentMessage(
+            await this.editDiscordComponentMessage(
               conversation.conversationId,
               messageId,
               {
@@ -1586,26 +1758,42 @@ export class CodexPluginController {
             `codex discord picker refresh conversation=${conversationId} rows=${picker.buttons?.length ?? 0}`,
           );
           const messageId = ctx.interaction.messageId?.trim();
-          const builtPicker = this.buildDiscordPickerMessage(picker);
-          try {
-            await ctx.respond.editMessage({
-              components: builtPicker.components,
-            });
-            interactionSettled = true;
-            if (messageId) {
-              registerBuiltDiscordComponentMessage({
-                buildResult: builtPicker,
-                messageId,
+          const builtPicker = await this.tryBuildDiscordPickerMessage(picker);
+          let alreadyAcknowledged = false;
+          if (builtPicker) {
+            try {
+              await ctx.respond.editMessage({
+                components: builtPicker.components,
               });
+              interactionSettled = true;
+              if (messageId) {
+                await this.registerBuiltDiscordComponentMessage({
+                  buildResult: builtPicker,
+                  messageId,
+                });
+              }
+              return;
+            } catch (error) {
+              const detail = String(error);
+              if (!messageId) {
+                this.api.logger.warn(
+                  `codex discord picker edit failed conversation=${conversationId}: ${detail}`,
+                );
+              } else if (!detail.includes("already been acknowledged")) {
+                await ctx.respond
+                  .acknowledge()
+                  .then(() => {
+                    interactionSettled = true;
+                  })
+                  .catch(() => undefined);
+              } else {
+                alreadyAcknowledged = true;
+              }
             }
-            return;
-          } catch (error) {
-            const detail = String(error);
-            this.api.logger.warn(
-              `codex discord picker edit failed conversation=${conversationId}: ${detail}`,
-            );
-            if (messageId) {
-              if (!detail.includes("already been acknowledged")) {
+          }
+          if (messageId) {
+            try {
+              if (!interactionSettled && !alreadyAcknowledged) {
                 await ctx.respond
                   .acknowledge()
                   .then(() => {
@@ -1613,7 +1801,7 @@ export class CodexPluginController {
                   })
                   .catch(() => undefined);
               }
-              await editDiscordComponentMessage(
+              await this.editDiscordComponentMessage(
                 conversation.conversationId,
                 messageId,
                 this.buildDiscordPickerSpec(picker),
@@ -1622,9 +1810,20 @@ export class CodexPluginController {
                 },
               );
               return;
+            } catch (error) {
+              this.api.logger.warn(
+                `codex discord picker edit failed conversation=${conversationId}: ${String(error)}`,
+              );
             }
           }
-          await this.sendDiscordPicker(conversation, picker);
+          try {
+            await this.sendDiscordPicker(conversation, picker);
+          } catch (error) {
+            this.api.logger.warn(
+              `codex discord picker send failed conversation=${conversationId}: ${String(error)}`,
+            );
+            throw error;
+          }
         },
         requestConversationBinding: async (params) => {
           const requestConversationBinding = bindingApi.requestConversationBinding;
@@ -1640,7 +1839,7 @@ export class CodexPluginController {
             });
             const originalMessageId = ctx.interaction.messageId?.trim();
             if (callback.kind === "resume-thread" && originalMessageId) {
-              await editDiscordComponentMessage(
+              await this.editDiscordComponentMessage(
                 conversation.conversationId,
                 originalMessageId,
                 {
@@ -1679,8 +1878,7 @@ export class CodexPluginController {
         ? await bindingApi.getCurrentConversationBinding()
         : null;
     const pendingBind = conversation ? this.store.getPendingBind(conversation) : null;
-    const existingBinding =
-      conversation && currentBinding ? this.store.getBinding(conversation) : null;
+    const existingBinding = conversation ? this.store.getBinding(conversation) : null;
     const hydratedBinding =
       conversation && currentBinding && !existingBinding
         ? await this.hydrateApprovedBinding(conversation)
@@ -2438,11 +2636,11 @@ export class CodexPluginController {
         });
         return true;
       }
-      const builtPicker = this.buildDiscordPickerMessage({
+      const builtPicker = await this.buildDiscordPickerMessage({
         text: statusCard.text,
         buttons: statusCard.buttons,
-      });
-      await editDiscordComponentMessage(
+      }).catch(() => undefined);
+      await this.editDiscordComponentMessage(
         message.channelId,
         message.messageId,
         this.buildDiscordPickerSpec({
@@ -2453,10 +2651,12 @@ export class CodexPluginController {
           accountId: conversation.accountId,
         },
       );
-      registerBuiltDiscordComponentMessage({
-        buildResult: builtPicker,
-        messageId: message.messageId,
-      });
+      if (builtPicker) {
+        await this.registerBuiltDiscordComponentMessage({
+          buildResult: builtPicker,
+          messageId: message.messageId,
+        });
+      }
       return true;
     } catch (error) {
       this.api.logger.warn(
@@ -4793,13 +4993,91 @@ export class CodexPluginController {
     this.api.logger.debug(
       `codex discord picker send conversation=${conversation.conversationId} rows=${picker.buttons?.length ?? 0}`,
     );
-    await this.api.runtime.channel.discord.sendComponentMessage(
-      conversation.conversationId,
-      this.buildDiscordPickerSpec(picker),
-      {
+    const outbound = await this.loadDiscordOutboundAdapter();
+    if (outbound?.sendPayload) {
+      await outbound.sendPayload({
+        cfg: this.getOpenClawConfig(),
+        to: conversation.conversationId,
         accountId: conversation.accountId,
-      },
-    );
+        payload: {
+          text: picker.text,
+          channelData: {
+            discord: {
+              components: this.buildDiscordPickerSpec(picker),
+            },
+          },
+        },
+      });
+      return;
+    }
+    const legacySend = (this.api.runtime.channel as {
+      discord?: {
+        sendComponentMessage?: (
+          to: string,
+          spec: DiscordComponentMessageSpec,
+          opts?: { accountId?: string },
+        ) => Promise<unknown>;
+      };
+    }).discord?.sendComponentMessage;
+    if (typeof legacySend === "function") {
+      await legacySend(
+        conversation.conversationId,
+        this.buildDiscordPickerSpec(picker),
+        {
+          accountId: conversation.accountId,
+        },
+      );
+      return;
+    }
+    const runtimeApi = await this.loadDiscordRuntimeApi();
+    if (typeof runtimeApi?.sendDiscordComponentMessage === "function") {
+      await runtimeApi.sendDiscordComponentMessage(
+        conversation.conversationId,
+        this.buildDiscordPickerSpec(picker),
+        {
+          cfg: this.getOpenClawConfig(),
+          accountId: conversation.accountId,
+        },
+      );
+      return;
+    }
+    throw new Error("Discord component messaging is unavailable.");
+  }
+
+  private async sendDiscordPickerMessageLegacy(
+    conversation: ConversationTarget,
+    picker: PickerRender,
+  ): Promise<unknown> {
+    const legacySend = (this.api.runtime.channel as {
+      discord?: {
+        sendComponentMessage?: (
+          to: string,
+          spec: DiscordComponentMessageSpec,
+          opts?: { accountId?: string },
+        ) => Promise<unknown>;
+      };
+    }).discord?.sendComponentMessage;
+    if (typeof legacySend === "function") {
+      return await legacySend(
+        conversation.conversationId,
+        this.buildDiscordPickerSpec(picker),
+        {
+          accountId: conversation.accountId,
+        },
+      );
+    }
+    const runtimeApi = await this.loadDiscordRuntimeApi();
+    if (typeof runtimeApi?.sendDiscordComponentMessage === "function") {
+      return await runtimeApi.sendDiscordComponentMessage(
+        conversation.conversationId,
+        this.buildDiscordPickerSpec(picker),
+        {
+          cfg: this.getOpenClawConfig(),
+          accountId: conversation.accountId,
+        },
+      );
+    }
+    throw new Error("Discord component messaging is unavailable.");
   }
 
   private buildDiscordPickerSpec(picker: PickerRender): DiscordComponentMessageSpec {
@@ -4816,10 +5094,117 @@ export class CodexPluginController {
     };
   }
 
-  private buildDiscordPickerMessage(picker: PickerRender) {
-    return buildDiscordComponentMessage({
+  private async buildDiscordPickerMessage(
+    picker: PickerRender,
+  ): Promise<DiscordComponentBuildResult> {
+    const discordSdk = await this.loadDiscordSdk();
+    return discordSdk.buildDiscordComponentMessage({
       spec: this.buildDiscordPickerSpec(picker),
     });
+  }
+
+  private async tryBuildDiscordPickerMessage(
+    picker: PickerRender,
+  ): Promise<DiscordComponentBuildResult | undefined> {
+    try {
+      return await this.buildDiscordPickerMessage(picker);
+    } catch (error) {
+      if (!isMissingPluginSdkSubpathError(error, "openclaw/plugin-sdk/discord")) {
+        this.api.logger.debug?.(`codex discord picker build fallback: ${String(error)}`);
+      }
+      return undefined;
+    }
+  }
+
+  private async loadDiscordSdk(): Promise<DiscordSdkModule> {
+    return await loadOpenClawCompatModule<DiscordSdkModule>({
+      specifier: "openclaw/plugin-sdk/discord",
+      fallbackRelativePath: "dist/plugin-sdk/discord.js",
+      label: "discord",
+      logger: this.api.logger,
+    });
+  }
+
+  private async loadTelegramAccountSdk(): Promise<TelegramAccountSdkModule> {
+    return await loadOpenClawCompatModule<TelegramAccountSdkModule>({
+      specifier: "openclaw/plugin-sdk/telegram-account",
+      fallbackRelativePath: "dist/plugin-sdk/telegram-account.js",
+      label: "telegram account",
+      logger: this.api.logger,
+    });
+  }
+
+  private async loadDiscordRuntimeApi(): Promise<DiscordRuntimeApiModule | undefined> {
+    try {
+      const openClawEntrypointPath = resolveOpenClawEntrypointPath();
+      const runtimeApiPath = resolveCompatFallbackPath(
+        openClawEntrypointPath,
+        "dist/extensions/discord/runtime-api.js",
+      );
+      if (!existsSync(runtimeApiPath)) {
+        return undefined;
+      }
+      return (await import(pathToFileURL(runtimeApiPath).href)) as DiscordRuntimeApiModule;
+    } catch (error) {
+      this.api.logger.debug?.(`codex discord runtime api unavailable: ${String(error)}`);
+      return undefined;
+    }
+  }
+
+  private async loadDiscordExtensionApi(): Promise<DiscordExtensionApiModule | undefined> {
+    try {
+      const openClawEntrypointPath = resolveOpenClawEntrypointPath();
+      const apiPath = resolveCompatFallbackPath(
+        openClawEntrypointPath,
+        "dist/extensions/discord/api.js",
+      );
+      if (!existsSync(apiPath)) {
+        return undefined;
+      }
+      return (await import(pathToFileURL(apiPath).href)) as DiscordExtensionApiModule;
+    } catch (error) {
+      this.api.logger.debug?.(`codex discord extension api unavailable: ${String(error)}`);
+      return undefined;
+    }
+  }
+
+  private async editDiscordComponentMessage(
+    to: string,
+    messageId: string,
+    spec: DiscordComponentMessageSpec,
+    opts?: { accountId?: string },
+  ): Promise<{ messageId: string; channelId: string }> {
+    try {
+      const discordSdk = await this.loadDiscordSdk();
+      return await discordSdk.editDiscordComponentMessage(to, messageId, spec, opts);
+    } catch (error) {
+      const runtimeApi = await this.loadDiscordRuntimeApi();
+      if (typeof runtimeApi?.editDiscordComponentMessage === "function") {
+        return await runtimeApi.editDiscordComponentMessage(to, messageId, spec, {
+          cfg: this.getOpenClawConfig(),
+          accountId: opts?.accountId,
+        });
+      }
+      throw error;
+    }
+  }
+
+  private async registerBuiltDiscordComponentMessage(params: {
+    buildResult: DiscordComponentBuildResult;
+    messageId: string;
+  }): Promise<void> {
+    try {
+      const discordSdk = await this.loadDiscordSdk();
+      discordSdk.registerBuiltDiscordComponentMessage(params);
+      return;
+    } catch (error) {
+      const runtimeApi = await this.loadDiscordRuntimeApi();
+      if (typeof runtimeApi?.registerBuiltDiscordComponentMessage === "function") {
+        runtimeApi.registerBuiltDiscordComponentMessage(params);
+        return;
+      }
+      throw error;
+    }
   }
 
   private async dispatchCallbackAction(
@@ -6317,6 +6702,7 @@ export class CodexPluginController {
       `codex outbound send start ${this.formatConversationForLog(conversation)} textChars=${text.length} media=${hasMedia ? "yes" : "no"} buttons=${payload.buttons?.length ?? 0} preview="${summarizeTextForLog(text, 80)}"`,
     );
     if (isTelegramChannel(conversation.channel)) {
+      const outbound = await this.loadTelegramOutboundAdapter();
       const mediaLocalRoots = this.resolveReplyMediaLocalRoots(payload.mediaUrl);
       const limit = this.api.runtime.channel.text.resolveTextChunkLimit(
         undefined,
@@ -6324,76 +6710,74 @@ export class CodexPluginController {
         conversation.accountId,
         { fallbackLimit: 4000 },
       );
-      const runtimeSendTelegram = (this.api.runtime.channel.telegram as any)?.sendMessageTelegram as
-        | ((...args: any[]) => Promise<{ messageId: string; chatId: string }>)
-        | undefined;
-      const telegramToken = runtimeSendTelegram
-        ? undefined
-        : await this.resolveTelegramBotToken(conversation.accountId);
-      const sendTelegram = async (
-        chunk: string,
-        opts?: {
-          buttons?: PluginInteractiveButtons;
-          mediaUrl?: string;
-          mediaLocalRoots?: readonly string[];
-        },
-      ): Promise<{ messageId: string; chatId: string }> => {
-        if (runtimeSendTelegram) {
-          return await runtimeSendTelegram(
-            conversation.parentConversationId ?? conversation.conversationId,
-            chunk,
-            {
-              accountId: conversation.accountId,
-              messageThreadId: conversation.threadId,
-              mediaUrl: opts?.mediaUrl,
-              mediaLocalRoots: opts?.mediaLocalRoots,
-              buttons: opts?.buttons,
-            },
-          );
-        }
-        if (!telegramToken) {
-          throw new Error("Telegram send unavailable");
-        }
-        if (opts?.mediaUrl) {
-          throw new Error("Telegram media send unavailable");
-        }
-        return await this.callTelegramSendMessageApi(telegramToken, {
-          chat_id: conversation.parentConversationId ?? conversation.conversationId,
-          text: chunk,
-          ...(conversation.threadId != null
-            ? { message_thread_id: conversation.threadId }
-            : {}),
-          ...(opts?.buttons ? { reply_markup: buildTelegramReplyMarkup(opts.buttons) } : {}),
-        });
-      };
       const chunks = text
         ? this.api.runtime.channel.text.chunkText(text, limit).filter(Boolean)
         : [];
       let delivered: DeliveredMessageRef | null = null;
       if (hasMedia) {
-        const result = await sendTelegram(chunks[0] ?? text, {
-          mediaUrl: payload.mediaUrl,
-          mediaLocalRoots,
-          buttons: chunks.length <= 1 ? payload.buttons : undefined,
-        });
+        const result =
+          chunks.length <= 1 && payload.buttons && outbound?.sendPayload
+            ? await outbound.sendPayload({
+                cfg: this.getOpenClawConfig(),
+                to: conversation.parentConversationId ?? conversation.conversationId,
+                accountId: conversation.accountId,
+                threadId: conversation.threadId,
+                mediaLocalRoots,
+                payload: {
+                  text: chunks[0] ?? text,
+                  mediaUrl: payload.mediaUrl,
+                  channelData: {
+                    telegram: {
+                      buttons: payload.buttons,
+                    },
+                  },
+                },
+              })
+            : await this.sendTelegramMediaChunk(outbound, conversation, chunks[0] ?? text, {
+                mediaUrl: payload.mediaUrl,
+                mediaLocalRoots,
+                buttons: chunks.length <= 1 ? payload.buttons : undefined,
+              });
         delivered = {
           provider: "telegram",
           messageId: result.messageId,
-          chatId: result.chatId,
+          chatId:
+            typeof result.chatId === "string"
+              ? result.chatId
+              : conversation.parentConversationId ?? conversation.conversationId,
         };
         for (let index = 1; index < chunks.length; index += 1) {
           const chunk = chunks[index];
           if (!chunk) {
             continue;
           }
-          const result = await sendTelegram(chunk, {
-            buttons: index === chunks.length - 1 ? payload.buttons : undefined,
-          });
+          const result =
+            index === chunks.length - 1 && payload.buttons && outbound?.sendPayload
+              ? await outbound.sendPayload({
+                  cfg: this.getOpenClawConfig(),
+                  to: conversation.parentConversationId ?? conversation.conversationId,
+                  accountId: conversation.accountId,
+                  threadId: conversation.threadId,
+                  payload: {
+                    text: chunk,
+                    channelData: {
+                      telegram: {
+                        buttons: payload.buttons,
+                      },
+                    },
+                  },
+                })
+                : await this.sendTelegramTextChunk(outbound, conversation, chunk, {
+                  buttons: index === chunks.length - 1 ? payload.buttons : undefined,
+                });
           if (index === chunks.length - 1 || !delivered) {
             delivered = {
               provider: "telegram",
               messageId: result.messageId,
-              chatId: result.chatId,
+              chatId:
+                typeof result.chatId === "string"
+                  ? result.chatId
+                  : conversation.parentConversationId ?? conversation.conversationId,
             };
           }
         }
@@ -6408,14 +6792,33 @@ export class CodexPluginController {
         if (!chunk) {
           continue;
         }
-        const result = await sendTelegram(chunk, {
-          buttons: index === textChunks.length - 1 ? payload.buttons : undefined,
-        });
+        const result =
+          index === textChunks.length - 1 && payload.buttons && outbound?.sendPayload
+            ? await outbound.sendPayload({
+                cfg: this.getOpenClawConfig(),
+                to: conversation.parentConversationId ?? conversation.conversationId,
+                accountId: conversation.accountId,
+                threadId: conversation.threadId,
+                payload: {
+                  text: chunk,
+                  channelData: {
+                    telegram: {
+                      buttons: payload.buttons,
+                    },
+                  },
+                },
+              })
+              : await this.sendTelegramTextChunk(outbound, conversation, chunk, {
+                buttons: index === textChunks.length - 1 ? payload.buttons : undefined,
+              });
         if (!delivered || index === textChunks.length - 1) {
           delivered = {
             provider: "telegram",
             messageId: result.messageId,
-            chatId: result.chatId,
+            chatId:
+              typeof result.chatId === "string"
+                ? result.chatId
+                : conversation.parentConversationId ?? conversation.conversationId,
           };
         }
       }
@@ -6425,6 +6828,7 @@ export class CodexPluginController {
       return delivered;
     }
     if (isDiscordChannel(conversation.channel)) {
+      const outbound = await this.loadDiscordOutboundAdapter();
       const mediaLocalRoots = this.resolveReplyMediaLocalRoots(payload.mediaUrl);
       const limit = this.api.runtime.channel.text.resolveTextChunkLimit(
         undefined,
@@ -6442,51 +6846,55 @@ export class CodexPluginController {
         );
         const attachmentChunk = hasMedia ? (chunks.shift() ?? text) : undefined;
         if (hasMedia) {
-          const result = await this.api.runtime.channel.discord.sendMessageDiscord(
-            conversation.conversationId,
-            attachmentChunk ?? "",
-            {
-              accountId: conversation.accountId,
-              mediaUrl: payload.mediaUrl,
-              mediaLocalRoots,
-            },
-          );
+          const result = await this.sendDiscordTextChunk(outbound, conversation, attachmentChunk ?? "", {
+            mediaUrl: payload.mediaUrl,
+            mediaLocalRoots,
+          });
           delivered = {
             provider: "discord",
             messageId: result.messageId,
-            channelId: result.channelId,
+            channelId:
+              typeof result.channelId === "string"
+                ? result.channelId
+                : conversation.conversationId,
           };
         }
         const finalChunk = chunks.pop() ?? (hasMedia ? "" : text);
         for (const chunk of chunks) {
-          const result = await this.api.runtime.channel.discord.sendMessageDiscord(conversation.conversationId, chunk, {
-            accountId: conversation.accountId,
-          });
+          const result = await this.sendDiscordTextChunk(outbound, conversation, chunk);
           if (!delivered) {
             delivered = {
               provider: "discord",
               messageId: result.messageId,
-              channelId: result.channelId,
+              channelId:
+                typeof result.channelId === "string"
+                  ? result.channelId
+                  : conversation.conversationId,
             };
           }
         }
-        const result = await this.api.runtime.channel.discord.sendComponentMessage(
-          conversation.conversationId,
-          {
-            text: finalChunk,
-            blocks: payload.buttons.map((row) => ({
-              type: "actions" as const,
-              buttons: row.map((button) => ({
-                label: truncateDiscordLabel(button.text),
-                style: "primary" as const,
-                callbackData: button.callback_data,
-              })),
-            })),
-          },
-          {
-            accountId: conversation.accountId,
-          },
-        );
+        const result = outbound?.sendPayload
+          ? await outbound.sendPayload({
+              cfg: this.getOpenClawConfig(),
+              to: conversation.conversationId,
+              accountId: conversation.accountId,
+              mediaLocalRoots,
+              payload: {
+                text: finalChunk,
+                channelData: {
+                  discord: {
+                    components: this.buildDiscordPickerSpec({
+                      text: finalChunk,
+                      buttons: payload.buttons,
+                    }),
+                  },
+                },
+              },
+            })
+          : await this.sendDiscordPickerMessageLegacy(conversation, {
+              text: finalChunk,
+              buttons: payload.buttons,
+            });
         if (
           result &&
           typeof result === "object" &&
@@ -6496,7 +6904,10 @@ export class CodexPluginController {
           delivered = {
             provider: "discord",
             messageId: (result as { messageId: string }).messageId,
-            channelId: (result as { channelId: string }).channelId,
+            channelId:
+              typeof (result as { channelId?: unknown }).channelId === "string"
+                ? (result as { channelId: string }).channelId
+                : conversation.conversationId,
           };
         }
         this.api.logger.debug?.(
@@ -6507,33 +6918,30 @@ export class CodexPluginController {
       const textChunks = chunks.length > 0 ? chunks : [text];
       if (hasMedia) {
         const firstChunk = textChunks.shift() ?? "";
-        const result = await this.api.runtime.channel.discord.sendMessageDiscord(
-          conversation.conversationId,
-          firstChunk,
-          {
-            accountId: conversation.accountId,
-            mediaUrl: payload.mediaUrl,
-            mediaLocalRoots,
-          },
-        );
+        const result = await this.sendDiscordTextChunk(outbound, conversation, firstChunk, {
+          mediaUrl: payload.mediaUrl,
+          mediaLocalRoots,
+        });
         delivered = {
           provider: "discord",
           messageId: result.messageId,
-          channelId: result.channelId,
+          channelId:
+            typeof result.channelId === "string" ? result.channelId : conversation.conversationId,
         };
       }
       for (const chunk of textChunks) {
         if (!chunk) {
           continue;
         }
-        const result = await this.api.runtime.channel.discord.sendMessageDiscord(conversation.conversationId, chunk, {
-          accountId: conversation.accountId,
-        });
+        const result = await this.sendDiscordTextChunk(outbound, conversation, chunk);
         if (!delivered) {
           delivered = {
             provider: "discord",
             messageId: result.messageId,
-            channelId: result.channelId,
+            channelId:
+              typeof result.channelId === "string"
+                ? result.channelId
+                : conversation.conversationId,
           };
         }
       }
@@ -6543,6 +6951,211 @@ export class CodexPluginController {
       return delivered;
     }
     return null;
+  }
+
+  private getOpenClawConfig(): unknown {
+    return this.lastRuntimeConfig ?? (this.api as OpenClawPluginApi & { config?: unknown }).config;
+  }
+
+  private async loadTelegramOutboundAdapter(): Promise<TelegramOutboundAdapter | undefined> {
+    const loadAdapter = this.api.runtime.channel.outbound?.loadAdapter;
+    if (typeof loadAdapter !== "function") {
+      return undefined;
+    }
+    return (await loadAdapter("telegram")) as TelegramOutboundAdapter | undefined;
+  }
+
+  private async loadDiscordOutboundAdapter(): Promise<DiscordOutboundAdapter | undefined> {
+    const loadAdapter = this.api.runtime.channel.outbound?.loadAdapter;
+    if (typeof loadAdapter !== "function") {
+      return undefined;
+    }
+    return (await loadAdapter("discord")) as DiscordOutboundAdapter | undefined;
+  }
+
+  private async sendTelegramTextChunk(
+    outbound: TelegramOutboundAdapter | undefined,
+    conversation: ConversationTarget,
+    text: string,
+    opts?: { buttons?: PluginInteractiveButtons },
+  ): Promise<{ messageId: string; chatId?: string }> {
+    const target = conversation.parentConversationId ?? conversation.conversationId;
+    const buttons = opts?.buttons;
+    if (buttons && outbound?.sendPayload) {
+      return await outbound.sendPayload({
+        cfg: this.getOpenClawConfig(),
+        to: target,
+        payload: {
+          text,
+          channelData: {
+            telegram: {
+              buttons,
+            },
+          },
+        },
+        accountId: conversation.accountId,
+        threadId: conversation.threadId,
+      });
+    }
+    const legacySend = this.api.runtime.channel.telegram?.sendMessageTelegram;
+    if (buttons && typeof legacySend === "function") {
+      return await legacySend(target, text, {
+        accountId: conversation.accountId,
+        messageThreadId: typeof conversation.threadId === "number" ? conversation.threadId : undefined,
+        buttons,
+      });
+    }
+    if (outbound?.sendText) {
+      return await outbound.sendText({
+        cfg: this.getOpenClawConfig(),
+        to: target,
+        text,
+        accountId: conversation.accountId,
+        threadId: conversation.threadId,
+      });
+    }
+    if (typeof legacySend !== "function") {
+      const token = await this.resolveTelegramBotToken(conversation.accountId);
+      if (!token) {
+        throw new Error("Telegram send runtime unavailable");
+      }
+      return await this.callTelegramSendMessageApi(token, {
+        chat_id: target,
+        text,
+        ...(typeof conversation.threadId === "number"
+          ? { message_thread_id: conversation.threadId }
+          : {}),
+        ...(buttons ? { reply_markup: buildTelegramReplyMarkup(buttons) } : {}),
+      });
+    }
+    return await legacySend(target, text, {
+      accountId: conversation.accountId,
+      messageThreadId: typeof conversation.threadId === "number" ? conversation.threadId : undefined,
+      buttons,
+    });
+  }
+
+  private async sendTelegramMediaChunk(
+    outbound: TelegramOutboundAdapter | undefined,
+    conversation: ConversationTarget,
+    text: string,
+    opts: {
+      mediaUrl?: string;
+      mediaLocalRoots?: readonly string[];
+      buttons?: PluginInteractiveButtons;
+    },
+  ): Promise<{ messageId: string; chatId?: string }> {
+    if (!opts.mediaUrl) {
+      throw new Error("Telegram media send requires mediaUrl");
+    }
+    const target = conversation.parentConversationId ?? conversation.conversationId;
+    if (opts.buttons && outbound?.sendPayload) {
+      return await outbound.sendPayload({
+        cfg: this.getOpenClawConfig(),
+        to: target,
+        payload: {
+          text,
+          mediaUrl: opts.mediaUrl,
+          channelData: {
+            telegram: {
+              buttons: opts.buttons,
+            },
+          },
+        },
+        mediaLocalRoots: opts.mediaLocalRoots,
+        accountId: conversation.accountId,
+        threadId: conversation.threadId,
+      });
+    }
+    const legacySend = this.api.runtime.channel.telegram?.sendMessageTelegram;
+    if (opts.buttons && typeof legacySend === "function") {
+      return await legacySend(target, text, {
+        accountId: conversation.accountId,
+        messageThreadId: typeof conversation.threadId === "number" ? conversation.threadId : undefined,
+        mediaUrl: opts.mediaUrl,
+        mediaLocalRoots: opts.mediaLocalRoots,
+        buttons: opts.buttons,
+      });
+    }
+    if (outbound?.sendMedia) {
+      return await outbound.sendMedia({
+        cfg: this.getOpenClawConfig(),
+        to: target,
+        text,
+        mediaUrl: opts.mediaUrl,
+        mediaLocalRoots: opts.mediaLocalRoots,
+        accountId: conversation.accountId,
+        threadId: conversation.threadId,
+      });
+    }
+    if (typeof legacySend !== "function") {
+      throw new Error("Telegram media send runtime unavailable");
+    }
+    return await legacySend(target, text, {
+      accountId: conversation.accountId,
+      messageThreadId: typeof conversation.threadId === "number" ? conversation.threadId : undefined,
+      mediaUrl: opts.mediaUrl,
+      mediaLocalRoots: opts.mediaLocalRoots,
+      buttons: opts.buttons,
+    });
+  }
+
+  private async sendDiscordTextChunk(
+    outbound: DiscordOutboundAdapter | undefined,
+    conversation: ConversationTarget,
+    text: string,
+    opts?: { mediaUrl?: string; mediaLocalRoots?: readonly string[] },
+  ): Promise<{ messageId: string; channelId?: string }> {
+    const mediaUrl = opts?.mediaUrl;
+    const mediaLocalRoots = opts?.mediaLocalRoots;
+    if (mediaUrl && outbound?.sendMedia) {
+      return await outbound.sendMedia({
+        cfg: this.getOpenClawConfig(),
+        to: conversation.conversationId,
+        text,
+        mediaUrl,
+        accountId: conversation.accountId,
+        mediaLocalRoots,
+      });
+    }
+    if (!mediaUrl && outbound?.sendText) {
+      return await outbound.sendText({
+        cfg: this.getOpenClawConfig(),
+        to: conversation.conversationId,
+        text,
+        accountId: conversation.accountId,
+      });
+    }
+    const legacySend = (this.api.runtime.channel as {
+      discord?: {
+        sendMessageDiscord?: (
+          to: string,
+          text: string,
+          opts?: {
+            accountId?: string;
+            mediaUrl?: string;
+            mediaLocalRoots?: readonly string[];
+          },
+        ) => Promise<{ messageId: string; channelId: string }>;
+      };
+    }).discord?.sendMessageDiscord;
+    if (typeof legacySend === "function") {
+      return await legacySend(conversation.conversationId, text, {
+        accountId: conversation.accountId,
+        mediaUrl,
+        mediaLocalRoots,
+      });
+    }
+    const runtimeApi = await this.loadDiscordRuntimeApi();
+    if (typeof runtimeApi?.sendMessageDiscord === "function") {
+      return await runtimeApi.sendMessageDiscord(conversation.conversationId, text, {
+        cfg: this.getOpenClawConfig(),
+        accountId: conversation.accountId,
+        mediaUrl,
+        mediaLocalRoots,
+      });
+    }
+    throw new Error("Discord outbound messaging is unavailable.");
   }
 
   private resolveReplyMediaLocalRoots(mediaUrl?: string): readonly string[] | undefined {
@@ -6601,17 +7214,18 @@ export class CodexPluginController {
 
   private async startTypingLease(conversation: ConversationTarget): Promise<{
     stop: () => void;
+    refresh?: () => Promise<void>;
   } | null> {
     if (isTelegramChannel(conversation.channel)) {
-      const typingApi = this.api.runtime.channel.telegram?.typing;
-      if (!typingApi?.start) {
-        return null;
+      const legacyTyping = this.api.runtime.channel.telegram?.typing?.start;
+      if (typeof legacyTyping === "function") {
+        return await legacyTyping({
+          to: conversation.parentConversationId ?? conversation.conversationId,
+          accountId: conversation.accountId,
+          messageThreadId: conversation.threadId,
+        });
       }
-      return await typingApi.start({
-        to: conversation.parentConversationId ?? conversation.conversationId,
-        accountId: conversation.accountId,
-        messageThreadId: conversation.threadId,
-      });
+      return await this.startTelegramTypingLease(conversation);
     }
     if (isDiscordChannel(conversation.channel)) {
       if (conversation.conversationId.startsWith("user:")) {
@@ -6619,7 +7233,41 @@ export class CodexPluginController {
       }
       const channelId =
         denormalizeDiscordConversationId(conversation.conversationId) ?? conversation.conversationId;
-      return await this.api.runtime.channel.discord.typing.start({
+      const legacyTyping = (this.api.runtime.channel as {
+        discord?: {
+          typing?: {
+            start?: (params: {
+              channelId: string;
+              accountId?: string;
+            }) => Promise<{ refresh: () => Promise<void>; stop: () => void }>;
+          };
+        };
+      }).discord?.typing?.start;
+      if (typeof legacyTyping !== "function") {
+        const runtimeApi = await this.loadDiscordRuntimeApi();
+        if (typeof runtimeApi?.sendTypingDiscord !== "function") {
+          return null;
+        }
+        const sendTyping = async () => {
+          await runtimeApi.sendTypingDiscord?.(channelId, {
+            cfg: this.getOpenClawConfig(),
+            accountId: conversation.accountId,
+          });
+        };
+        await sendTyping().catch((error) => {
+          this.api.logger.debug?.(`codex discord typing skipped: ${String(error)}`);
+        });
+        const timer = setInterval(() => {
+          void sendTyping().catch((error) => {
+            this.api.logger.debug?.(`codex discord typing refresh failed: ${String(error)}`);
+          });
+        }, 4_000);
+        return {
+          refresh: sendTyping,
+          stop: () => clearInterval(timer),
+        };
+      }
+      return await legacyTyping({
         channelId,
         accountId: conversation.accountId,
       });
@@ -6647,15 +7295,7 @@ export class CodexPluginController {
       return null;
     }
     if (isTelegramChannel(conversation.channel)) {
-      const runtimeSendTelegram = (this.api.runtime.channel.telegram as any)?.sendMessageTelegram as
-        | ((...args: any[]) => Promise<{ messageId: string; chatId: string }>)
-        | undefined;
-      const telegramToken = runtimeSendTelegram
-        ? undefined
-        : await this.resolveTelegramBotToken(conversation.accountId);
-      if (!runtimeSendTelegram && !telegramToken) {
-        return null;
-      }
+      const outbound = await this.loadTelegramOutboundAdapter();
       const limit = this.api.runtime.channel.text.resolveTextChunkLimit(
         undefined,
         "telegram",
@@ -6666,33 +7306,22 @@ export class CodexPluginController {
       const textChunks = chunks.length > 0 ? chunks : [trimmed];
       let firstDelivered: DeliveredMessageRef | null = null;
       for (const chunk of textChunks) {
-        const result = runtimeSendTelegram
-          ? await runtimeSendTelegram(
-              conversation.parentConversationId ?? conversation.conversationId,
-              chunk,
-              {
-                accountId: conversation.accountId,
-                messageThreadId: conversation.threadId,
-              },
-            )
-          : await this.callTelegramSendMessageApi(telegramToken!, {
-              chat_id: conversation.parentConversationId ?? conversation.conversationId,
-              text: chunk,
-              ...(conversation.threadId != null
-                ? { message_thread_id: conversation.threadId }
-                : {}),
-            });
+        const result = await this.sendTelegramTextChunk(outbound, conversation, chunk);
         if (!firstDelivered) {
           firstDelivered = {
             provider: "telegram",
             messageId: result.messageId,
-            chatId: result.chatId,
+            chatId:
+              typeof result.chatId === "string"
+                ? result.chatId
+                : conversation.parentConversationId ?? conversation.conversationId,
           };
         }
       }
       return firstDelivered;
     }
     if (isDiscordChannel(conversation.channel)) {
+      const outbound = await this.loadDiscordOutboundAdapter();
       const limit = this.api.runtime.channel.text.resolveTextChunkLimit(
         undefined,
         "discord",
@@ -6703,18 +7332,15 @@ export class CodexPluginController {
       const textChunks = chunks.length > 0 ? chunks : [trimmed];
       let firstDelivered: DeliveredMessageRef | null = null;
       for (const chunk of textChunks) {
-        const result = await this.api.runtime.channel.discord.sendMessageDiscord(
-          conversation.conversationId,
-          chunk,
-          {
-            accountId: conversation.accountId,
-          },
-        );
+        const result = await this.sendDiscordTextChunk(outbound, conversation, chunk);
         if (!firstDelivered) {
           firstDelivered = {
             provider: "discord",
             messageId: result.messageId,
-            channelId: result.channelId,
+            channelId:
+              typeof result.channelId === "string"
+                ? result.channelId
+                : conversation.conversationId,
           };
         }
       }
@@ -6806,13 +7432,30 @@ export class CodexPluginController {
   }
 
   private async resolveTelegramBotToken(accountId?: string): Promise<string | undefined> {
-    const resolution = this.api.runtime.channel.telegram?.resolveTelegramToken?.(
-      this.lastRuntimeConfig,
+    const legacyResolution = this.api.runtime.channel.telegram?.resolveTelegramToken?.(
+      this.getOpenClawConfig(),
       { accountId },
     );
-    const runtimeToken = resolution?.token?.trim();
-    if (runtimeToken) {
-      return runtimeToken;
+    const legacyToken = legacyResolution?.token?.trim();
+    if (legacyToken) {
+      return legacyToken;
+    }
+    const cfg = this.getOpenClawConfig();
+    if (!cfg) {
+      return undefined;
+    }
+    try {
+      const telegramAccount = await this.loadTelegramAccountSdk();
+      const account = telegramAccount.resolveTelegramAccount({
+        cfg,
+        accountId,
+      });
+      const token = account?.token?.trim();
+      if (token) {
+        return token;
+      }
+    } catch (error) {
+      this.api.logger.debug?.(`codex telegram account facade unavailable: ${String(error)}`);
     }
 
     const extractFromConfig = (raw: unknown): string | undefined => {
@@ -6844,7 +7487,7 @@ export class CodexPluginController {
       return undefined;
     };
 
-    const configToken = extractFromConfig(this.lastRuntimeConfig);
+    const configToken = extractFromConfig(this.getOpenClawConfig());
     if (configToken) {
       return configToken;
     }
@@ -6874,12 +7517,67 @@ export class CodexPluginController {
     if (!cfg) {
       return undefined;
     }
-    const account = resolveDiscordAccount({
-      cfg: cfg as Parameters<typeof resolveDiscordAccount>[0]["cfg"],
+    try {
+      const discordSdk = await this.loadDiscordSdk();
+      const account = discordSdk.resolveDiscordAccount({
+        cfg: cfg as Parameters<DiscordSdkModule["resolveDiscordAccount"]>[0]["cfg"],
+        accountId,
+      });
+      const token = account.token?.trim();
+      if (token) {
+        return token;
+      }
+    } catch (error) {
+      this.api.logger.debug?.(`codex discord account facade unavailable: ${String(error)}`);
+    }
+    const discordApi = await this.loadDiscordExtensionApi();
+    const account = discordApi?.resolveDiscordAccount?.({
+      cfg,
       accountId,
     });
-    const token = account.token?.trim();
+    const token = account?.token?.trim();
     return token || undefined;
+  }
+
+  private async startTelegramTypingLease(conversation: ConversationTarget): Promise<{
+    refresh: () => Promise<void>;
+    stop: () => void;
+  } | null> {
+    const token = await this.resolveTelegramBotToken(conversation.accountId);
+    if (!token) {
+      return null;
+    }
+    const body = {
+      chat_id: conversation.parentConversationId ?? conversation.conversationId,
+      action: "typing",
+      ...(conversation.threadId != null ? { message_thread_id: conversation.threadId } : {}),
+    };
+    const sendTyping = async () => {
+      const response = await fetch(`https://api.telegram.org/bot${token}/sendChatAction`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) {
+        throw new Error(
+          `Telegram sendChatAction failed status=${response.status} body=${await response.text()}`,
+        );
+      }
+    };
+    await sendTyping().catch((error) => {
+      this.api.logger.debug?.(`codex telegram typing skipped: ${String(error)}`);
+    });
+    const timer = setInterval(() => {
+      void sendTyping().catch((error) => {
+        this.api.logger.debug?.(`codex telegram typing refresh failed: ${String(error)}`);
+      });
+    }, 4_000);
+    return {
+      refresh: sendTyping,
+      stop: () => clearInterval(timer),
+    };
   }
 
   private async callDiscordPinApi(
@@ -6933,8 +7631,8 @@ export class CodexPluginController {
     };
   }
 
-  private async callTelegramPinApi(
-    method: "pinChatMessage" | "unpinChatMessage",
+  private async callTelegramBotApi(
+    method: string,
     token: string,
     body: Record<string, unknown>,
   ): Promise<void> {
@@ -6945,29 +7643,53 @@ export class CodexPluginController {
       },
       body: JSON.stringify(body),
     });
+    const responseText = await response.text();
     if (!response.ok) {
       throw new Error(
-        `Telegram ${method} failed status=${response.status} body=${await response.text()}`,
+        `Telegram ${method} failed status=${response.status} body=${responseText}`,
       );
     }
+    const trimmedBody = responseText.trim();
+    if (!trimmedBody) {
+      return;
+    }
+    try {
+      const parsed = JSON.parse(trimmedBody) as { ok?: unknown; description?: unknown };
+      if (parsed.ok === false) {
+        const description =
+          typeof parsed.description === "string" && parsed.description.trim()
+            ? parsed.description.trim()
+            : trimmedBody;
+        throw new Error(`Telegram ${method} failed body=${description}`);
+      }
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        return;
+      }
+      throw error;
+    }
+  }
+
+  private async callTelegramPinApi(
+    method: "pinChatMessage" | "unpinChatMessage",
+    token: string,
+    body: Record<string, unknown>,
+  ): Promise<void> {
+    await this.callTelegramBotApi(method, token, body);
   }
 
   private async callTelegramEditMessageApi(
     token: string,
     body: Record<string, unknown>,
   ): Promise<void> {
-    const response = await fetch(`https://api.telegram.org/bot${token}/editMessageText`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(body),
-    });
-    if (!response.ok) {
-      throw new Error(
-        `Telegram editMessageText failed status=${response.status} body=${await response.text()}`,
-      );
-    }
+    await this.callTelegramBotApi("editMessageText", token, body);
+  }
+
+  private async callTelegramTopicEditApi(
+    token: string,
+    body: Record<string, unknown>,
+  ): Promise<void> {
+    await this.callTelegramBotApi("editForumTopic", token, body);
   }
 
   private async renameConversationIfSupported(
@@ -6975,24 +7697,67 @@ export class CodexPluginController {
     name: string,
   ): Promise<void> {
     if (isTelegramChannel(conversation.channel) && conversation.threadId != null) {
-      const renameTopic = this.api.runtime.channel.telegram?.conversationActions?.renameTopic;
-      if (!renameTopic) {
+      const legacyRename = this.api.runtime.channel.telegram?.conversationActions?.renameTopic;
+      if (typeof legacyRename === "function") {
+        await legacyRename(
+          conversation.parentConversationId ?? conversation.conversationId,
+          conversation.threadId,
+          name,
+          {
+            accountId: conversation.accountId,
+          },
+        ).catch((error) => {
+          this.api.logger.warn(`codex telegram topic rename failed: ${String(error)}`);
+        });
         return;
       }
-      await renameTopic(
-        conversation.parentConversationId ?? conversation.conversationId,
-        conversation.threadId,
+      const token = await this.resolveTelegramBotToken(conversation.accountId);
+      if (!token) {
+        return;
+      }
+      await this.callTelegramTopicEditApi(token, {
+        chat_id: conversation.parentConversationId ?? conversation.conversationId,
+        message_thread_id: conversation.threadId,
         name,
-        {
-          accountId: conversation.accountId,
-        },
-      ).catch((error) => {
+      }).catch((error) => {
         this.api.logger.warn(`codex telegram topic rename failed: ${String(error)}`);
       });
       return;
     }
     if (isDiscordChannel(conversation.channel)) {
-      await this.api.runtime.channel.discord.conversationActions.editChannel(
+      const legacyEditChannel = (this.api.runtime.channel as {
+        discord?: {
+          conversationActions?: {
+            editChannel?: (
+              channelId: string,
+              params: { name?: string },
+              opts?: { accountId?: string },
+            ) => Promise<unknown>;
+          };
+        };
+      }).discord?.conversationActions?.editChannel;
+      if (typeof legacyEditChannel !== "function") {
+        const runtimeApi = await this.loadDiscordRuntimeApi();
+        if (typeof runtimeApi?.editChannelDiscord !== "function") {
+          return;
+        }
+        await runtimeApi.editChannelDiscord(
+          {
+            channelId:
+              denormalizeDiscordConversationId(conversation.conversationId) ??
+              conversation.conversationId,
+            name,
+          },
+          {
+            cfg: this.getOpenClawConfig(),
+            accountId: conversation.accountId,
+          },
+        ).catch((error) => {
+          this.api.logger.warn(`codex discord channel rename failed: ${String(error)}`);
+        });
+        return;
+      }
+      await legacyEditChannel(
         conversation.conversationId,
         {
           name,
