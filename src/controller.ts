@@ -6767,7 +6767,7 @@ export class CodexPluginController {
                     },
                   },
                 })
-                : await this.sendTelegramTextChunk(outbound, conversation, chunk, {
+              : await this.sendTelegramTextChunk(outbound, conversation, chunk, {
                   buttons: index === chunks.length - 1 ? payload.buttons : undefined,
                 });
           if (index === chunks.length - 1 || !delivered) {
@@ -6808,7 +6808,7 @@ export class CodexPluginController {
                   },
                 },
               })
-              : await this.sendTelegramTextChunk(outbound, conversation, chunk, {
+            : await this.sendTelegramTextChunk(outbound, conversation, chunk, {
                 buttons: index === textChunks.length - 1 ? payload.buttons : undefined,
               });
         if (!delivered || index === textChunks.length - 1) {
