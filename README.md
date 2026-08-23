@@ -59,10 +59,10 @@
 - **Cross-machine federation.** Threads live across every machine you run
   PwrAgent on, and one machine can create threads on another. This plugin was
   bound to the single box OpenClaw happened to be running on.
-- **Four agent harnesses, talking to each other** — Codex, Grok Build, Kimi, and
-  Qwen. Codex can drive and `/review` a set of Grok threads; Grok and Codex both
-  report per-turn pricing. It uses the installs and subscriptions you already
-  have; PwrAgent holds no model key of its own.
+- **Four agent harnesses, talking to each other** — Codex, Grok, Kimi Code, and
+  Qwen Code. Codex can drive and `/review` a set of Grok threads; Grok and Codex
+  both report per-turn pricing. It uses the installs and subscriptions you
+  already have; PwrAgent holds no model key of its own.
 - **A star map, not a sidebar.** Once you are running many threads across many
   machines, a left-hand list stops working. The map is how you navigate it.
 - **Six messaging platforms** — Telegram, Discord, Slack, Mattermost, LINE, and
