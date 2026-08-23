@@ -53,9 +53,10 @@ today.
 
 ### Or try PwrAgent
 
-**[PwrAgent](https://pwragent.ai)** is where the author of this plugin took the
-idea — so treat this as the interested recommendation it is. It is a desktop app
-rather than a plugin, free and MIT-licensed, and it runs on your own machine.
+**[PwrAgent](https://pwragent.ai)** is this author's own vision of what
+development via messaging should be — so treat it as the interested
+recommendation it is. A desktop app rather than a plugin, free and MIT-licensed,
+running entirely on your own machine.
 
 - **Messaging platforms** — Telegram, Discord, Slack, Mattermost, LINE, and
   Feishu / Lark. Pair a bot once with a one-time code; no IDs to look up, no
