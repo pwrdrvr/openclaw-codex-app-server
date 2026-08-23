@@ -24,14 +24,14 @@
 <h2 align="center">Try PwrAgent</h2>
 
 <p align="center">
-  <strong>Your coding agent runs on your laptop. You drive it from your phone.</strong>
+  <strong>Many agents. Many machines. One map.</strong>
 </p>
 
 <p align="center">
-  This plugin proved the idea worked. PwrAgent is the whole thing — a desktop app
-  instead of a plugin, six messengers instead of two, four agent harnesses, and
-  automations this never had. Free, MIT-licensed, running entirely on your own
-  machine.
+  This plugin proved one agent could be driven from a chat app. PwrAgent is the
+  rest of the idea: agents federated across every machine you own, one harness
+  driving and reviewing another's threads, and a star map to navigate it instead
+  of a sidebar. Free, MIT-licensed, running entirely on your own machines.
 </p>
 
 <p align="center">
@@ -56,12 +56,18 @@
 
 ### What you get over this plugin
 
+- **Cross-machine federation.** Threads live across every machine you run
+  PwrAgent on, and one machine can create threads on another. This plugin was
+  bound to the single box OpenClaw happened to be running on.
+- **Four agent harnesses, talking to each other** — Codex, Grok Build, Kimi, and
+  Qwen. Codex can drive and `/review` a set of Grok threads; Grok and Codex both
+  report per-turn pricing. It uses the installs and subscriptions you already
+  have; PwrAgent holds no model key of its own.
+- **A star map, not a sidebar.** Once you are running many threads across many
+  machines, a left-hand list stops working. The map is how you navigate it.
 - **Six messaging platforms** — Telegram, Discord, Slack, Mattermost, LINE, and
   Feishu / Lark. This plugin did two. Pair a bot once with a one-time code; no
   IDs to look up, no JSON to paste.
-- **Four agent harnesses** — Codex, Grok Build, Kimi, and Qwen. It uses the
-  install and the subscription you already have; PwrAgent holds no model key of
-  its own.
 - **Automations** — messaging triggers with filters, so a matching message starts
   an agent run on its own. Ephemeral agent history from those runs is carried
   into the next invocation, so a sequence of triggered runs accumulates context
@@ -70,6 +76,9 @@
   agents your triggers started. Point the triggers at a production alert feed,
   let them analyse each alert as it lands, then ask a manager agent *"are we
   having a problem?"* and get an answer grounded in what those runs found.
+- **MCP throughout**, including a tight integration with
+  [PwrSnap](https://github.com/pwrdrvr/PwrSnap) so agents can reach captured
+  screens directly.
 - **No compatibility treadmill.** Half the [original
   README](./docs/legacy-readme.md) is a matrix of which plugin version works with
   which OpenClaw build. A desktop app has no such matrix.
