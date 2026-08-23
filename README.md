@@ -53,6 +53,12 @@ today.
 
 ### Or try PwrAgent
 
+<p align="center">
+  <a href="https://pwragent.ai">
+    <img src="./assets/pwragent-logo.png" width="96" alt="PwrAgent logo" />
+  </a>
+</p>
+
 **[PwrAgent](https://pwragent.ai)** is this author's own vision of what
 development via messaging should be — so treat it as the interested
 recommendation it is. A desktop app rather than a plugin, free and MIT-licensed,
@@ -73,9 +79,24 @@ running entirely on your own machine.
   having a problem?"* — and get an answer grounded in what those runs actually
   found.
 
-Downloads and docs: [pwragent.ai](https://pwragent.ai) ·
-[docs.pwragent.ai](https://docs.pwragent.ai) ·
-[github.com/pwrdrvr/PwrAgent](https://github.com/pwrdrvr/PwrAgent)
+#### Install
+
+| Platform | Download | Notes |
+| --- | --- | --- |
+| **macOS** | [PwrAgent.dmg](https://github.com/pwrdrvr/PwrAgent/releases/latest/download/PwrAgent.dmg) | Universal — Apple Silicon and Intel. Developer ID-signed and notarized, so first launch is one Gatekeeper prompt |
+| **Windows** | [latest release](https://github.com/pwrdrvr/PwrAgent/releases/latest) → `-windows-x64-setup.exe` | Signed through Azure Trusted Signing, installer and the executables inside it |
+| **Linux** | [.deb x64](https://github.com/pwrdrvr/PwrAgent/releases/latest/download/PwrAgent-linux-x64.deb) · [.deb arm64](https://github.com/pwrdrvr/PwrAgent/releases/latest/download/PwrAgent-linux-arm64.deb) | Debian / Ubuntu |
+
+Setup is the installer plus **Settings → Messaging → your platform**, where you
+pair a bot with a one-time code. No IDs to look up, no JSON to paste.
+
+#### Links
+
+[pwragent.ai](https://pwragent.ai) — home ·
+[docs.pwragent.ai](https://docs.pwragent.ai) — docs ·
+[github.com/pwrdrvr/PwrAgent](https://github.com/pwrdrvr/PwrAgent) — source ·
+[releases](https://github.com/pwrdrvr/PwrAgent/releases) ·
+[pwrdrvr.com/about](https://pwrdrvr.com/about) — who builds it
 
 ## Attribution
 
