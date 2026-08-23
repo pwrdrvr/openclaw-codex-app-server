@@ -40,20 +40,22 @@ the changes this plugin needed landed upstream in OpenClaw itself. That is
 exactly how it should go, and it is why this repository can be retired without
 any of the work being lost.
 
-## What to use instead
+## Where to go from here
 
-### If you want this inside OpenClaw
+Two options, and they are not competing for the same person.
 
-OpenClaw has since grown its own support for this kind of integration, and that
-is the right place for it to live. Check the current
+### Stay in OpenClaw
+
+OpenClaw has features for coding workflows of its own these days. If OpenClaw is
+already where you work, start there — see the current
 [OpenClaw documentation](https://github.com/openclaw/openclaw) for what ships
 today.
 
-### If you want the full product
+### Or try PwrAgent
 
-**[PwrAgent](https://pwragent.ai)** is where this author took the idea. It is a
-desktop app rather than a plugin, free and MIT-licensed, and it runs on your own
-machine.
+**[PwrAgent](https://pwragent.ai)** is where the author of this plugin took the
+idea — so treat this as the interested recommendation it is. It is a desktop app
+rather than a plugin, free and MIT-licensed, and it runs on your own machine.
 
 - **Messaging platforms** — Telegram, Discord, Slack, Mattermost, LINE, and
   Feishu / Lark. Pair a bot once with a one-time code; no IDs to look up, no
