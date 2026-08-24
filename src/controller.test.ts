@@ -278,6 +278,7 @@ async function createControllerHarness() {
       threadState.sandbox = params.sandbox;
       return { ...threadState };
     }),
+    compactThread: vi.fn(async () => ({})),
     startReview: vi.fn(() => ({
       result: new Promise(() => {}),
       getThreadId: () => "thread-1",
@@ -6395,6 +6396,142 @@ describe("Discord controller flows", () => {
         buttons: expect.any(Array),
       }),
     );
+  });
+
+  it("stops compaction keepalives when cas_stop is used", async () => {
+    vi.useFakeTimers();
+    try {
+      const { controller, clientMock, sendMessageTelegram } = await createControllerHarness();
+      const conversation = {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      };
+      const binding = {
+        conversation,
+        sessionKey: "session-1",
+        threadId: "thread-1",
+        workspaceDir: "/repo/openclaw",
+        updatedAt: Date.now(),
+      };
+      let compactAbortSignal: AbortSignal | undefined;
+      clientMock.compactThread = vi.fn(async (params: { signal?: AbortSignal }) => {
+        compactAbortSignal = params.signal;
+        await new Promise<void>((_resolve, reject) => {
+          params.signal?.addEventListener(
+            "abort",
+            () => {
+              reject(new Error("Codex thread compaction canceled."));
+            },
+            { once: true },
+          );
+        });
+        return {};
+      });
+
+      const compactPromise = (controller as any).startCompact({
+        conversation,
+        binding,
+      });
+
+      await vi.advanceTimersByTimeAsync(12_000);
+      const beforeStop = sendMessageTelegram.mock.calls.flatMap((call) => {
+        const [, text] = call as unknown as [unknown, unknown];
+        return text === "Codex is still compacting." ? [text] : [];
+      });
+      expect(beforeStop).toHaveLength(1);
+
+      const reply = await controller.handleCommand(
+        "cas_stop",
+        buildTelegramCommandContext({
+          commandBody: "/cas_stop",
+          from: "telegram:123",
+          to: "telegram:123",
+        }),
+      );
+      expect(reply).toEqual({
+        text: "Stopped Codex compaction updates for this conversation.",
+      });
+      expect(compactAbortSignal?.aborted).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      await compactPromise;
+
+      const afterStop = sendMessageTelegram.mock.calls.flatMap((call) => {
+        const [, text] = call as unknown as [unknown, unknown];
+        return text === "Codex is still compacting." ? [text] : [];
+      });
+      expect(afterStop).toHaveLength(1);
+      expect((controller as any).activeCompactions.size).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops compaction keepalives when cas_detach is used", async () => {
+    vi.useFakeTimers();
+    try {
+      const { controller, clientMock, sendMessageTelegram } = await createControllerHarness();
+      const conversation = {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      };
+      await (controller as any).store.upsertBinding({
+        conversation,
+        sessionKey: "session-1",
+        threadId: "thread-1",
+        workspaceDir: "/repo/openclaw",
+        updatedAt: Date.now(),
+      });
+      let compactAbortSignal: AbortSignal | undefined;
+      clientMock.compactThread = vi.fn(async (params: { signal?: AbortSignal }) => {
+        compactAbortSignal = params.signal;
+        await new Promise<void>((_resolve, reject) => {
+          params.signal?.addEventListener(
+            "abort",
+            () => {
+              reject(new Error("Codex thread compaction canceled."));
+            },
+            { once: true },
+          );
+        });
+        return {};
+      });
+
+      const compactPromise = (controller as any).startCompact({
+        conversation,
+        binding: (controller as any).store.getBinding(conversation),
+      });
+
+      await vi.advanceTimersByTimeAsync(12_000);
+      const detachReply = await controller.handleCommand(
+        "cas_detach",
+        buildTelegramCommandContext({
+          commandBody: "/cas_detach",
+          from: "telegram:123",
+          to: "telegram:123",
+        }),
+      );
+
+      expect(detachReply).toEqual({
+        text: "Detached this conversation from Codex.",
+      });
+      expect(compactAbortSignal?.aborted).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      await compactPromise;
+
+      const keepalives = sendMessageTelegram.mock.calls.flatMap((call) => {
+        const [, text] = call as unknown as [unknown, unknown];
+        return text === "Codex is still compacting." ? [text] : [];
+      });
+      expect(keepalives).toHaveLength(1);
+      expect((controller as any).store.getBinding(conversation)).toBeNull();
+      expect((controller as any).activeCompactions.size).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("runs skills from the status card without rewriting the status message", async () => {

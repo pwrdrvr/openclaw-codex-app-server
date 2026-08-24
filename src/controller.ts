@@ -168,6 +168,11 @@ type ActiveRunRecord = {
   handle: ActiveCodexRun;
 };
 
+type ActiveCompactionRecord = {
+  conversation: ConversationTarget;
+  cancel: () => void;
+};
+
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
 const TEXT_ATTACHMENT_FILE_EXTENSIONS = new Set([
@@ -1362,6 +1367,7 @@ export class CodexPluginController {
   private readonly settings;
   private readonly client;
   private readonly activeRuns = new Map<string, ActiveRunRecord>();
+  private readonly activeCompactions = new Map<string, ActiveCompactionRecord>();
   private readonly threadChangesCache = new Map<string, Promise<boolean | undefined>>();
   private readonly store;
   private serviceWorkspaceDir?: string;
@@ -1404,6 +1410,10 @@ export class CodexPluginController {
       await active.handle.interrupt().catch(() => undefined);
     }
     this.activeRuns.clear();
+    for (const active of this.activeCompactions.values()) {
+      active.cancel();
+    }
+    this.activeCompactions.clear();
     await this.client.close().catch(() => undefined);
     this.started = false;
   }
@@ -1909,6 +1919,7 @@ export class CodexPluginController {
         if (!conversation) {
           return { text: "This command needs a Telegram or Discord conversation." };
         }
+        this.cancelActiveCompaction(conversation);
         const detachResult = await bindingApi.detachConversationBinding?.();
         await this.unbindConversation(conversation);
         return {
@@ -2940,11 +2951,25 @@ export class CodexPluginController {
       return { text: "This command needs a Telegram or Discord conversation." };
     }
     const active = this.activeRuns.get(buildConversationKey(conversation));
+    if (!active && this.cancelActiveCompaction(conversation)) {
+      return { text: "Stopped Codex compaction updates for this conversation." };
+    }
     if (!active) {
       return { text: "No active Codex run to stop." };
     }
     await active.handle.interrupt();
     return { text: "Stopping Codex now." };
+  }
+
+  private cancelActiveCompaction(conversation: ConversationTarget): boolean {
+    const key = buildConversationKey(conversation);
+    const active = this.activeCompactions.get(key);
+    if (!active) {
+      return false;
+    }
+    this.activeCompactions.delete(key);
+    active.cancel();
+    return true;
   }
 
   private async handleSteerCommand(
@@ -3052,15 +3077,45 @@ export class CodexPluginController {
     binding: StoredBinding;
   }): Promise<void> {
     const { conversation, binding } = params;
+    this.cancelActiveCompaction(conversation);
+    const key = buildConversationKey(conversation);
     const profile = this.getPermissionsMode(binding);
     const typing = await this.startTypingLease(conversation);
+    const abortController = new AbortController();
+    let keepaliveInterval: NodeJS.Timeout | undefined;
+    let progressTimer: NodeJS.Timeout | undefined;
+    let cancelled = false;
+    const cleanupKeepalive = () => {
+      if (progressTimer) {
+        clearTimeout(progressTimer);
+        progressTimer = undefined;
+      }
+      if (keepaliveInterval) {
+        clearInterval(keepaliveInterval);
+        keepaliveInterval = undefined;
+      }
+    };
+    const cancelCompaction = () => {
+      if (cancelled) {
+        return;
+      }
+      cancelled = true;
+      cleanupKeepalive();
+      abortController.abort();
+    };
+    this.activeCompactions.set(key, {
+      conversation,
+      cancel: cancelCompaction,
+    });
     let startingUsage = binding.contextUsage;
     let latestUsage = startingUsage;
     let lastEmittedUsageText = binding.contextUsage ? formatContextUsageText(binding.contextUsage) : undefined;
     try {
-      let keepaliveInterval: NodeJS.Timeout | undefined;
-      const progressTimer = setTimeout(() => {
+      progressTimer = setTimeout(() => {
         void (async () => {
+          if (cancelled) {
+            return;
+          }
           const usageText =
             latestUsage ? formatContextUsageText(latestUsage) : undefined;
           if (usageText && usageText !== lastEmittedUsageText) {
@@ -3074,6 +3129,9 @@ export class CodexPluginController {
           );
         })();
         keepaliveInterval = setInterval(() => {
+          if (cancelled) {
+            return;
+          }
           void this.sendText(conversation, "Codex is still compacting.");
         }, COMPACT_PROGRESS_INTERVAL_MS);
       }, COMPACT_PROGRESS_DELAY_MS);
@@ -3081,7 +3139,11 @@ export class CodexPluginController {
         profile,
         sessionKey: binding.sessionKey,
         threadId: binding.threadId,
+        signal: abortController.signal,
         onProgress: async (progress) => {
+          if (cancelled) {
+            return;
+          }
           if (progress.usage) {
             latestUsage = progress.usage;
             startingUsage ??= progress.usage;
@@ -3091,9 +3153,9 @@ export class CodexPluginController {
           }
         },
       });
-      clearTimeout(progressTimer);
-      if (keepaliveInterval) {
-        clearInterval(keepaliveInterval);
+      cleanupKeepalive();
+      if (cancelled) {
+        return;
       }
       await this.sendText(
         conversation,
@@ -3117,8 +3179,16 @@ export class CodexPluginController {
       }
       return;
     } catch (error) {
+      if (abortController.signal.aborted || cancelled) {
+        return;
+      }
       await this.sendText(conversation, formatFailureText("compact", error));
     } finally {
+      cleanupKeepalive();
+      const active = this.activeCompactions.get(key);
+      if (active?.cancel === cancelCompaction) {
+        this.activeCompactions.delete(key);
+      }
       typing?.stop();
     }
   }
@@ -5700,6 +5770,7 @@ export class CodexPluginController {
       await this.store.removeCallback(callback.token);
       const active = this.activeRuns.get(buildConversationKey(callback.conversation));
       if (!active) {
+        const stoppedCompaction = this.cancelActiveCompaction(callback.conversation);
         const statusCard = await this.buildStatusCard(
           {
             ...callback.conversation,
@@ -5709,7 +5780,7 @@ export class CodexPluginController {
           Boolean(binding),
         );
         await responders.editPicker({
-          text: statusCard.text,
+          text: stoppedCompaction ? `${statusCard.text}\n\nCompaction stopped.` : statusCard.text,
           buttons: statusCard.buttons ?? [],
         });
         return;
@@ -5750,6 +5821,7 @@ export class CodexPluginController {
     }
     if (callback.kind === "detach-thread") {
       await this.store.removeCallback(callback.token);
+      this.cancelActiveCompaction(callback.conversation);
       await responders.detachConversationBinding?.().catch(() => undefined);
       await this.unbindConversation(callback.conversation);
       const statusCard = await this.buildStatusCard(
