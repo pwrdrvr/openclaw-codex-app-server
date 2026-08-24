@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { existsSync, promises as fs } from "node:fs";
 import { createRequire } from "node:module";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
@@ -7014,7 +7015,18 @@ export class CodexPluginController {
       });
     }
     if (typeof legacySend !== "function") {
-      throw new Error("Telegram send runtime unavailable");
+      const token = await this.resolveTelegramBotToken(conversation.accountId);
+      if (!token) {
+        throw new Error("Telegram send runtime unavailable");
+      }
+      return await this.callTelegramSendMessageApi(token, {
+        chat_id: target,
+        text,
+        ...(typeof conversation.threadId === "number"
+          ? { message_thread_id: conversation.threadId }
+          : {}),
+        ...(buttons ? { reply_markup: buildTelegramReplyMarkup(buttons) } : {}),
+      });
     }
     return await legacySend(target, text, {
       accountId: conversation.accountId,
@@ -7439,11 +7451,65 @@ export class CodexPluginController {
         accountId,
       });
       const token = account?.token?.trim();
-      return token || undefined;
+      if (token) {
+        return token;
+      }
     } catch (error) {
       this.api.logger.debug?.(`codex telegram account facade unavailable: ${String(error)}`);
-      return undefined;
     }
+
+    const extractFromConfig = (raw: unknown): string | undefined => {
+      const root = asRecord(raw);
+      const channels = asRecord(root?.channels);
+      const telegram = asRecord(channels?.telegram);
+      const accountsValue = telegram?.accounts;
+      const accounts =
+        accountsValue && typeof accountsValue === "object" && !Array.isArray(accountsValue)
+          ? (accountsValue as Record<string, unknown>)
+          : {};
+      const preferredIds = [
+        accountId,
+        typeof telegram?.defaultAccount === "string" ? telegram.defaultAccount : undefined,
+      ]
+        .map((value) => value?.trim())
+        .filter((value): value is string => Boolean(value));
+      for (const id of preferredIds) {
+        const account = asRecord(accounts[id]);
+        const token = typeof account?.botToken === "string" ? account.botToken.trim() : "";
+        if (token) {
+          return token;
+        }
+      }
+      const topLevelToken = typeof telegram?.botToken === "string" ? telegram.botToken.trim() : "";
+      if (topLevelToken) {
+        return topLevelToken;
+      }
+      return undefined;
+    };
+
+    const configToken = extractFromConfig(this.getOpenClawConfig());
+    if (configToken) {
+      return configToken;
+    }
+
+    const configPaths = new Set<string>([
+      path.join(this.api.runtime.state.resolveStateDir(), "openclaw.json"),
+      path.join(os.homedir(), ".openclaw", "openclaw.json"),
+    ]);
+    for (const configPath of configPaths) {
+      try {
+        const raw = await fs.readFile(configPath, "utf8");
+        const parsed = JSON.parse(raw) as unknown;
+        const token = extractFromConfig(parsed);
+        if (token) {
+          return token;
+        }
+      } catch {
+        // Ignore config fallback failures.
+      }
+    }
+
+    return undefined;
   }
 
   private async resolveDiscordBotToken(accountId?: string): Promise<string | undefined> {
@@ -7534,6 +7600,35 @@ export class CodexPluginController {
         `Discord ${action} failed status=${response.status} body=${await response.text()}`,
       );
     }
+  }
+
+  private async callTelegramSendMessageApi(
+    token: string,
+    body: Record<string, unknown>,
+  ): Promise<{ messageId: string; chatId: string }> {
+    const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    const raw = await response.text();
+    if (!response.ok) {
+      throw new Error(`Telegram sendMessage failed status=${response.status} body=${raw}`);
+    }
+    const parsed = JSON.parse(raw) as {
+      result?: { message_id?: number | string; chat?: { id?: number | string } };
+    };
+    const messageId = parsed.result?.message_id;
+    const chatId = parsed.result?.chat?.id;
+    if (messageId == null || chatId == null) {
+      throw new Error(`Telegram sendMessage returned incomplete payload: ${raw}`);
+    }
+    return {
+      messageId: String(messageId),
+      chatId: String(chatId),
+    };
   }
 
   private async callTelegramBotApi(
