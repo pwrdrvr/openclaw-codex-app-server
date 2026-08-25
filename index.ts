@@ -26,6 +26,49 @@ const plugin = {
       return await controller.handleInboundClaim(event);
     });
 
+    const registerInternalHook = (
+      api as OpenClawPluginApi & {
+        registerHook?: (
+          events: string | string[],
+          handler: (event: unknown) => Promise<void> | void,
+          opts?: { name?: string; description?: string },
+        ) => void;
+      }
+    ).registerHook;
+    if (typeof registerInternalHook === "function") {
+      registerInternalHook(
+        "message:transcribed",
+        async (event) => {
+          await controller.handleMessageTranscribed(event as {
+            type?: string;
+            action?: string;
+            sessionKey?: string;
+            context?: Record<string, unknown>;
+          });
+        },
+        {
+          name: "codex-transcribed-handoff",
+          description: "Send transcribed inbound audio to the bound Codex thread as text.",
+        },
+      );
+
+      registerInternalHook(
+        "message:preprocessed",
+        async (event) => {
+          await controller.handleMessagePreprocessed(event as {
+            type?: string;
+            action?: string;
+            sessionKey?: string;
+            context?: Record<string, unknown>;
+          });
+        },
+        {
+          name: "codex-preprocessed-audio-fallback",
+          description: "Fallback: transcribe bound inbound audio from mediaPath when transcript events do not arrive.",
+        },
+      );
+    }
+
     api.registerInteractiveHandler({
       channel: "telegram",
       namespace: INTERACTIVE_NAMESPACE,
