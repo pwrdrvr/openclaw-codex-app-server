@@ -683,6 +683,30 @@ export class PluginStateStore {
     this.snapshot.callbacks = this.snapshot.callbacks.filter((entry) => entry.token !== token);
     await this.save();
   }
+
+  async removeConversationCallbacks(
+    conversation: ConversationTarget,
+    params?: {
+      kinds?: CallbackAction["kind"][];
+      excludeToken?: string;
+    },
+  ): Promise<void> {
+    const conversationKey = toConversationKey(conversation);
+    const allowedKinds = params?.kinds ? new Set(params.kinds) : null;
+    this.snapshot.callbacks = this.snapshot.callbacks.filter((entry) => {
+      if (params?.excludeToken && entry.token === params.excludeToken) {
+        return true;
+      }
+      if (toConversationKey(entry.conversation) !== conversationKey) {
+        return true;
+      }
+      if (allowedKinds && !allowedKinds.has(entry.kind)) {
+        return true;
+      }
+      return false;
+    });
+    await this.save();
+  }
 }
 
 export function buildPluginSessionKey(threadId: string): string {
