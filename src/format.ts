@@ -534,6 +534,7 @@ export function formatCodexStatusText(params: {
   bindingActive?: boolean;
   contextUsage?: ContextUsageSnapshot;
   planMode?: boolean;
+  verboseEnabled?: boolean;
   permissionNote?: string;
   threadNote?: string;
 }): string {
@@ -560,6 +561,9 @@ export function formatCodexStatusText(params: {
   }
   if (params.bindingActive && params.planMode !== undefined) {
     lines.push(`Plan mode: ${params.planMode ? "on" : "off"}`);
+  }
+  if (params.verboseEnabled !== undefined) {
+    lines.push(`Verbose: ${params.verboseEnabled ? "on" : "off"}`);
   }
   const contextUsageText = formatCodexContextUsageSnapshot(params.contextUsage);
   if (contextUsageText) {

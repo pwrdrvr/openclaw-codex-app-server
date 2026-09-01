@@ -171,6 +171,7 @@ describe("formatCodexStatusText", () => {
       projectFolder: TEST_PROJECT_PATH,
       worktreeFolder: TEST_WORKTREE_PATH,
       planMode: false,
+      verboseEnabled: true,
       rateLimits: [
         {
           name: "5h limit",
@@ -194,6 +195,8 @@ describe("formatCodexStatusText", () => {
     expect(text).toContain(`Worktree folder: ${shortenHomePathForTest(TEST_WORKTREE_PATH)}`);
     expect(text).toContain("Fast mode: off");
     expect(text).toContain("Plan mode: off");
+    expect(text).toContain("Verbose: on");
+    expect(text.indexOf("Plan mode: off")).toBeLessThan(text.indexOf("Verbose: on"));
     expect(text).toContain("Context usage: unavailable until Codex emits a token-usage update");
     expect(text).toContain("Permissions: Default");
     expect(text).toContain(`Account: ${TEST_MASKED_EMAIL} (pro)`);

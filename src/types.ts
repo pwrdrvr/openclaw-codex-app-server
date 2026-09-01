@@ -22,6 +22,9 @@ export type PluginSettings = {
   defaultWorkspaceDir?: string;
   defaultModel?: string;
   defaultServiceTier?: string;
+  verbose: boolean;
+  verboseMaxEvents: number;
+  verboseFlushMs: number;
 };
 
 export type CodexPlanStep = {
@@ -243,6 +246,12 @@ export type TurnTerminalError = {
   message?: string;
   codexErrorInfo?: string;
   httpStatusCode?: number;
+};
+
+export type CodexProgressEvent = {
+  label: string;
+  detail?: string;
+  key?: string;
 };
 
 export type CodexTurnInputItem =
@@ -562,6 +571,7 @@ export type CallbackAction =
 
 export type StoreSnapshot = {
   version: number;
+  verbose?: boolean;
   bindings: StoredBinding[];
   pendingBinds: StoredPendingBind[];
   pendingRequests: StoredPendingRequest[];
