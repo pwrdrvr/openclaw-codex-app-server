@@ -168,6 +168,19 @@ type ActiveRunRecord = {
   handle: ActiveCodexRun;
 };
 
+function isPreMaterializedThreadError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  const normalized = message.trim().toLowerCase();
+  return (
+    normalized.includes("not materialized yet") ||
+    normalized.includes("includeturns is unavailable before first user message")
+  );
+}
+
+function shouldClearBindingForThreadError(error: unknown): boolean {
+  return isMissingThreadError(error) && !isPreMaterializedThreadError(error);
+}
+
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
 const TEXT_ATTACHMENT_FILE_EXTENSIONS = new Set([
@@ -559,6 +572,34 @@ function toConversationTargetFromCommand(ctx: PluginCommandContext): Conversatio
   return null;
 }
 
+function normalizeTelegramThreadId(threadId: string | number | undefined): number | undefined {
+  if (typeof threadId === "number") {
+    return Number.isFinite(threadId) ? threadId : undefined;
+  }
+  if (typeof threadId === "string") {
+    const parsed = Number(threadId);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
+function buildTelegramTopicConversationId(
+  conversationId: string | undefined,
+  threadId: number | undefined,
+): string | undefined {
+  if (!conversationId) {
+    return undefined;
+  }
+  if (threadId == null) {
+    return conversationId;
+  }
+  const topicSeparator = ":topic:";
+  const baseConversationId = conversationId.includes(topicSeparator)
+    ? conversationId.split(topicSeparator)[0]
+    : conversationId;
+  return `${baseConversationId}:topic:${threadId}`;
+}
+
 function toConversationTargetFromInbound(event: {
   channel: string;
   accountId?: string;
@@ -573,6 +614,7 @@ function toConversationTargetFromInbound(event: {
   }
   const channel = event.channel.trim().toLowerCase();
   const conversationIdRaw = event.conversationId?.trim();
+  const telegramThreadId = normalizeTelegramThreadId(event.threadId);
   const conversationId =
     channel === "discord"
       ? (() => {
@@ -588,10 +630,20 @@ function toConversationTargetFromInbound(event: {
           const isChannel = Boolean(event.parentConversationId?.trim() || event.isGroup || guildId);
           return `${isChannel ? "channel" : "user"}:${normalized}`;
         })()
+      : channel === "telegram"
+        ? buildTelegramTopicConversationId(
+            normalizeTelegramChatId(conversationIdRaw),
+            telegramThreadId,
+          )
       : event.conversationId;
   const parentConversationId =
     channel === "discord"
       ? normalizeDiscordConversationId(event.parentConversationId)
+      : channel === "telegram"
+        ? telegramThreadId != null
+          ? normalizeTelegramChatId(event.parentConversationId) ??
+            normalizeTelegramChatId(conversationIdRaw)?.split(":topic:")[0]
+          : undefined  // DM: no topic, parentConversationId not needed for key matching
       : event.parentConversationId;
   if (!conversationId) {
     return null;
@@ -604,13 +656,7 @@ function toConversationTargetFromInbound(event: {
     threadId:
       channel === "discord"
         ? undefined
-        : typeof event.threadId === "number"
-          ? event.threadId
-          : typeof event.threadId === "string"
-            ? Number.isFinite(Number(event.threadId))
-              ? Number(event.threadId)
-              : undefined
-            : undefined,
+        : telegramThreadId,
   };
 }
 
@@ -1546,6 +1592,29 @@ export class CodexPluginController {
         `codex inbound claim channel=${conversation.channel} account=${conversation.accountId} conversation=${conversation.conversationId} parent=${conversation.parentConversationId ?? "<none>"} local=${resolvedBinding ? "yes" : "no"}`,
       );
       if (!resolvedBinding) {
+        // Check if OpenClaw still has us registered as the handler for this conversation.
+        // If so, our internal state was cleared (stale thread) without properly detaching from
+        // OpenClaw. Detach now and notify the user so they can run /cas_resume.
+        const conversationRef = {
+          channel: conversation.channel,
+          accountId: conversation.accountId,
+          conversationId: conversation.conversationId,
+        };
+        const sessionBindingSvc = await this.loadSessionBindingService().catch(() => null);
+        const activeBinding = sessionBindingSvc?.resolveByConversation(conversationRef) ?? null;
+        if (activeBinding) {
+          this.api.logger.warn(
+            `codex inbound claim detaching stale openclaw binding ${this.formatConversationForLog(conversation)}`,
+          );
+          await sessionBindingSvc!
+            .unbind({ bindingId: activeBinding.bindingId, reason: "stale-cleared" })
+            .catch(() => undefined);
+          await this.sendText(
+            conversation,
+            "\u26a0\ufe0f Codex session expired. Run /cas_resume to start a new thread.",
+          ).catch(() => undefined);
+          return { handled: true };
+        }
         return { handled: false };
       }
       if (hydratedBinding?.pendingBind?.syncTopic) {
@@ -2244,7 +2313,15 @@ export class CodexPluginController {
       if (!binding || !conversation) {
         return { text: "Bind this conversation to Codex before changing status settings." };
       }
-      const { state: currentThreadState, effectiveState } = await this.readEffectiveThreadState(binding);
+      const {
+        binding: currentBinding,
+        state: currentThreadState,
+        effectiveState,
+      } = await this.readEffectiveThreadState(binding);
+      if (!currentBinding) {
+        return { text: "Bind this conversation to Codex before changing status settings." };
+      }
+      binding = currentBinding;
       const effectiveModel =
         parsed.requestedModel?.trim() ||
         (await this.resolveCurrentModelHint(binding, effectiveState));
@@ -2316,6 +2393,18 @@ export class CodexPluginController {
     return getBindingPermissionsMode(binding ?? null);
   }
 
+  private toConversationTarget(
+    conversation: StoredBinding["conversation"] | ConversationTarget,
+  ): ConversationTarget {
+    return {
+      channel: conversation.channel,
+      accountId: conversation.accountId,
+      conversationId: conversation.conversationId,
+      parentConversationId: conversation.parentConversationId,
+      threadId: "threadId" in conversation ? conversation.threadId : undefined,
+    };
+  }
+
   private async waitForActiveRunToClear(
     conversation: ConversationTarget,
     timeoutMs = 3_000,
@@ -2331,18 +2420,64 @@ export class CodexPluginController {
     return !this.activeRuns.has(key);
   }
 
+  private async clearStaleBinding(binding: StoredBinding, reason: string): Promise<void> {
+    const conversation = this.toConversationTarget(binding.conversation);
+    this.api.logger.warn(
+      `codex clearing stale binding ${this.formatConversationForLog(conversation)} thread=${binding.threadId} reason=${reason}`,
+    );
+    await this.unbindConversation(conversation);
+  }
+
+  private async ensureUsableBindingForTurn(
+    binding: StoredBinding | null,
+    reason: string,
+  ): Promise<StoredBinding | null> {
+    if (!binding) {
+      return null;
+    }
+    try {
+      await this.client.readThreadState({
+        profile: this.getPermissionsMode(binding),
+        sessionKey: binding.sessionKey,
+        threadId: binding.threadId,
+      });
+      return binding;
+    } catch (error) {
+      if (!shouldClearBindingForThreadError(error)) {
+        this.api.logger.warn(
+          `codex could not verify bound thread before ${reason} ${this.formatConversationForLog(this.toConversationTarget(binding.conversation))} thread=${binding.threadId}: ${String(error)}`,
+        );
+        return binding;
+      }
+      await this.clearStaleBinding(binding, reason);
+      return null;
+    }
+  }
+
   private async readEffectiveThreadState(binding: StoredBinding): Promise<{
+    binding: StoredBinding | null;
     state: ThreadState | undefined;
     effectiveState: ThreadState | undefined;
   }> {
     const profile = this.getPermissionsMode(binding);
+    let bindingCleared = false;
     const state = await this.client.readThreadState({
       profile,
       sessionKey: binding.sessionKey,
       threadId: binding.threadId,
-    }).catch(() => undefined);
-    const desired = buildDesiredThreadConfiguration(state, binding);
+    }).catch(async (error) => {
+      if (shouldClearBindingForThreadError(error)) {
+        await this.clearStaleBinding(binding, "read effective thread state");
+        bindingCleared = true;
+      }
+      return undefined;
+    });
+    const currentBinding =
+      this.store.getBinding(this.toConversationTarget(binding.conversation)) ??
+      (bindingCleared ? null : binding);
+    const desired = buildDesiredThreadConfiguration(state, currentBinding);
     return {
+      binding: currentBinding,
       state,
       effectiveState: desired.effectiveState,
     };
@@ -2419,7 +2554,12 @@ export class CodexPluginController {
         profile,
         sessionKey: binding.sessionKey,
         threadId: binding.threadId,
-      }).catch(() => undefined));
+      }).catch(async (error) => {
+        if (shouldClearBindingForThreadError(error)) {
+          await this.clearStaleBinding(binding, opts?.context ?? "reconcile thread settings");
+        }
+        return undefined;
+      }));
     let desired = buildDesiredThreadConfiguration(state, binding, opts?.modelFallback);
     if (desired.model && desired.model !== state?.model?.trim()) {
       try {
@@ -2431,6 +2571,10 @@ export class CodexPluginController {
         });
         desired = buildDesiredThreadConfiguration(state, binding, opts?.modelFallback);
       } catch (error) {
+        if (shouldClearBindingForThreadError(error)) {
+          await this.clearStaleBinding(binding, `${opts?.context ?? "reconcile thread settings"} model`);
+          return state;
+        }
         this.api.logger.warn(
           `codex failed to ${opts?.context ?? "reconcile thread settings"} model: ${String(error)}`,
         );
@@ -2448,6 +2592,10 @@ export class CodexPluginController {
         });
         desired = buildDesiredThreadConfiguration(state, binding, opts?.modelFallback);
       } catch (error) {
+        if (shouldClearBindingForThreadError(error)) {
+          await this.clearStaleBinding(binding, `${opts?.context ?? "reconcile thread settings"} fast mode`);
+          return state;
+        }
         this.api.logger.warn(
           `codex failed to ${opts?.context ?? "reconcile thread settings"} fast mode: ${String(error)}`,
         );
@@ -2471,6 +2619,10 @@ export class CodexPluginController {
           sandbox: desired.sandbox,
         });
       } catch (error) {
+        if (shouldClearBindingForThreadError(error)) {
+          await this.clearStaleBinding(binding, `${opts?.context ?? "reconcile thread settings"} permissions`);
+          return state;
+        }
         this.api.logger.warn(
           `codex failed to ${opts?.context ?? "reconcile thread settings"} permissions: ${String(error)}`,
         );
@@ -2483,10 +2635,13 @@ export class CodexPluginController {
     conversation: ConversationTarget,
     binding: StoredBinding,
   ): Promise<PluginInteractiveButtons> {
-    const { effectiveState } = await this.readEffectiveThreadState(binding);
-    const currentModel = await this.resolveCurrentModelHint(binding, effectiveState);
+    const { binding: currentBinding, effectiveState } = await this.readEffectiveThreadState(binding);
+    if (!currentBinding) {
+      return [];
+    }
+    const currentModel = await this.resolveCurrentModelHint(currentBinding, effectiveState);
     const currentReasoning = normalizeReasoningEffort(
-      effectiveState?.reasoningEffort ?? binding.preferences?.preferredReasoningEffort,
+      effectiveState?.reasoningEffort ?? currentBinding.preferences?.preferredReasoningEffort,
     );
     const [showModelPicker, showReasoningPicker, togglePermissions, compactThread, stopRun, refreshStatus, detachThread, showSkills, showMcp] = await Promise.all([
       this.store.putCallback({
@@ -2799,12 +2954,16 @@ export class CodexPluginController {
     bindingActive: boolean,
   ): Promise<StatusCardRender> {
     const text = await this.buildStatusText(conversation, binding, bindingActive);
-    if (!conversation || !binding || !bindingActive) {
+    const currentBinding =
+      binding && conversation
+        ? this.store.getBinding(this.toConversationTarget(binding.conversation))
+        : binding;
+    if (!conversation || !currentBinding || !bindingActive) {
       return { text };
     }
     return {
       text,
-      buttons: await this.buildStatusControlButtons(conversation, binding),
+      buttons: await this.buildStatusControlButtons(conversation, currentBinding),
     };
   }
 
@@ -3196,8 +3355,16 @@ export class CodexPluginController {
     if (typeof action === "object") {
       return { text: action.error };
     }
+    const {
+      binding: currentBinding,
+      state: threadState,
+      effectiveState,
+    } = await this.readEffectiveThreadState(binding);
+    if (!currentBinding) {
+      return { text: "Bind this conversation to a Codex thread before toggling fast mode." };
+    }
+    binding = currentBinding;
     const profile = this.getPermissionsMode(binding);
-    const { state: threadState, effectiveState } = await this.readEffectiveThreadState(binding);
     const currentModel =
       effectiveState?.model?.trim() || binding.preferences?.preferredModel?.trim() || undefined;
     if (!modelSupportsFast(currentModel)) {
@@ -3488,8 +3655,12 @@ export class CodexPluginController {
     reason: "command" | "inbound" | "plan";
     collaborationMode?: CollaborationMode;
   }): Promise<void> {
+    const binding = await this.ensureUsableBindingForTurn(
+      params.binding,
+      `start turn (${params.reason})`,
+    );
     const key = buildConversationKey(params.conversation);
-    const profile = this.getPermissionsMode(params.binding);
+    const profile = this.getPermissionsMode(binding);
     const existing = this.activeRuns.get(key);
     this.api.logger.debug?.(
       `codex turn request reason=${params.reason} ${this.formatConversationForLog(params.conversation)} workspace=${params.workspaceDir} existing=${existing ? existing.mode : "none"} profile=${profile} prompt="${summarizeTextForLog(params.prompt)}"`,
@@ -3530,21 +3701,21 @@ export class CodexPluginController {
     }
     const typing = await this.startTypingLease(params.conversation);
     this.api.logger.debug?.(
-      `codex turn starting app-server run ${this.formatConversationForLog(params.conversation)} typing=${typing ? "yes" : "no"} session=${params.binding?.sessionKey ?? "<none>"} existingThread=${params.binding?.threadId ?? "<none>"} profile=${profile} mode=${params.collaborationMode?.mode ?? "default"}`,
+      `codex turn starting app-server run ${this.formatConversationForLog(params.conversation)} typing=${typing ? "yes" : "no"} session=${binding?.sessionKey ?? "<none>"} existingThread=${binding?.threadId ?? "<none>"} profile=${profile} mode=${params.collaborationMode?.mode ?? "default"}`,
     );
     const desired = buildDesiredThreadConfiguration(
       undefined,
-      params.binding,
+      binding,
       this.settings.defaultModel,
     );
     const run = this.client.startTurn({
       profile,
-      sessionKey: params.binding?.sessionKey,
+      sessionKey: binding?.sessionKey,
       workspaceDir: params.workspaceDir,
       prompt: params.prompt,
       input: params.input,
       runId: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-      existingThreadId: params.binding?.threadId,
+      existingThreadId: binding?.threadId,
       model: desired.model,
       reasoningEffort: desired.reasoningEffort,
       serviceTier: desired.serviceTier ?? undefined,
@@ -3584,7 +3755,7 @@ export class CodexPluginController {
           const state = await this.client
             .readThreadState({
               profile,
-              sessionKey: params.binding?.sessionKey,
+              sessionKey: binding?.sessionKey,
               threadId,
             })
             .catch(() => null);
@@ -3615,7 +3786,7 @@ export class CodexPluginController {
         const completionText =
           result.terminalStatus === "failed"
             ? await this.describeTurnFailure({
-            sessionKey: params.binding?.sessionKey,
+            sessionKey: binding?.sessionKey,
             profile,
             error: result.terminalError?.message ?? "turn failed",
             terminalError: result.terminalError,
@@ -3636,7 +3807,7 @@ export class CodexPluginController {
         await this.sendText(
           params.conversation,
           await this.describeTurnFailure({
-            sessionKey: params.binding?.sessionKey,
+            sessionKey: binding?.sessionKey,
             profile,
             error,
           }),
@@ -5115,6 +5286,26 @@ export class CodexPluginController {
     }
   }
 
+
+  private async loadSessionBindingService(): Promise<{
+    resolveByConversation: (ref: { channel: string; accountId: string; conversationId: string }) => { bindingId: string } | null;
+    unbind: (input: { bindingId: string; reason?: string }) => Promise<unknown>;
+  }> {
+    type SessionBindingRuntimeModule = {
+      getSessionBindingService: () => {
+        resolveByConversation: (ref: { channel: string; accountId: string; conversationId: string }) => { bindingId: string } | null;
+        unbind: (input: { bindingId: string; reason?: string }) => Promise<unknown>;
+      };
+    };
+    const mod = await loadOpenClawCompatModule<SessionBindingRuntimeModule>({
+      specifier: "openclaw/plugin-sdk/session-binding-runtime",
+      fallbackRelativePath: "dist/plugin-sdk/session-binding-runtime.js",
+      label: "session-binding-runtime",
+      logger: this.api.logger,
+    });
+    return mod.getSessionBindingService();
+  }
+
   private async loadDiscordSdk(): Promise<DiscordSdkModule> {
     return await loadOpenClawCompatModule<DiscordSdkModule>({
       specifier: "openclaw/plugin-sdk/discord",
@@ -5275,6 +5466,9 @@ export class CodexPluginController {
         responders.requestConversationBinding,
       );
       if (bindResult.status === "pending") {
+        await this.store.removeConversationCallbacks(callback.conversation, {
+          kinds: ["resume-thread"],
+        });
         // Interactive bind requests already send the approval prompt with the
         // channel-specific buttons/components from responders.requestConversationBinding.
         // Sending another plain-text reply here duplicates the same prompt.
@@ -5284,7 +5478,9 @@ export class CodexPluginController {
         await responders.reply(bindResult.message);
         return;
       }
-      await this.store.removeCallback(callback.token);
+      await this.store.removeConversationCallbacks(callback.conversation, {
+        kinds: ["resume-thread"],
+      });
       if (callback.syncTopic) {
         const syncedName = buildResumeTopicName({
           title: threadState?.threadName?.trim() || callback.threadTitle,
@@ -5470,9 +5666,17 @@ export class CodexPluginController {
         await responders.reply("No Codex binding for this conversation.");
         return;
       }
-      const profile = this.getPermissionsMode(binding);
-      const { state: threadState, effectiveState } = await this.readEffectiveThreadState(binding);
-      const currentModel = await this.resolveCurrentModelHint(binding, effectiveState);
+      const {
+        binding: currentBinding,
+        state: threadState,
+        effectiveState,
+      } = await this.readEffectiveThreadState(binding);
+      if (!currentBinding) {
+        await responders.reply("No Codex binding for this conversation.");
+        return;
+      }
+      const profile = this.getPermissionsMode(currentBinding);
+      const currentModel = await this.resolveCurrentModelHint(currentBinding, effectiveState);
       if (!modelSupportsFast(currentModel)) {
         await responders.reply(
           `Fast mode is unavailable for ${currentModel ?? "the current model"}. Use a GPT-5.4+ model to enable it.`,
@@ -5487,8 +5691,8 @@ export class CodexPluginController {
       if (threadState) {
         updatedState = await this.client.setThreadServiceTier({
           profile,
-          sessionKey: binding.sessionKey,
-          threadId: binding.threadId,
+          sessionKey: currentBinding.sessionKey,
+          threadId: currentBinding.threadId,
           serviceTier: nextTier,
         }).catch((error) => {
           if (isMissingThreadError(error)) {
@@ -5499,9 +5703,9 @@ export class CodexPluginController {
       }
       const preferredServiceTier = preferredServiceTierFromRequest(nextTier);
       const updatedBinding: StoredBinding = {
-        ...binding,
+        ...currentBinding,
         preferences: {
-          ...(binding.preferences ?? {
+          ...(currentBinding.preferences ?? {
             preferredServiceTier: null,
             updatedAt: Date.now(),
           }),
@@ -5636,9 +5840,16 @@ export class CodexPluginController {
         return;
       }
       const active = this.activeRuns.get(buildConversationKey(callback.conversation));
-      const { state: currentThreadState } = await this.readEffectiveThreadState(binding);
+      const {
+        binding: currentBinding,
+        state: currentThreadState,
+      } = await this.readEffectiveThreadState(binding);
+      if (!currentBinding) {
+        await responders.reply("No Codex binding for this conversation.");
+        return;
+      }
       const updatedBindingBase: StoredBinding = {
-        ...binding,
+        ...currentBinding,
         permissionsMode: active ? currentProfile : nextProfile,
         pendingPermissionsMode: active ? nextProfile : undefined,
         updatedAt: Date.now(),
@@ -5912,14 +6123,18 @@ export class CodexPluginController {
         await responders.reply("No Codex binding for this conversation.");
         return;
       }
-      const profile = this.getPermissionsMode(binding);
-      const { state: threadState } = await this.readEffectiveThreadState(binding);
+      const { binding: currentBinding, state: threadState } = await this.readEffectiveThreadState(binding);
+      if (!currentBinding) {
+        await responders.reply("No Codex binding for this conversation.");
+        return;
+      }
+      const profile = this.getPermissionsMode(currentBinding);
       let state = threadState;
       if (threadState) {
         state = await this.client.setThreadModel({
           profile,
-          sessionKey: binding.sessionKey,
-          threadId: binding.threadId,
+          sessionKey: currentBinding.sessionKey,
+          threadId: currentBinding.threadId,
           model: callback.model,
         }).catch((error) => {
           if (isMissingThreadError(error)) {
@@ -5929,23 +6144,23 @@ export class CodexPluginController {
         });
       }
       const nextPreferredServiceTier = modelSupportsFast(callback.model)
-        ? binding.preferences?.preferredServiceTier ?? null
+        ? currentBinding.preferences?.preferredServiceTier ?? null
         : "default";
       let nextState = state;
       if (!modelSupportsFast(callback.model) && normalizeServiceTier(state?.serviceTier) === "fast") {
         nextState = await this.client
           .setThreadServiceTier({
             profile,
-            sessionKey: binding.sessionKey,
-            threadId: binding.threadId,
+            sessionKey: currentBinding.sessionKey,
+            threadId: currentBinding.threadId,
             serviceTier: null,
           })
           .catch(() => ({ ...state, serviceTier: "default" } as ThreadState));
       }
       const updatedBinding: StoredBinding = {
-        ...binding,
+        ...currentBinding,
         preferences: {
-          ...(binding.preferences ?? {
+          ...(currentBinding.preferences ?? {
             preferredServiceTier: null,
             updatedAt: Date.now(),
           }),
@@ -6452,10 +6667,8 @@ export class CodexPluginController {
       }
     };
 
-    const [initialState, replay] = await Promise.all([
-      readStateForRestore(),
-      readReplayForRestore(),
-    ]);
+    const initialState = await readStateForRestore();
+    const replay = await readReplayForRestore();
     const state =
       (await this.reconcileThreadConfiguration(binding, {
         threadState: initialState,
@@ -6590,7 +6803,12 @@ export class CodexPluginController {
             profile,
             sessionKey: binding.sessionKey,
             threadId: binding.threadId,
-          }).catch(() => undefined)
+          }).catch(async (error) => {
+            if (shouldClearBindingForThreadError(error)) {
+              await this.clearStaleBinding(binding, "build status text");
+            }
+            return undefined;
+          })
         : Promise.resolve(undefined),
       this.client.readAccount({
         profile,
@@ -6602,35 +6820,40 @@ export class CodexPluginController {
       }).catch(() => []),
       this.resolveProjectFolder(binding?.workspaceDir || workspaceDir),
     ]);
-    const effectiveThreadState = buildDesiredThreadConfiguration(threadState, binding).effectiveState;
+    const currentBinding =
+      binding && conversation
+        ? this.store.getBinding(this.toConversationTarget(binding.conversation))
+        : binding;
+    const currentBindingActive = bindingActive && Boolean(currentBinding);
+    const effectiveThreadState = buildDesiredThreadConfiguration(threadState, currentBinding).effectiveState;
     const displayThreadState =
       effectiveThreadState ??
-      (binding
+      (currentBinding
         ? {
-            threadId: binding.threadId,
-            threadName: binding.threadTitle,
-            cwd: binding.workspaceDir,
+            threadId: currentBinding.threadId,
+            threadName: currentBinding.threadTitle,
+            cwd: currentBinding.workspaceDir,
           }
         : undefined);
     const threadNote =
-      binding && !threadState
+      currentBinding && !threadState
         ? "Live thread details are unavailable until Codex materializes the thread, usually after the first user message. Model, reasoning, and fast-mode changes made here are saved as defaults until then."
         : undefined;
     this.api.logger.debug?.(
-      `codex status snapshot bindingActive=${bindingActive ? "yes" : "no"} activeRun=${activeRun?.mode ?? "none"} boundThread=${binding?.threadId ?? "<none>"} raw=${formatThreadStateForLog(threadState)} effective=${formatThreadStateForLog(displayThreadState)} ${formatBindingPreferencesForLog(binding)} threadCwd=${displayThreadState?.cwd?.trim() || "<none>"}`,
+      `codex status snapshot bindingActive=${currentBindingActive ? "yes" : "no"} activeRun=${activeRun?.mode ?? "none"} boundThread=${currentBinding?.threadId ?? "<none>"} raw=${formatThreadStateForLog(threadState)} effective=${formatThreadStateForLog(displayThreadState)} ${formatBindingPreferencesForLog(currentBinding)} threadCwd=${displayThreadState?.cwd?.trim() || "<none>"}`,
     );
 
     return formatCodexStatusText({
       pluginVersion: PLUGIN_VERSION,
       threadState: displayThreadState,
-      bindingThreadTitle: binding?.threadTitle,
+      bindingThreadTitle: currentBinding?.threadTitle,
       account,
       rateLimits: limits,
-      bindingActive,
+      bindingActive: currentBindingActive,
       projectFolder,
-      worktreeFolder: displayThreadState?.cwd?.trim() || binding?.workspaceDir || workspaceDir,
-      contextUsage: binding?.contextUsage,
-      planMode: bindingActive ? activeRun?.mode === "plan" : undefined,
+      worktreeFolder: displayThreadState?.cwd?.trim() || currentBinding?.workspaceDir || workspaceDir,
+      contextUsage: currentBinding?.contextUsage,
+      planMode: currentBindingActive ? activeRun?.mode === "plan" : undefined,
       threadNote,
       permissionNote:
         pendingProfile && activeRun
