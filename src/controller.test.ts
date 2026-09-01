@@ -2423,7 +2423,16 @@ describe("Discord controller flows", () => {
   });
 
   it("renders saved conversation preferences in cas_status even if thread reads lag behind", async () => {
-    const { controller, sendMessageTelegram } = await createControllerHarness();
+    const { controller, clientMock, sendMessageTelegram } = await createControllerHarness();
+    clientMock.readThreadState.mockResolvedValue({
+      threadId: "thread-1",
+      threadName: "Discord Thread",
+      model: "openai/gpt-5.4",
+      cwd: "/repo/openclaw",
+      serviceTier: "default",
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+    });
     await (controller as any).store.upsertBinding({
       conversation: {
         channel: "telegram",
@@ -2457,6 +2466,53 @@ describe("Discord controller flows", () => {
     expect(text).toContain("Model: openai/gpt-5.3-codex · reasoning high");
     expect(text).toContain("Fast mode: off");
     expect(text).toContain("Permissions: Full Access");
+  });
+
+  it("refreshes stored default mode from the live thread state in cas_status", async () => {
+    const { controller, clientMock, sendMessageTelegram } = await createControllerHarness();
+    clientMock.readThreadState.mockResolvedValue({
+      threadId: "thread-1",
+      threadName: "Discord Thread",
+      model: "openai/gpt-5.4",
+      cwd: "/repo/openclaw",
+      serviceTier: "default",
+      approvalPolicy: "on-request",
+      sandbox: "workspace-write",
+    });
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      permissionsMode: "full-access",
+      updatedAt: Date.now(),
+    });
+
+    const reply = await controller.handleCommand(
+      "cas_status",
+      buildTelegramCommandContext({
+        commandBody: "/cas_status",
+        getCurrentConversationBinding: vi.fn(async () => ({ bindingId: "b1" })),
+      }),
+    );
+
+    expect(reply).toEqual({});
+    const binding = (controller as any).store.getBinding({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+    });
+    expect(binding?.permissionsMode).toBe("default");
+    const firstCall = sendMessageTelegram.mock.calls[0] as unknown as [string, string] | undefined;
+    const text = firstCall?.[1] ?? "";
+    expect(text).toContain("Permissions: Default");
+    expect(text).toContain(
+      "Permissions note: refreshed the stored mode from the live Default thread state.",
+    );
   });
 
   it("sends the status card directly to Discord with interactive controls", async () => {
@@ -5075,7 +5131,16 @@ describe("Discord controller flows", () => {
   });
 
   it("passes saved conversation preferences into the next Codex turn", async () => {
-    const { controller } = await createControllerHarness();
+    const { controller, clientMock } = await createControllerHarness();
+    clientMock.readThreadState.mockResolvedValue({
+      threadId: "thread-1",
+      threadName: "Discord Thread",
+      model: "openai/gpt-5.4",
+      cwd: "/repo/openclaw",
+      serviceTier: "default",
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+    });
     const startTurn = vi.fn(() => ({
       result: Promise.resolve({
         threadId: "thread-1",
@@ -5749,6 +5814,73 @@ describe("Discord controller flows", () => {
     expect(editMessage).toHaveBeenLastCalledWith(
       expect.objectContaining({
         text: expect.stringContaining("Permissions: Default"),
+      }),
+    );
+  });
+
+  it("keeps the live full-access mode when a downgrade request does not stick", async () => {
+    const { controller, clientMock } = await createControllerHarness();
+    await (controller as any).store.upsertBinding({
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+      sessionKey: "session-1",
+      threadId: "thread-1",
+      workspaceDir: "/repo/openclaw",
+      permissionsMode: "full-access",
+      updatedAt: Date.now(),
+    });
+    const editMessage = vi.fn(async (_payload: any) => {});
+    clientMock.readThreadState.mockResolvedValue({
+      threadId: "thread-1",
+      threadName: "Discord Thread",
+      model: "openai/gpt-5.4",
+      cwd: "/repo/openclaw",
+      serviceTier: "default",
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+    });
+    clientMock.setThreadPermissions.mockResolvedValueOnce({
+      threadId: "thread-1",
+      threadName: "Discord Thread",
+      model: "openai/gpt-5.4",
+      cwd: "/repo/openclaw",
+      serviceTier: "default",
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+    });
+
+    const callback = await (controller as any).store.putCallback({
+      kind: "toggle-permissions",
+      conversation: {
+        channel: "telegram",
+        accountId: "default",
+        conversationId: "123",
+      },
+    });
+    await controller.handleTelegramInteractive({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+      callback: { payload: callback.token },
+      respond: {
+        clearButtons: vi.fn(async () => {}),
+        reply: vi.fn(async () => {}),
+        editMessage,
+      },
+    } as any);
+
+    const binding = (controller as any).store.getBinding({
+      channel: "telegram",
+      accountId: "default",
+      conversationId: "123",
+    });
+    expect(binding?.permissionsMode).toBe("full-access");
+    expect(editMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("Permissions: Full Access"),
       }),
     );
   });
