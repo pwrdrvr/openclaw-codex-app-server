@@ -56,6 +56,23 @@ function readNumber(
   return fallback;
 }
 
+function readBoolean(record: Record<string, unknown>, key: string, fallback: boolean): boolean {
+  const value = record[key];
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true") {
+      return true;
+    }
+    if (normalized === "false") {
+      return false;
+    }
+  }
+  return fallback;
+}
+
 export function resolvePluginSettings(rawConfig: unknown): PluginSettings {
   const record = asRecord(rawConfig);
   const transport = record.transport === "websocket" ? "websocket" : "stdio";
@@ -82,6 +99,9 @@ export function resolvePluginSettings(rawConfig: unknown): PluginSettings {
     defaultWorkspaceDir: readString(record, "defaultWorkspaceDir"),
     defaultModel: readString(record, "defaultModel"),
     defaultServiceTier: readString(record, "defaultServiceTier"),
+    verbose: readBoolean(record, "verbose", false),
+    verboseMaxEvents: readNumber(record, "verboseMaxEvents", 12, 1),
+    verboseFlushMs: readNumber(record, "verboseFlushMs", 2_500, 250),
   };
 }
 

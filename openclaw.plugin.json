@@ -53,6 +53,17 @@
       },
       "defaultServiceTier": {
         "type": "string"
+      },
+      "verbose": {
+        "type": "boolean"
+      },
+      "verboseMaxEvents": {
+        "type": "number",
+        "minimum": 1
+      },
+      "verboseFlushMs": {
+        "type": "number",
+        "minimum": 250
       }
     }
   },
@@ -99,6 +110,18 @@
     },
     "defaultServiceTier": {
       "label": "Default Service Tier",
+      "advanced": true
+    },
+    "verbose": {
+      "label": "Verbose Progress",
+      "help": "Send short progress updates while Codex is reasoning, using tools, or running commands."
+    },
+    "verboseMaxEvents": {
+      "label": "Verbose Max Events",
+      "advanced": true
+    },
+    "verboseFlushMs": {
+      "label": "Verbose Flush Delay (ms)",
       "advanced": true
     }
   }
